@@ -15,6 +15,7 @@ repository = "https://github.com/kontonkara/ryukaze"
 [workspace.dependencies]
 ryukaze-core = { path = "crates/core" }
 anyhow = "1"
+futures-util = { version = "0.3", default-features = false }
 # Software rendering only: a GPU renderer opens Vulkan/GL, and on a hybrid
 # laptop that can wake the discrete GPU for a small settings window.
 iced = { version = "0.14", default-features = false, features = ["tiny-skia", "wayland", "x11", "tokio", "crisp"] }

@@ -5,6 +5,7 @@
 mod config;
 mod profiles;
 mod service;
+mod sleep;
 mod uevent;
 
 use std::{
@@ -18,7 +19,11 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::{config::Config, profiles::Profiles, uevent::Event};
+use crate::{
+    config::Config,
+    profiles::Profiles,
+    service::{Fans, Service},
+};
 
 const USAGE: &str = "usage: ryukazed [--session] [--sysfs <dir>] [--config <file>]";
 
@@ -57,13 +62,19 @@ async fn main() -> Result<()> {
         .init();
 
     let args = parse_args()?;
-    let config = Config::load(&args.config)?;
+    let mut config = Config::load(&args.config)?;
     let ec = MsiEc::new(&args.sysfs);
-    match ec.firmware() {
-        Ok(firmware) => info!("msi-ec: EC firmware {firmware}"),
+    let firmware = ec.firmware().ok();
+    match &firmware {
+        Some(firmware) => info!("msi-ec: EC firmware {firmware}"),
         // Keep serving: the status then just has nothing in it.
-        Err(_) => warn!("msi-ec is not bound (not loaded, or it rejected this EC firmware)"),
+        None => warn!("msi-ec is not bound (not loaded, or it rejected this EC firmware)"),
     }
+    let fans = Fans::open(
+        &args.sysfs,
+        firmware.as_deref(),
+        std::mem::take(&mut config.fans),
+    );
 
     let builder = if args.session {
         zbus::connection::Builder::session()?
@@ -72,28 +83,42 @@ async fn main() -> Result<()> {
     };
     let connection = builder
         .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, service::Service::new(ec))?
+        .serve_at(OBJECT_PATH, Service::new(ec, fans))?
         .build()
         .await
         .with_context(|| format!("cannot take {BUS_NAME} on the bus"))?;
     info!("serving {BUS_NAME}");
 
-    // Listen before the first apply, so a plug in between isn't missed.
-    let (events, mut received) = mpsc::unbounded_channel();
-    if let Err(err) = uevent::listen(events) {
+    // Listen before the first apply, so nothing in between is missed.
+    let (kernel_events, mut kernel) = mpsc::unbounded_channel();
+    if let Err(err) = uevent::listen(kernel_events) {
         warn!("no kernel uevents ({err}): profiles apply at start only");
+    }
+    let (sleep_events, mut sleep) = mpsc::unbounded_channel();
+    if let Err(err) = sleep::watch(sleep_events).await {
+        warn!("no word from logind ({err}): nothing is put back after sleep");
     }
     let mut profiles = Profiles::new(config, args.sysfs, connection);
     profiles.apply_all().await;
 
     // zbus answers calls on its own tasks; SIGTERM ends the process.
-    while let Some(event) = received.recv().await {
-        match event {
-            Event::Mains => profiles.power_changed().await,
-            Event::MsiEcBound => {
-                info!("msi-ec bound again");
-                profiles.apply_all().await;
-            }
+    loop {
+        tokio::select! {
+            Some(event) = kernel.recv() => match event {
+                uevent::Event::Mains => profiles.power_changed().await,
+                uevent::Event::MsiEcBound => {
+                    info!("msi-ec bound again");
+                    profiles.apply_all().await;
+                }
+            },
+            Some(event) = sleep.recv() => match event {
+                sleep::Event::Sleeping(lock) => {
+                    profiles.sleeping().await;
+                    drop(lock);
+                }
+                sleep::Event::Woke => profiles.woke().await,
+            },
+            else => break,
         }
     }
     std::future::pending().await

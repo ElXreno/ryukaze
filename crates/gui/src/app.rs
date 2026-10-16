@@ -204,8 +204,8 @@ impl App {
         let mut sections = column![].spacing(12);
 
         let gauges: Vec<Element<'a, Message>> = [
-            gauge("CPU", status.cpu_temp, status.cpu_fan),
-            gauge("GPU", status.gpu_temp, status.gpu_fan),
+            gauge("CPU", status.cpu_temp, status.cpu_fan, status.cpu_rpm),
+            gauge("GPU", status.gpu_temp, status.gpu_fan, status.gpu_rpm),
         ]
         .into_iter()
         .flatten()
@@ -344,7 +344,12 @@ fn switch<'a>(label: &'a str, on: bool, toggle: fn(bool) -> Message) -> Element<
 
 /// A temperature and the fan under it. The EC reads 0 °C off a sleeping
 /// GPU, which says it's asleep rather than cold.
-fn gauge<'a>(name: &'a str, temp: Option<u8>, fan: Option<u8>) -> Option<Element<'a, Message>> {
+fn gauge<'a>(
+    name: &'a str,
+    temp: Option<u8>,
+    fan: Option<u8>,
+    rpm: Option<u16>,
+) -> Option<Element<'a, Message>> {
     if temp.is_none() && fan.is_none() {
         return None;
     }
@@ -357,7 +362,12 @@ fn gauge<'a>(name: &'a str, temp: Option<u8>, fan: Option<u8>) -> Option<Element
     if let Some(fan) = fan {
         gauge = gauge.push(
             column![
-                text(format!("Fan {fan}%")).size(13).style(theme::muted),
+                text(match rpm {
+                    Some(rpm) => format!("Fan {fan}% · {rpm} rpm"),
+                    None => format!("Fan {fan}%"),
+                })
+                .size(13)
+                .style(theme::muted),
                 progress_bar(0.0..=100.0, f32::from(fan))
                     .girth(4)
                     .style(theme::duty),

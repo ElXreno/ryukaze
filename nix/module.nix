@@ -68,12 +68,35 @@ in
                 super_battery = true;
               };
             };
+            fans = {
+              cpu = {
+                temps = [
+                  55
+                  62
+                  69
+                  76
+                  83
+                  90
+                ];
+                speeds = [
+                  0
+                  30
+                  35
+                  40
+                  50
+                  60
+                  100
+                ];
+              };
+            };
           };
           description = ''
             ryukazed's /etc/ryukaze/config.toml; unset keys leave the EC alone.
             A profile is applied when the laptop goes on AC or on battery, and
             the charge limit at start. The EC keeps the charge limit across
-            reboots, so unsetting it doesn't lift it: set 100.
+            reboots, so unsetting it doesn't lift it: set 100. Fan curves are
+            for the advanced fan mode, on EC firmware whose layout ryukaze
+            knows; they load ec_sys with writes on.
           '';
         };
       };
@@ -81,6 +104,17 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # EC RAM for the tachometers and, with curves set, the curves: msi-ec
+    # has neither.
+    boot = {
+      kernelModules = [
+        "ec_sys"
+      ];
+      extraModprobeConfig = lib.mkIf (cfg.settings.fans or { } != { }) ''
+        options ec_sys write_support=1
+      '';
+    };
+
     environment = {
       etc = {
         "ryukaze/config.toml".source = configFile;

@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 ryukaze-core.workspace = true
 anyhow.workspace = true
+futures-util.workspace = true
 rustix.workspace = true
 serde.workspace = true
 tokio.workspace = true

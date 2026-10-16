@@ -9,7 +9,10 @@ use ryukaze_core::{
 use tracing::{info, warn};
 use zbus::{Connection, fdo};
 
-use crate::{config::Config, service::Service};
+use crate::{
+    config::Config,
+    service::{Service, Snapshot},
+};
 
 pub struct Profiles {
     config: Config,
@@ -17,6 +20,8 @@ pub struct Profiles {
     connection: Connection,
     /// The source whose profile was applied last.
     applied: Option<Source>,
+    /// The EC's modes as they were when the laptop went to sleep.
+    before_sleep: Option<Snapshot>,
 }
 
 impl Profiles {
@@ -26,6 +31,7 @@ impl Profiles {
             sysfs,
             connection,
             applied: None,
+            before_sleep: None,
         }
     }
 
@@ -40,7 +46,21 @@ impl Profiles {
                 .set_charge_limit(percent);
             report(result);
         }
+        report(self.service().await.get().await.sync_curves());
         self.applied = None;
+        self.power_changed().await;
+    }
+
+    pub async fn sleeping(&mut self) {
+        self.before_sleep = Some(self.service().await.get().await.snapshot());
+    }
+
+    /// Through S3 the EC resets: back to how it was, then the profile if
+    /// the laptop was plugged or unplugged while it slept.
+    pub async fn woke(&mut self) {
+        if let Some(snapshot) = self.before_sleep.take() {
+            self.service().await.get_mut().await.restore(&snapshot);
+        }
         self.power_changed().await;
     }
 

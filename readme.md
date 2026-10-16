@@ -47,10 +47,29 @@ super_battery = false
 [profiles.battery]
 shift_mode = "eco"
 super_battery = true
+
+# The fan curves for the advanced fan mode: below temps[0] °C the fan runs
+# at speeds[0] %, from temps[i] up at speeds[i + 1]. Temperatures rise,
+# speeds don't fall, 150 % is the most. Auto and silent keep the EC's own.
+[fans.cpu]
+temps = [55, 62, 69, 76, 83, 90]
+speeds = [0, 30, 35, 40, 50, 60, 100]
 ```
 
 The daemon learns about the adapter from kernel uevents, and applies
-everything again when msi-ec binds (a reload, or a late module load).
+everything again when msi-ec binds (a reload, or a late module load). Over
+suspend it keeps logind waiting long enough to note the modes, and puts
+them back after resume: through S3 the EC drops advanced, cooler boost and
+super battery and reloads its own curves.
+
+## Fan curves and rpm
+
+msi-ec has neither, so they're read and written in the EC's RAM through
+ec_sys, and only on EC firmware whose layout has been checked against the
+firmware itself: a wrong address elsewhere could be anything. So far that's
+17KKIMS1.115 (Alpha 17 C7VG). Only the curve bytes are ever written, each
+curve is read back, and rpm comes from the tachometer (approximate: the
+constant is MControlCenter's).
 
 ## D-Bus API
 

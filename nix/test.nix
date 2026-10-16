@@ -22,6 +22,27 @@ pkgs.testers.runNixOSTest {
                 shift_mode = "turbo";
               };
             };
+            fans = {
+              cpu = {
+                temps = [
+                  55
+                  62
+                  69
+                  76
+                  83
+                  90
+                ];
+                speeds = [
+                  0
+                  30
+                  35
+                  40
+                  50
+                  60
+                  100
+                ];
+              };
+            };
           };
         };
       };
@@ -59,6 +80,11 @@ pkgs.testers.runNixOSTest {
     with subtest("graphical sessions get the tray"):
         machine.succeed("grep -q 'ryukaze --hidden' /etc/systemd/user/ryukaze.service")
         machine.succeed("test -e /run/current-system/sw/share/applications/ryukaze.desktop")
+
+    with subtest("fan curves turn on ec_sys writes"):
+        machine.succeed("grep -q 'options ec_sys write_support=1' /etc/modprobe.d/nixos.conf")
+        # No msi-ec here, so no firmware and no layout: the fans are left alone.
+        machine.succeed("journalctl -u ryukazed.service | grep -q \"layout isn't known\"")
 
     with subtest("the daemon logs what it couldn't do"):
         machine.succeed("journalctl -u ryukazed.service | grep -q 'msi-ec is not bound'")
