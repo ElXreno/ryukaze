@@ -91,6 +91,10 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub fn_key: Option<String>,
 
+    /// The USB ports stay powered while the laptop is off.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub usb_share: Option<bool>,
+
     /// A Mains supply is online.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub on_ac: Option<bool>,

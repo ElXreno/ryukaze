@@ -76,6 +76,7 @@ pub enum Message {
     AutoCoolerBoost(bool),
     Webcam(bool),
     FnKey(String),
+    UsbShare(bool),
 }
 
 impl App {
@@ -204,6 +205,9 @@ impl App {
             }
             Message::FnKey(side) => {
                 self.call(move |client| async move { client.set_fn_key(&side).await })
+            }
+            Message::UsbShare(on) => {
+                self.call(move |client| async move { client.set_usb_share(on).await })
             }
             Message::AutoCoolerBoost(on) => {
                 self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
@@ -344,7 +348,10 @@ impl App {
         if let Some(side) = &status.fn_key {
             devices = devices.push(fn_key(side));
         }
-        if status.webcam.is_some() || status.fn_key.is_some() {
+        if let Some(on) = status.usb_share {
+            devices = devices.push(switch("Charge USB when off", on, Message::UsbShare));
+        }
+        if status.webcam.is_some() || status.fn_key.is_some() || status.usb_share.is_some() {
             sections = sections.push(section("Devices", devices));
         }
 
@@ -756,6 +763,15 @@ mod tests {
         assert!(ui.find("Charging · 45 W").is_ok());
     }
 
+    #[test]
+    fn usb_share_switch() {
+        let status = Status {
+            usb_share: Some(false),
+            ..alpha17()
+        };
+        let messages = clicks(&app(status), &["Charge USB when off"]);
+        assert!(matches!(&messages[..], [Message::UsbShare(true)]));
+    }
     #[test]
     fn camera_and_fn_key() {
         let status = Status {

@@ -23,6 +23,7 @@ pub trait Ryukaze {
     fn set_auto_cooler_boost(&self, on: bool) -> zbus::Result<()>;
     fn set_webcam(&self, on: bool) -> zbus::Result<()>;
     fn set_fn_key(&self, side: &str) -> zbus::Result<()>;
+    fn set_usb_share(&self, on: bool) -> zbus::Result<()>;
 }
 
 pub type Client = RyukazeProxy<'static>;

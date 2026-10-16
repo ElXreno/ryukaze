@@ -6,6 +6,7 @@ use ryukaze_core::{
     msi_ec::MsiEc,
     power_supply::{self, Source},
     raw_ec::RawEc,
+    usb_share::{self, UsbShare},
 };
 use tracing::{debug, info, warn};
 use zbus::fdo;
@@ -20,6 +21,8 @@ pub struct Service {
     ec: MsiEc,
     fans: Option<Fans>,
     boost: AutoBoost,
+    /// USB Power Share, where the EC's map has it.
+    usb_share: Option<(RawEc, UsbShare)>,
 }
 
 /// Fan curves and tachometers, where the EC's layout is known and its RAM
@@ -132,7 +135,17 @@ pub struct Snapshot {
 
 impl Service {
     pub fn new(ec: MsiEc, fans: Option<Fans>, boost: AutoBoost) -> Self {
-        Self { ec, fans, boost }
+        let usb_share = ec
+            .firmware()
+            .ok()
+            .and_then(|firmware| usb_share::usb_share(&firmware))
+            .map(|share| (RawEc::new(ec.sysfs()), share));
+        Self {
+            ec,
+            fans,
+            boost,
+            usb_share,
+        }
     }
 
     /// Every couple of seconds: the adaptive fans and the automatic boost.
@@ -359,6 +372,10 @@ impl Service {
             auto_cooler_boost: ec.cooler_boost().ok().map(|_| self.boost.config.auto),
             webcam: field("webcam", ec.webcam()),
             fn_key: field("fn_key", ec.fn_key()),
+            usb_share: self
+                .usb_share
+                .as_ref()
+                .and_then(|(raw, share)| share.get(raw).ok()),
             on_ac,
             battery_level: battery.as_ref().map(|battery| battery.level),
             battery_state: battery.as_ref().map(|battery| battery.state.clone()),
@@ -472,6 +489,14 @@ impl Service {
             || self.ec.fn_key(),
             |_| self.ec.set_fn_key(side),
         )
+    }
+
+    /// USB ports powered while the laptop is off.
+    pub fn set_usb_share(&mut self, on: bool) -> fdo::Result<()> {
+        let (raw, share) = self.usb_share.as_ref().ok_or_else(|| {
+            fdo::Error::NotSupported("usb_share: this EC's map doesn't have it".into())
+        })?;
+        apply("usb_share", on, || share.get(raw), |&on| share.set(raw, on))
     }
 
     /// Cooler boost by itself when it gets hot, until the daemon restarts.
@@ -629,6 +654,8 @@ mod tests {
         ram[0x72..0x79].copy_from_slice(&[0, 40, 45, 50, 57, 65, 80]);
         ram[0x82..0x88].copy_from_slice(&[55, 60, 65, 70, 75, 80]);
         ram[0x8a..0x91].copy_from_slice(&[0, 48, 55, 62, 68, 77, 85]);
+        // BIOS bit 3 set, USB Power Share off.
+        ram[0xbf] = 0x08;
         fs::write(io, ram).unwrap();
         sysfs
     }
@@ -878,5 +905,21 @@ mod tests {
         assert_eq!(status.fn_key.as_deref(), Some("left"));
         assert!(service.set_fn_key("middle").is_err());
         assert_eq!(service.ec.fn_key().unwrap(), "left");
+    }
+
+    #[test]
+    fn usb_share_where_the_map_has_it() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut alpha = service(sysfs.path());
+        assert_eq!(alpha.status().usb_share, Some(false));
+        alpha.set_usb_share(true).unwrap();
+        assert_eq!(ram(sysfs.path())[0xbf], 0x28);
+        assert_eq!(alpha.status().usb_share, Some(true));
+
+        let elsewhere = alpha17("17KKIMS1.114");
+        let mut other = service(elsewhere.path());
+        assert_eq!(other.status().usb_share, None);
+        assert!(other.set_usb_share(true).is_err());
+        assert_eq!(ram(elsewhere.path())[0xbf], 0x08);
     }
 }

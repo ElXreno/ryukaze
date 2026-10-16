@@ -26,6 +26,10 @@ pub struct Config {
     /// sets it again from its Setup at every boot.
     pub fn_key: Option<String>,
 
+    /// USB ports powered while the laptop is off, set at start. The EC
+    /// keeps it.
+    pub usb_share: Option<bool>,
+
     pub profiles: Profiles,
 
     pub fans: Fans,

@@ -45,6 +45,9 @@ impl Profiles {
         if let Some(on) = self.config.webcam {
             report(service.set_webcam(on));
         }
+        if let Some(on) = self.config.usb_share {
+            report(service.set_usb_share(on));
+        }
         if let Some(side) = &self.config.fn_key {
             report(service.set_fn_key(side));
         }

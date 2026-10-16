@@ -31,8 +31,8 @@ the EC goes through it. It's on the fan when you let go, until the daemon
 restarts; Copy as Nix puts the curves on the clipboard in the shape of
 `services.ryukaze.settings`, to keep them. Adaptive and the GPU fan's help
 are switches under it, and "Cooler boost when hot" sits under the cooler
-boost switch. Devices has which side of Win the Fn key is on, and the
-camera where its switch does something.
+boost switch. Devices has which side of Win the Fn key is on, USB Power
+Share, and the camera where its switch does something.
 
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
@@ -52,6 +52,9 @@ charge_limit = 80
 # next to Win (the BIOS sets it again from Setup at every boot).
 webcam = true
 fn_key = "left"
+
+# USB ports powered while the laptop is off (USB Power Share), set at start.
+usb_share = false
 
 # Applied when the laptop goes on AC or on battery. A mode switched over
 # D-Bus in between stays until the next plug or unplug.
@@ -119,8 +122,9 @@ your curves (or the EC's, where you set none), in one of two ways:
 The curves, the speeds and the rpm are all in the EC's RAM, which msi-ec
 doesn't cover: ryukaze uses ec_sys, and only on EC firmware whose layout
 has been checked against the firmware itself, as a wrong address elsewhere
-could be anything. So far that's 17KKIMS1.115 (Alpha 17 C7VG). Only the
-curve bytes are ever written and every table is read back; rpm comes from
+could be anything. So far that's 17KKIMS1.115 (Alpha 17 C7VG), where USB
+Power Share (0xBF bit 5) comes from the same map. Only the curve bytes and
+that one bit are ever written, and everything is read back; rpm comes from
 the tachometer (approximate: the constant is MControlCenter's).
 
 ## D-Bus API
@@ -142,6 +146,7 @@ the tachometer (approximate: the constant is MControlCenter's).
 | `SetAutoCoolerBoost` | `b` | cooler boost by itself when hot, until the daemon restarts |
 | `SetWebcam` | `b` | the camera on or off |
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
+| `SetUsbShare` | `b` | USB ports powered while the laptop is off |
 
 Every setter reads the value back and fails if the EC didn't take it.
 [data/io.github.kontonkara.ryukaze.conf](data/io.github.kontonkara.ryukaze.conf)
