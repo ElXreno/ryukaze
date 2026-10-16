@@ -83,6 +83,14 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub auto_cooler_boost: Option<bool>,
 
+    /// The integrated camera is on.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub webcam: Option<bool>,
+
+    /// Where Fn sits next to Win: `left` or `right`.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub fn_key: Option<String>,
+
     /// Battery charge end threshold in percent.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub charge_limit: Option<u8>,

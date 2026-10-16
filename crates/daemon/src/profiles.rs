@@ -37,16 +37,19 @@ impl Profiles {
 
     /// At start and when msi-ec binds: everything, as if just booted.
     pub async fn apply_all(&mut self) {
+        let service = self.service().await;
+        let mut service = service.get_mut().await;
         if let Some(percent) = self.config.charge_limit {
-            let result = self
-                .service()
-                .await
-                .get_mut()
-                .await
-                .set_charge_limit(percent);
-            report(result);
+            report(service.set_charge_limit(percent));
         }
-        report(self.service().await.get().await.sync_curves());
+        if let Some(on) = self.config.webcam {
+            report(service.set_webcam(on));
+        }
+        if let Some(side) = &self.config.fn_key {
+            report(service.set_fn_key(side));
+        }
+        report(service.sync_curves());
+        drop(service);
         self.applied = None;
         self.power_changed().await;
     }

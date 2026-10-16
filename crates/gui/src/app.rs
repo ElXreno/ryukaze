@@ -74,6 +74,8 @@ pub enum Message {
     AdaptiveFans(bool),
     GpuFollowsCpu(bool),
     AutoCoolerBoost(bool),
+    Webcam(bool),
+    FnKey(String),
 }
 
 impl App {
@@ -196,6 +198,12 @@ impl App {
             }
             Message::AdaptiveFans(on) => {
                 self.call(move |client| async move { client.set_adaptive_fans(on).await })
+            }
+            Message::Webcam(on) => {
+                self.call(move |client| async move { client.set_webcam(on).await })
+            }
+            Message::FnKey(side) => {
+                self.call(move |client| async move { client.set_fn_key(&side).await })
             }
             Message::AutoCoolerBoost(on) => {
                 self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
@@ -325,6 +333,17 @@ impl App {
             battery = battery.push(charge_limit(limit));
         }
         sections = sections.push(section("Battery", battery));
+
+        let mut devices = column![].spacing(12);
+        if let Some(on) = status.webcam {
+            devices = devices.push(switch("Camera", on, Message::Webcam));
+        }
+        if let Some(side) = &status.fn_key {
+            devices = devices.push(fn_key(side));
+        }
+        if status.webcam.is_some() || status.fn_key.is_some() {
+            sections = sections.push(section("Devices", devices));
+        }
 
         sections.into()
     }
@@ -478,6 +497,29 @@ fn modes_row<'a>(
         );
     }
     buttons.into()
+}
+
+/// Where Fn sits: a choice of two rather than a "swap", which would depend
+/// on where it started.
+fn fn_key<'a>(side: &str) -> Element<'a, Message> {
+    let choice = |value: &'static str, label: &'static str| {
+        let chosen = side == value;
+        button(text(label).width(Length::Fill).center())
+            .on_press_maybe((!chosen).then(|| Message::FnKey(value.to_owned())))
+            .padding([8, 12])
+            .width(Length::Fill)
+            .style(theme::segment(chosen))
+    };
+    column![
+        text("Fn key"),
+        row![
+            choice("left", "Left of Win"),
+            choice("right", "Right of Win")
+        ]
+        .spacing(6),
+    ]
+    .spacing(8)
+    .into()
 }
 
 /// The whole row toggles, label included; a click on the switch itself is
@@ -642,6 +684,24 @@ mod tests {
             &messages[..],
             [Message::CoolerBoost(true), Message::SuperBattery(true)]
         ));
+    }
+
+    #[test]
+    fn camera_and_fn_key() {
+        let status = Status {
+            webcam: Some(true),
+            fn_key: Some("right".into()),
+            ..alpha17()
+        };
+        let messages = clicks(&app(status), &["Camera", "Left of Win", "Right of Win"]);
+        // The side it's on already isn't picked again.
+        assert!(matches!(
+            &messages[..],
+            [Message::Webcam(false), Message::FnKey(side)] if side == "left"
+        ));
+        let none = app(alpha17());
+        let mut ui = simulator(none.view(window::Id::unique()));
+        assert!(ui.find("Camera").is_err());
     }
 
     #[test]

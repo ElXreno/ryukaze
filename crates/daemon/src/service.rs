@@ -348,6 +348,8 @@ impl Service {
             adaptive_fans: self.fans.as_ref().map(|fans| fans.adaptive.on),
             gpu_fan_follows_cpu: self.fans.as_ref().map(|fans| fans.adaptive.gpu_follows_cpu),
             auto_cooler_boost: ec.cooler_boost().ok().map(|_| self.boost.config.auto),
+            webcam: field("webcam", ec.webcam()),
+            fn_key: field("fn_key", ec.fn_key()),
             charge_limit: field("charge_limit", ec.charge_limit()),
         }
     }
@@ -432,6 +434,30 @@ impl Service {
         fans.adaptive.targets[Fan::Gpu as usize] = None;
         info!("gpu fan follows the cpu: {}", if on { "on" } else { "off" });
         self.adapt()
+    }
+
+    pub fn set_webcam(&mut self, on: bool) -> fdo::Result<()> {
+        apply(
+            "webcam",
+            on,
+            || self.ec.webcam(),
+            |&on| self.ec.set_webcam(on),
+        )
+    }
+
+    /// `left` or `right` of the Win key.
+    pub fn set_fn_key(&mut self, side: &str) -> fdo::Result<()> {
+        if !matches!(side, "left" | "right") {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "fn key {side:?}: left or right"
+            )));
+        }
+        apply(
+            "fn_key",
+            side.to_owned(),
+            || self.ec.fn_key(),
+            |_| self.ec.set_fn_key(side),
+        )
     }
 
     /// Cooler boost by itself when it gets hot, until the daemon restarts.
@@ -577,6 +603,8 @@ mod tests {
             ("cpu/realtime_temperature", "62\n"),
             ("gpu/realtime_temperature", "0\n"),
             ("cooler_boost", "off\n"),
+            ("webcam", "on\n"),
+            ("fn_key", "right\n"),
         ] {
             fs::write(device.join(attr), text).unwrap();
         }
@@ -822,5 +850,19 @@ mod tests {
 
         service.stop();
         assert!(!service.ec.cooler_boost().unwrap());
+    }
+
+    #[test]
+    fn camera_and_fn_key() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        // The camera bit does nothing on this firmware: not offered.
+        assert!(service.set_webcam(false).is_err());
+        service.set_fn_key("left").unwrap();
+        let status = service.status();
+        assert_eq!(status.webcam, None);
+        assert_eq!(status.fn_key.as_deref(), Some("left"));
+        assert!(service.set_fn_key("middle").is_err());
+        assert_eq!(service.ec.fn_key().unwrap(), "left");
     }
 }

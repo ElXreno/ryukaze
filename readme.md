@@ -15,7 +15,7 @@ hand.
 
 ## The window
 
-`ryukaze` shows the CPU and GPU temperatures and fan duty, the shift and
+`ryukaze` shows the CPU and GPU temperatures and fan speeds, the shift and
 fan modes, cooler boost, super battery and the charge limit, whichever this
 EC has, and polls the daemon every two seconds, so picks made elsewhere (Fn
 keys, the power profiles) show up. It renders in software: a GPU renderer
@@ -30,7 +30,8 @@ the EC goes through it. It's on the fan when you let go, until the daemon
 restarts; Copy as Nix puts the curves on the clipboard in the shape of
 `services.ryukaze.settings`, to keep them. Adaptive and the GPU fan's help
 are switches under it, and "Cooler boost when hot" sits under the cooler
-boost switch.
+boost switch. Devices has which side of Win the Fn key is on, and the
+camera where its switch does something.
 
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
@@ -45,6 +46,11 @@ optional, and what's unset the daemon leaves alone:
 # Battery charge end threshold, set at start. The EC keeps it across
 # reboots, so removing the line doesn't lift it: set 100.
 charge_limit = 80
+
+# The camera at start (the EC turns it on at power-up), and where Fn sits
+# next to Win (the BIOS sets it again from Setup at every boot).
+webcam = true
+fn_key = "left"
 
 # Applied when the laptop goes on AC or on battery. A mode switched over
 # D-Bus in between stays until the next plug or unplug.
@@ -133,6 +139,8 @@ the tachometer (approximate: the constant is MControlCenter's).
 | `SetAdaptiveFans` | `b` | adaptive or stepping in advanced, until the daemon restarts |
 | `SetGpuFanFollowsCpu` | `b` | while adaptive, the GPU fan at least at the CPU curve's speed |
 | `SetAutoCoolerBoost` | `b` | cooler boost by itself when hot, until the daemon restarts |
+| `SetWebcam` | `b` | the camera on or off |
+| `SetFnKey` | `s` | `left` or `right` of the Win key |
 
 Every setter reads the value back and fails if the EC didn't take it.
 [data/io.github.kontonkara.ryukaze.conf](data/io.github.kontonkara.ryukaze.conf)
@@ -178,4 +186,7 @@ sysfs tree.
 
 ## Tested on
 
-- MSI Alpha 17 C7VG, EC firmware 17KKIMS1.115
+- MSI Alpha 17 C7VG, EC firmware 17KKIMS1.115. msi-ec has the Fn key on
+  the wrong side on it, which ryukaze turns round, and its camera bits
+  (`webcam`, `webcam_block`) leave the camera working, so ryukaze doesn't
+  offer them there.

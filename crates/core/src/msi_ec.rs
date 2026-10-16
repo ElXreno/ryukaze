@@ -78,6 +78,57 @@ impl MsiEc {
         write(&self.device.join("cooler_boost"), on_off(on))
     }
 
+    /// Whether the integrated camera is on, as its keyboard key turns it.
+    /// `NotFound` where the bit is known to do nothing.
+    pub fn webcam(&self) -> io::Result<bool> {
+        self.webcam_works()?;
+        self.read_on_off("webcam")
+    }
+
+    pub fn set_webcam(&self, on: bool) -> io::Result<()> {
+        self.webcam_works()?;
+        write(&self.device.join("webcam"), on_off(on))
+    }
+
+    /// msi-ec has the camera bits on some firmware where they do nothing:
+    /// with `webcam` off, or `webcam_block` on, the camera stays on USB and
+    /// keeps working (checked by hand on an Alpha 17 C7VG).
+    fn webcam_works(&self) -> io::Result<()> {
+        if matches!(self.firmware().as_deref(), Ok("17KKIMS1.115")) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the camera bit does nothing on this EC firmware",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Where the Fn key sits next to the Win key: `left` or `right`.
+    pub fn fn_key(&self) -> io::Result<String> {
+        let side = self.read("fn_key")?;
+        Ok(if self.fn_key_backwards() {
+            other_side(&side).to_owned()
+        } else {
+            side
+        })
+    }
+
+    pub fn set_fn_key(&self, side: &str) -> io::Result<()> {
+        let side = if self.fn_key_backwards() {
+            other_side(side)
+        } else {
+            side
+        };
+        write(&self.device.join("fn_key"), side)
+    }
+
+    /// msi-ec has Fn on the wrong side on some firmware: its config for
+    /// these sets `invert`, but the keys say otherwise (checked by hand on
+    /// an Alpha 17 C7VG).
+    fn fn_key_backwards(&self) -> bool {
+        matches!(self.firmware().as_deref(), Ok("17KKIMS1.115"))
+    }
+
     /// What the EC reads off the CPU, in °C.
     pub fn cpu_temp(&self) -> io::Result<u8> {
         self.read_number("cpu/realtime_temperature")
@@ -158,6 +209,14 @@ fn write(path: &Path, value: &str) -> io::Result<()> {
         .write_all(value.as_bytes())
 }
 
+fn other_side(side: &str) -> &str {
+    match side {
+        "left" => "right",
+        "right" => "left",
+        other => other,
+    }
+}
+
 fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
@@ -189,6 +248,8 @@ mod tests {
             ("available_fan_modes", "auto\nsilent\nadvanced\n"),
             ("super_battery", "off\n"),
             ("cooler_boost", "on\n"),
+            ("webcam", "on\n"),
+            ("fn_key", "right\n"),
         ] {
             fs::write(device.join(attr), text).unwrap();
         }
@@ -257,6 +318,27 @@ mod tests {
         assert_eq!(ec.shift_mode().unwrap(), "eco");
         assert!(!ec.cooler_boost().unwrap());
         assert_eq!(ec.charge_limit().unwrap(), 60);
+        // The camera bit does nothing on this firmware: not offered.
+        assert_eq!(ec.webcam().unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert!(ec.set_webcam(false).is_err());
+        ec.set_fn_key("left").unwrap();
+        assert_eq!(ec.fn_key().unwrap(), "left");
+        // msi-ec has it the other way round on this firmware.
+        let raw = fs::read_to_string(sysfs.path().join("devices/platform/msi-ec/fn_key")).unwrap();
+        assert_eq!(raw, "right");
+    }
+
+    #[test]
+    fn as_msi_ec_says_elsewhere() {
+        let sysfs = alpha17();
+        let device = sysfs.path().join("devices/platform/msi-ec");
+        fs::write(device.join("fw_version"), "14C1EMS1.012\n").unwrap();
+        let ec = MsiEc::new(sysfs.path());
+        assert_eq!(ec.fn_key().unwrap(), "right");
+        ec.set_fn_key("left").unwrap();
+        assert_eq!(fs::read_to_string(device.join("fn_key")).unwrap(), "left");
+        ec.set_webcam(false).unwrap();
+        assert!(!ec.webcam().unwrap());
     }
 
     #[test]

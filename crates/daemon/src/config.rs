@@ -19,6 +19,13 @@ pub struct Config {
     /// msi-ec binds.
     pub charge_limit: Option<u8>,
 
+    /// The camera on or off at start. The EC turns it back on at power-up.
+    pub webcam: Option<bool>,
+
+    /// Where Fn sits next to Win, `left` or `right`, set at start: the BIOS
+    /// sets it again from its Setup at every boot.
+    pub fn_key: Option<String>,
+
     pub profiles: Profiles,
 
     pub fans: Fans,
@@ -127,6 +134,14 @@ impl Config {
                 path.display()
             );
         }
+        if let Some(side) = &config.fn_key
+            && !matches!(side.as_str(), "left" | "right")
+        {
+            bail!(
+                "{}: fn_key {side:?} is neither left nor right",
+                path.display()
+            );
+        }
         Ok(config)
     }
 }
@@ -185,6 +200,8 @@ mod tests {
     fn rejects_typos_and_bad_limits() {
         assert!(load("[profiles.ac]\nshift = \"turbo\"\n").is_err());
         assert!(load("charge_limit = 5\n").is_err());
+        assert!(load("fn_key = \"middle\"\n").is_err());
+        assert!(load("fn_key = \"left\"\nwebcam = false\n").is_ok());
     }
 
     #[test]
@@ -202,6 +219,20 @@ mod tests {
         assert!(config.fans.get(Fan::Gpu).is_none());
         // Adaptive, with the GPU fan helping, unless told otherwise.
         assert!(config.fans.adaptive && config.fans.gpu_follows_cpu);
+    }
+
+    #[test]
+    fn the_readme_example_parses() {
+        let readme = include_str!("../../../readme.md");
+        let (_, rest) = readme
+            .split_once("```toml\n")
+            .expect("a toml block in the readme");
+        let (example, _) = rest.split_once("```").unwrap();
+        let config = load(example).unwrap();
+        assert_eq!(config.charge_limit, Some(80));
+        assert_eq!(config.fn_key.as_deref(), Some("left"));
+        assert!(config.profiles.get(Source::Battery).is_some());
+        assert!(config.fans.get(Fan::Cpu).is_some());
     }
 
     #[test]

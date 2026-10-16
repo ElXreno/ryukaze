@@ -144,6 +144,9 @@ impl ksni::Tray for Tray {
                 if let Some(on) = status.super_battery {
                     items.push(check("Super battery", on, Message::SuperBattery));
                 }
+                if let Some(on) = status.webcam {
+                    items.push(check("Camera", on, Message::Webcam));
+                }
             }
             Err(err) => items.push(
                 StandardItem {
