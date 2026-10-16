@@ -77,6 +77,7 @@ pub enum Message {
     Webcam(bool),
     FnKey(String),
     UsbShare(bool),
+    GpuMode(String),
 }
 
 impl App {
@@ -208,6 +209,9 @@ impl App {
             }
             Message::UsbShare(on) => {
                 self.call(move |client| async move { client.set_usb_share(on).await })
+            }
+            Message::GpuMode(mode) => {
+                self.call(move |client| async move { client.set_gpu_mode(&mode).await })
             }
             Message::AutoCoolerBoost(on) => {
                 self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
@@ -357,6 +361,10 @@ impl App {
         }
         if status.webcam.is_some() || status.fn_key.is_some() || status.usb_share.is_some() {
             sections = sections.push(section("Devices", devices));
+        }
+
+        if let (Some(now), Some(next)) = (&status.gpu_mode, &status.gpu_mode_next) {
+            sections = sections.push(section("Graphics", gpu_mode(now, next)));
         }
 
         sections.into()
@@ -556,14 +564,7 @@ fn battery_summary<'a>(status: &Status) -> Option<Element<'a, Message>> {
 /// Where Fn sits: a choice of two rather than a "swap", which would depend
 /// on where it started.
 fn fn_key<'a>(side: &str) -> Element<'a, Message> {
-    let choice = |value: &'static str, label: &'static str| {
-        let chosen = side == value;
-        button(text(label).width(Length::Fill).center())
-            .on_press_maybe((!chosen).then(|| Message::FnKey(value.to_owned())))
-            .padding([8, 12])
-            .width(Length::Fill)
-            .style(theme::segment(chosen))
-    };
+    let choice = |value: &str, label| segment(label, side == value, Message::FnKey(value.into()));
     column![
         text("Fn key"),
         row![
@@ -574,6 +575,35 @@ fn fn_key<'a>(side: &str) -> Element<'a, Message> {
     ]
     .spacing(8)
     .into()
+}
+
+/// The MUX. The choice is the mode after a restart: a pick changes nothing
+/// before that.
+fn gpu_mode<'a>(now: &str, next: &str) -> Element<'a, Message> {
+    let choice = |value: &str, label| segment(label, next == value, Message::GpuMode(value.into()));
+    let hint = if now != next {
+        format!("Switches to {next} at the next restart")
+    } else if now == "hybrid" {
+        "The iGPU drives the screen; the dGPU wakes when needed".to_owned()
+    } else {
+        "The dGPU drives the screen and stays awake".to_owned()
+    };
+    column![
+        row![choice("hybrid", "Hybrid"), choice("discrete", "Discrete")].spacing(6),
+        text(hint).size(13).style(theme::muted),
+    ]
+    .spacing(8)
+    .into()
+}
+
+/// One of a row of choices; the chosen one is filled and does nothing.
+fn segment<'a>(label: &'a str, chosen: bool, pick: Message) -> Element<'a, Message> {
+    button(text(label).width(Length::Fill).center())
+        .on_press_maybe((!chosen).then_some(pick))
+        .padding([8, 12])
+        .width(Length::Fill)
+        .style(theme::segment(chosen))
+        .into()
 }
 
 /// The whole row toggles, label included; a click on the switch itself is
@@ -776,6 +806,31 @@ mod tests {
         let messages = clicks(&app(status), &["Charge USB when off"]);
         assert!(matches!(&messages[..], [Message::UsbShare(true)]));
     }
+
+    #[test]
+    fn gpu_mode_after_a_restart() {
+        let mode = |now: &str, next: &str| Status {
+            gpu_mode: Some(now.into()),
+            gpu_mode_next: Some(next.into()),
+            ..alpha17()
+        };
+        let messages = clicks(&app(mode("hybrid", "hybrid")), &["Discrete", "Hybrid"]);
+        assert!(matches!(&messages[..], [Message::GpuMode(mode)] if mode == "discrete"));
+
+        let switching = app(mode("hybrid", "discrete"));
+        let mut ui = simulator(switching.view(window::Id::unique()));
+        assert!(ui.find("Switches to discrete at the next restart").is_ok());
+        // Back to where it is now takes the switch back.
+        let messages = clicks(&switching, &["Hybrid"]);
+        assert!(matches!(&messages[..], [Message::GpuMode(mode)] if mode == "hybrid"));
+
+        assert!(
+            simulator(app(alpha17()).view(window::Id::unique()))
+                .find("Discrete")
+                .is_err()
+        );
+    }
+
     #[test]
     fn camera_and_fn_key() {
         let status = Status {

@@ -1,8 +1,14 @@
-use std::{fmt::Display, io, path::Path, time::Instant};
+use std::{
+    fmt::Display,
+    io,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use ryukaze_core::{
     Status,
     fans::{self, Curve, Fan, Layout},
+    gpu_mux::{self, GpuMode, GpuMux},
     msi_ec::MsiEc,
     power_supply::{self, Source},
     raw_ec::RawEc,
@@ -23,6 +29,8 @@ pub struct Service {
     boost: AutoBoost,
     /// USB Power Share, where the EC's map has it.
     usb_share: Option<(RawEc, UsbShare)>,
+    /// The GPU MUX, where the EC's map has it.
+    gpu_mux: Option<(RawEc, GpuMux)>,
 }
 
 /// Fan curves and tachometers, where the EC's layout is known and its RAM
@@ -135,16 +143,16 @@ pub struct Snapshot {
 
 impl Service {
     pub fn new(ec: MsiEc, fans: Option<Fans>, boost: AutoBoost) -> Self {
-        let usb_share = ec
-            .firmware()
-            .ok()
-            .and_then(|firmware| usb_share::usb_share(&firmware))
-            .map(|share| (RawEc::new(ec.sysfs()), share));
+        let firmware = ec.firmware().unwrap_or_default();
+        let usb_share =
+            usb_share::usb_share(&firmware).map(|share| (RawEc::new(ec.sysfs()), share));
+        let gpu_mux = gpu_mux::gpu_mux(&firmware).map(|mux| (RawEc::new(ec.sysfs()), mux));
         Self {
             ec,
             fans,
             boost,
             usb_share,
+            gpu_mux,
         }
     }
 
@@ -346,6 +354,10 @@ impl Service {
             warn!("battery: {err}");
             None
         });
+        let mux = |read: fn(&GpuMux, &RawEc) -> io::Result<GpuMode>| {
+            let (raw, mux) = self.gpu_mux.as_ref()?;
+            read(mux, raw).ok().map(|mode| mode.to_string())
+        };
         let on_ac = power_supply::source(ec.sysfs())
             .ok()
             .flatten()
@@ -376,6 +388,8 @@ impl Service {
                 .usb_share
                 .as_ref()
                 .and_then(|(raw, share)| share.get(raw).ok()),
+            gpu_mode: mux(GpuMux::now),
+            gpu_mode_next: mux(GpuMux::next),
             on_ac,
             battery_level: battery.as_ref().map(|battery| battery.level),
             battery_state: battery.as_ref().map(|battery| battery.state.clone()),
@@ -497,6 +511,42 @@ impl Service {
             fdo::Error::NotSupported("usb_share: this EC's map doesn't have it".into())
         })?;
         apply("usb_share", on, || share.get(raw), |&on| share.set(raw, on))
+    }
+
+    /// `hybrid` or `discrete` from the next restart on. Waits for the
+    /// BIOS's answer, which comes through ACPI in a moment.
+    pub async fn set_gpu_mode(&mut self, mode: &str) -> fdo::Result<()> {
+        let want = GpuMode::from_name(mode).ok_or_else(|| {
+            fdo::Error::InvalidArgs(format!("gpu mode {mode:?}: hybrid or discrete"))
+        })?;
+        let (raw, mux) = self.gpu_mux.as_ref().ok_or_else(|| {
+            fdo::Error::NotSupported("gpu_mode: this EC's map doesn't have the MUX".into())
+        })?;
+        let failed = |e| raw_error("gpu_mode", e);
+        // The BIOS flips, so ask only to change what's coming.
+        let before = mux.next(raw).map_err(failed)?;
+        if before == want {
+            return Ok(());
+        }
+        mux.ask(raw).map_err(failed)?;
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            match mux.answer(raw).map_err(failed)? {
+                Some(mode) if mode == want => {
+                    info!("gpu_mode: {before} -> {want} from the next restart");
+                    return Ok(());
+                }
+                Some(mode) => {
+                    return Err(fdo::Error::Failed(format!(
+                        "gpu_mode: asked for {want}, but the BIOS took {mode}"
+                    )));
+                }
+                None => {}
+            }
+        }
+        Err(fdo::Error::Failed(
+            "gpu_mode: the EC didn't pass the switch on to the BIOS".into(),
+        ))
     }
 
     /// Cooler boost by itself when it gets hot, until the daemon restarts.
@@ -623,7 +673,14 @@ fn no_curves() -> fdo::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{
+        fs,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+    };
 
     use crate::config::FanCurve;
 
@@ -656,6 +713,8 @@ mod tests {
         ram[0x8a..0x91].copy_from_slice(&[0, 48, 55, 62, 68, 77, 85]);
         // BIOS bit 3 set, USB Power Share off.
         ram[0xbf] = 0x08;
+        // The panel on the iGPU, the rest of the byte as the EC starts it.
+        ram[0x2e] = 0x0b;
         fs::write(io, ram).unwrap();
         sysfs
     }
@@ -921,5 +980,71 @@ mod tests {
         assert_eq!(other.status().usb_share, None);
         assert!(other.set_usb_share(true).is_err());
         assert_eq!(ram(elsewhere.path())[0xbf], 0x08);
+    }
+
+    /// The BIOS behind the EC, as far as the MUX goes: answers each ask in
+    /// 0xD1 by flipping the mode it keeps, as its SMM does, until `done`.
+    fn bios(sysfs: &Path) -> (Arc<AtomicBool>, thread::JoinHandle<()>) {
+        let ec = RawEc::new(sysfs);
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = done.clone();
+        let bios = thread::spawn(move || {
+            let mut discrete = false;
+            while !stop.load(Ordering::Relaxed) {
+                let mut switch = [0];
+                ec.read(0xd1, &mut switch).unwrap();
+                if switch[0] & 1 != 0 {
+                    discrete = !discrete;
+                    let to = if discrete { 0x04 } else { 0 };
+                    ec.write(0xd1, &[switch[0] & !0x07 | 0x02 | to]).unwrap();
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        (done, bios)
+    }
+
+    fn gpu_modes(service: &Service) -> (Option<String>, Option<String>) {
+        let status = service.status();
+        (status.gpu_mode, status.gpu_mode_next)
+    }
+
+    #[tokio::test]
+    async fn gpu_mode_from_the_next_restart() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        let both = |now: &str, next: &str| (Some(now.to_owned()), Some(next.to_owned()));
+        assert_eq!(gpu_modes(&service), both("hybrid", "hybrid"));
+
+        let (done, bios) = bios(sysfs.path());
+        service.set_gpu_mode("discrete").await.unwrap();
+        assert_eq!(gpu_modes(&service), both("hybrid", "discrete"));
+        // Already coming: asking again would flip it back.
+        service.set_gpu_mode("discrete").await.unwrap();
+        assert_eq!(gpu_modes(&service), both("hybrid", "discrete"));
+        service.set_gpu_mode("hybrid").await.unwrap();
+        assert_eq!(gpu_modes(&service), both("hybrid", "hybrid"));
+        done.store(true, Ordering::Relaxed);
+        bios.join().unwrap();
+
+        assert!(service.set_gpu_mode("both").await.is_err());
+        // Where the panel is, only the EC writes.
+        assert_eq!(ram(sysfs.path())[0x2e], 0x0b);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gpu_mode_needs_an_answer() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let err = service(sysfs.path())
+            .set_gpu_mode("discrete")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("didn't pass"), "{err}");
+
+        let elsewhere = alpha17("17KKIMS1.114");
+        let mut other = service(elsewhere.path());
+        assert_eq!(gpu_modes(&other), (None, None));
+        assert!(other.set_gpu_mode("discrete").await.is_err());
+        assert_eq!(ram(elsewhere.path())[0xd1], 0);
     }
 }

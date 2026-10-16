@@ -33,7 +33,8 @@ restarts; Copy as Nix puts the curves on the clipboard in the shape of
 `services.ryukaze.settings`, to keep them. Adaptive and the GPU fan's help
 are switches under it, and "Cooler boost when hot" sits under the cooler
 boost switch. Devices has which side of Win the Fn key is on, USB Power
-Share, and the camera where its switch does something.
+Share, and the camera where its switch does something; Graphics has the
+GPU MUX.
 
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
@@ -152,9 +153,26 @@ The curves, the speeds and the rpm are all in the EC's RAM, which msi-ec
 doesn't cover: ryukaze uses ec_sys, and only on EC firmware whose layout
 has been checked against the firmware itself, as a wrong address elsewhere
 could be anything. So far that's 17KKIMS1.115 (Alpha 17 C7VG), where USB
-Power Share (0xBF bit 5) comes from the same map. Only the curve bytes and
-that one bit are ever written, and everything is read back; rpm comes from
-the tachometer (approximate: the constant is MControlCenter's).
+Power Share (0xBF bit 5) and the GPU MUX (below) come from the same map.
+Only the curve bytes, that bit and the MUX's request are ever written, and
+everything is read back; rpm comes from the tachometer (approximate: the
+constant is MControlCenter's).
+
+## The GPU MUX
+
+In hybrid the panel hangs off the iGPU, and the dGPU renders through it
+when asked and sleeps otherwise; in discrete it hangs off the dGPU, which
+stays awake. The switch takes a restart. On 17KKIMS1.115, as the firmware
+does it: ryukazed sets 0xD1 bit 0, the EC passes that on through ACPI
+(`_Q90`) to the BIOS, which flips the mode it keeps in CMOS and answers
+in 0xD1 (bit 1, and bit 2 for discrete); at power-off the EC copies the
+answer to 0x2E bit 6, which it sets the MUX from at power-on, and at the
+next boot the BIOS brings its Setup in line and restarts once more by
+itself. The BIOS flips rather than sets, so ryukazed asks only when the
+mode after a restart isn't already the one wanted, and waits for the
+answer. It doesn't write the `MsiDCVarData` EFI variable that
+[msi-gpu-switcher](https://github.com/ElXreno/msi-gpu-switcher) does: the
+firmware reads that one for the Win/Fn swap, not for the MUX.
 
 ## D-Bus API
 
@@ -176,6 +194,7 @@ the tachometer (approximate: the constant is MControlCenter's).
 | `SetWebcam` | `b` | the camera on or off |
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
+| `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 
 Every setter reads the value back and fails if the EC didn't take it.
 [data/io.github.kontonkara.ryukaze.conf](data/io.github.kontonkara.ryukaze.conf)

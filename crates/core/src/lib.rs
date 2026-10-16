@@ -1,8 +1,10 @@
 //! Shared by ryukazed and its clients: the daemon's D-Bus names, the status
 //! it reports, the sysfs it reads (msi-ec, power supplies) and the EC RAM
-//! behind ec_sys for what msi-ec lacks (the fan curves, USB Power Share).
+//! behind ec_sys for what msi-ec lacks (the fan curves, USB Power Share, the
+//! GPU MUX).
 
 pub mod fans;
+pub mod gpu_mux;
 pub mod msi_ec;
 pub mod power_supply;
 pub mod raw_ec;

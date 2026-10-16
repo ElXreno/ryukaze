@@ -95,6 +95,15 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub usb_share: Option<bool>,
 
+    /// Where the panel hangs: `hybrid` (off the iGPU) or `discrete` (off
+    /// the dGPU).
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub gpu_mode: Option<String>,
+
+    /// Where it will hang after a restart.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub gpu_mode_next: Option<String>,
+
     /// A Mains supply is online.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub on_ac: Option<bool>,
