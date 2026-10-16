@@ -1,0 +1,13 @@
+[package]
+name = "ryukaze"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ryukaze-core.workspace = true
+iced.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+iced_test = "0.14"

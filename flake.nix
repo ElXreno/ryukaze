@@ -38,6 +38,15 @@
             rust-analyzer
           ];
 
+          # winit opens these at run time; the package sets an rpath instead.
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+            with pkgs;
+            [
+              wayland
+              libxkbcommon
+            ]
+          );
+
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         };
       });

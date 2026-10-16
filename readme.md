@@ -7,10 +7,20 @@ in Rust.
 `ryukazed` is a small root daemon and the only process that touches the
 embedded controller. It works through the upstream
 [msi-ec](https://github.com/BeardOverflow/msi-ec) driver and serves a
-narrow D-Bus API on the system bus.
+narrow D-Bus API on the system bus. `ryukaze` is a window onto it.
 
 Early days: the daemon reports the EC's state, switches its modes and
-follows the power source; there is no GUI yet.
+follows the power source, and the window switches them by hand.
+
+## The window
+
+`ryukaze` shows the shift and fan modes, cooler boost, super battery and
+the charge limit, whichever this EC has, and polls the daemon every two
+seconds, so picks made elsewhere (Fn keys, the power profiles) show up. It
+renders in software: a GPU renderer would open Vulkan or GL, which on a
+hybrid laptop can wake the discrete GPU for a settings window. It's plain
+black on white or white on black, as the desktop prefers (the XDG settings
+portal's `color-scheme`).
 
 ## Config
 
@@ -82,6 +92,7 @@ your EC firmware. `nix flake check` runs the module in a VM.
 ```sh
 nix develop
 cargo run -p ryukazed -- --session
+cargo run -p ryukaze -- --session   # in another terminal
 busctl --user call io.github.kontonkara.ryukaze /io/github/kontonkara/ryukaze \
   io.github.kontonkara.ryukaze1 Status
 ```

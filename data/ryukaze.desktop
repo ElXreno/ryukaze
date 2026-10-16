@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ryukaze
+GenericName=Laptop Control
+Comment=Switch MSI laptop modes, fans and the battery charge limit
+Exec=ryukaze
+Icon=preferences-system
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=msi;fan;battery;ec;
+StartupWMClass=ryukaze

@@ -101,7 +101,7 @@ in
           serviceConfig = {
             Type = "dbus";
             BusName = "io.github.kontonkara.ryukaze";
-            ExecStart = lib.getExe cfg.package;
+            ExecStart = "${cfg.package}/bin/ryukazed";
             Restart = "on-failure";
 
             # Writes go to /sys only; uevents come over netlink.
