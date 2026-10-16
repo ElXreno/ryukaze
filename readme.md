@@ -54,6 +54,29 @@ Every setter reads the value back and fails if the EC didn't take it.
 [data/io.github.kontonkara.ryukaze.conf](data/io.github.kontonkara.ryukaze.conf)
 lets everyone call `Status` and only root call the setters.
 
+## NixOS
+
+```nix
+{
+  inputs.ryukaze.url = "github:kontonkara/ryukaze";
+
+  # in the system configuration:
+  imports = [ inputs.ryukaze.nixosModules.default ];
+  services.ryukaze = {
+    enable = true;
+    users = [ "alice" ]; # may change the EC; everyone may read it
+    settings = {
+      charge_limit = 80;
+      profiles.ac.shift_mode = "turbo";
+      profiles.battery.shift_mode = "eco";
+    };
+  };
+}
+```
+
+The module doesn't install msi-ec: the driver has to be there and know
+your EC firmware. `nix flake check` runs the module in a VM.
+
 ## Try it
 
 ```sh
