@@ -9,8 +9,33 @@ embedded controller. It works through the upstream
 [msi-ec](https://github.com/BeardOverflow/msi-ec) driver and serves a
 narrow D-Bus API on the system bus.
 
-Early days: the daemon reports the EC's state and switches its modes;
-there is no GUI yet.
+Early days: the daemon reports the EC's state, switches its modes and
+follows the power source; there is no GUI yet.
+
+## Config
+
+`/etc/ryukaze/config.toml` (or `ryukazed --config <file>`). Every key is
+optional, and what's unset the daemon leaves alone:
+
+```toml
+# Battery charge end threshold, set at start. The EC keeps it across
+# reboots, so removing the line doesn't lift it: set 100.
+charge_limit = 80
+
+# Applied when the laptop goes on AC or on battery. A mode switched over
+# D-Bus in between stays until the next plug or unplug.
+[profiles.ac]
+shift_mode = "turbo"
+fan_mode = "auto"
+super_battery = false
+
+[profiles.battery]
+shift_mode = "eco"
+super_battery = true
+```
+
+The daemon learns about the adapter from kernel uevents, and applies
+everything again when msi-ec binds (a reload, or a late module load).
 
 ## D-Bus API
 

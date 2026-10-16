@@ -1,7 +1,8 @@
 //! Shared by ryukazed and its clients: the daemon's D-Bus names, the status
-//! it reports, and the msi-ec driver's sysfs.
+//! it reports, and the sysfs it reads (msi-ec, power supplies).
 
 pub mod msi_ec;
+pub mod power_supply;
 mod status;
 
 pub use status::Status;
