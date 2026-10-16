@@ -3,6 +3,7 @@
 //! with --session for development, and applies /etc/ryukaze/config.toml.
 
 mod adaptive;
+mod boost;
 mod config;
 mod profiles;
 mod service;
@@ -25,6 +26,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
+    boost::AutoBoost,
     config::Config,
     profiles::Profiles,
     service::{Fans, Service},
@@ -83,6 +85,7 @@ async fn main() -> Result<()> {
         firmware.as_deref(),
         std::mem::take(&mut config.fans),
     );
+    let boost = AutoBoost::new(config.cooler_boost);
 
     let builder = if args.session {
         zbus::connection::Builder::session()?
@@ -91,7 +94,7 @@ async fn main() -> Result<()> {
     };
     let connection = builder
         .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, Service::new(ec, fans))?
+        .serve_at(OBJECT_PATH, Service::new(ec, fans, boost))?
         .build()
         .await
         .with_context(|| format!("cannot take {BUS_NAME} on the bus"))?;
@@ -130,7 +133,7 @@ async fn main() -> Result<()> {
                 }
                 sleep::Event::Woke => profiles.woke().await,
             },
-            _ = tick.tick() => profiles.adapt().await,
+            _ = tick.tick() => profiles.tick().await,
             _ = terminate.recv() => break,
             _ = interrupt.recv() => break,
         }

@@ -79,6 +79,10 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub gpu_fan_follows_cpu: Option<bool>,
 
+    /// ryukazed turns cooler boost on by itself when it gets hot.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub auto_cooler_boost: Option<bool>,
+
     /// Battery charge end threshold in percent.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub charge_limit: Option<u8>,

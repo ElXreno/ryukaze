@@ -10,7 +10,7 @@ use ryukaze_core::{
 };
 use serde::Deserialize;
 
-use crate::adaptive::Smoothing;
+use crate::{adaptive::Smoothing, boost};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -22,6 +22,8 @@ pub struct Config {
     pub profiles: Profiles,
 
     pub fans: Fans,
+
+    pub cooler_boost: boost::Config,
 }
 
 /// The advanced fan mode: the curves the fans follow (a fan without one

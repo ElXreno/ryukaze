@@ -73,6 +73,7 @@ pub enum Message {
     CurvesCopied,
     AdaptiveFans(bool),
     GpuFollowsCpu(bool),
+    AutoCoolerBoost(bool),
 }
 
 impl App {
@@ -196,6 +197,9 @@ impl App {
             Message::AdaptiveFans(on) => {
                 self.call(move |client| async move { client.set_adaptive_fans(on).await })
             }
+            Message::AutoCoolerBoost(on) => {
+                self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
+            }
             Message::GpuFollowsCpu(on) => {
                 self.call(move |client| async move { client.set_gpu_fan_follows_cpu(on).await })
             }
@@ -298,6 +302,13 @@ impl App {
         }
         if let Some(on) = status.cooler_boost {
             fans = fans.push(switch("Cooler boost", on, Message::CoolerBoost));
+        }
+        if let Some(on) = status.auto_cooler_boost {
+            fans = fans.push(switch(
+                "Cooler boost when hot",
+                on,
+                Message::AutoCoolerBoost,
+            ));
         }
         if status.fan_mode.as_deref() == Some("advanced")
             && let Some(editor) = self.curve_editor(status)
@@ -631,6 +642,23 @@ mod tests {
             &messages[..],
             [Message::CoolerBoost(true), Message::SuperBattery(true)]
         ));
+    }
+
+    #[test]
+    fn cooler_boost_when_hot() {
+        let status = Status {
+            auto_cooler_boost: Some(false),
+            ..alpha17()
+        };
+        let messages = clicks(&app(status), &["Cooler boost when hot", "Cooler boost"]);
+        assert!(matches!(
+            &messages[..],
+            [Message::AutoCoolerBoost(true), Message::CoolerBoost(true)]
+        ));
+        // Not offered where the daemon doesn't say.
+        let app = app(alpha17());
+        let mut ui = simulator(app.view(window::Id::unique()));
+        assert!(ui.find("Cooler boost when hot").is_err());
     }
 
     #[test]

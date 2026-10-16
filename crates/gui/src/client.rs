@@ -20,6 +20,7 @@ pub trait Ryukaze {
     fn reset_fan_curve(&self, fan: &str) -> zbus::Result<()>;
     fn set_adaptive_fans(&self, on: bool) -> zbus::Result<()>;
     fn set_gpu_fan_follows_cpu(&self, on: bool) -> zbus::Result<()>;
+    fn set_auto_cooler_boost(&self, on: bool) -> zbus::Result<()>;
 }
 
 pub type Client = RyukazeProxy<'static>;

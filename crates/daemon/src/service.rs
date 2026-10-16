@@ -11,12 +11,14 @@ use zbus::fdo;
 
 use crate::{
     adaptive::{self, Smoothed, Smoothing},
+    boost::AutoBoost,
     config,
 };
 
 pub struct Service {
     ec: MsiEc,
     fans: Option<Fans>,
+    boost: AutoBoost,
 }
 
 /// Fan curves and tachometers, where the EC's layout is known and its RAM
@@ -128,8 +130,29 @@ pub struct Snapshot {
 }
 
 impl Service {
-    pub fn new(ec: MsiEc, fans: Option<Fans>) -> Self {
-        Self { ec, fans }
+    pub fn new(ec: MsiEc, fans: Option<Fans>, boost: AutoBoost) -> Self {
+        Self { ec, fans, boost }
+    }
+
+    /// Every couple of seconds: the adaptive fans and the automatic boost.
+    pub fn tick(&mut self) -> fdo::Result<()> {
+        let adapted = self.adapt();
+        self.auto_boost();
+        adapted
+    }
+
+    fn auto_boost(&mut self) {
+        let Ok(on) = self.ec.cooler_boost() else {
+            return;
+        };
+        let temps = [self.ec.cpu_temp().ok(), self.ec.gpu_temp().ok()];
+        if let Some(want) = self.boost.tick(temps, on) {
+            let [cpu, gpu] = temps.map(|temp| temp.map_or("?".into(), |temp| format!("{temp} °C")));
+            info!("cooler boost by itself (cpu {cpu}, gpu {gpu})");
+            if let Err(err) = self.set_cooler_boost(want) {
+                warn!("{err}");
+            }
+        }
     }
 
     /// The curves that go with the fan mode the EC is in now: wherever the
@@ -228,13 +251,20 @@ impl Service {
         Ok(())
     }
 
-    /// As the daemon stops: from the held speeds back to the curves as
-    /// the EC steps them, so the fans go on following the temperature.
-    pub fn stop_adapting(&mut self) {
+    /// As the daemon stops: from the held speeds back to the curves as the
+    /// EC steps them, so the fans go on following the temperature, and a
+    /// boost it started ended.
+    pub fn stop(&mut self) {
         if let Some(fans) = &mut self.fans {
             fans.adaptive.on = false;
         }
         if let Err(err) = self.sync_curves() {
+            warn!("{err}");
+        }
+        if let Ok(on) = self.ec.cooler_boost()
+            && let Some(want) = self.boost.stop(on)
+            && let Err(err) = self.set_cooler_boost(want)
+        {
             warn!("{err}");
         }
     }
@@ -317,6 +347,7 @@ impl Service {
             gpu_curve: curve(Fan::Gpu),
             adaptive_fans: self.fans.as_ref().map(|fans| fans.adaptive.on),
             gpu_fan_follows_cpu: self.fans.as_ref().map(|fans| fans.adaptive.gpu_follows_cpu),
+            auto_cooler_boost: ec.cooler_boost().ok().map(|_| self.boost.config.auto),
             charge_limit: field("charge_limit", ec.charge_limit()),
         }
     }
@@ -401,6 +432,24 @@ impl Service {
         fans.adaptive.targets[Fan::Gpu as usize] = None;
         info!("gpu fan follows the cpu: {}", if on { "on" } else { "off" });
         self.adapt()
+    }
+
+    /// Cooler boost by itself when it gets hot, until the daemon restarts.
+    /// Switched off, a boost it started ends.
+    pub fn set_auto_cooler_boost(&mut self, on: bool) -> fdo::Result<()> {
+        if self.boost.config.auto == on {
+            return Ok(());
+        }
+        self.boost.config.auto = on;
+        info!("cooler boost when hot: {}", if on { "on" } else { "off" });
+        let boost_on = self
+            .ec
+            .cooler_boost()
+            .map_err(|e| error("cooler_boost", e))?;
+        match self.boost.stop(boost_on) {
+            Some(want) if !on => self.set_cooler_boost(want),
+            _ => Ok(()),
+        }
     }
 
     pub fn set_super_battery(&mut self, on: bool) -> fdo::Result<()> {
@@ -527,6 +576,7 @@ mod tests {
             ("available_fan_modes", "auto\nsilent\nadvanced\n"),
             ("cpu/realtime_temperature", "62\n"),
             ("gpu/realtime_temperature", "0\n"),
+            ("cooler_boost", "off\n"),
         ] {
             fs::write(device.join(attr), text).unwrap();
         }
@@ -557,7 +607,7 @@ mod tests {
         let ec = MsiEc::new(sysfs);
         let firmware = ec.firmware().ok();
         let fans = Fans::open(sysfs, firmware.as_deref(), curves);
-        Service::new(ec, fans)
+        Service::new(ec, fans, AutoBoost::default())
     }
 
     fn ram(sysfs: &Path) -> Vec<u8> {
@@ -740,7 +790,7 @@ mod tests {
 
         service.set_adaptive_fans(true).unwrap();
         assert_eq!(table(sysfs.path(), Fan::Cpu), adaptive::hold(Fan::Cpu, 35));
-        service.stop_adapting();
+        service.stop();
         assert_eq!(ram(sysfs.path())[0x72..0x79], QUIET);
     }
 
@@ -751,5 +801,26 @@ mod tests {
         let before = ram(sysfs.path());
         service.adapt().unwrap();
         assert_eq!(ram(sysfs.path()), before);
+    }
+
+    #[test]
+    fn boosts_when_hot_and_stops_with_the_daemon() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let ec = MsiEc::new(sysfs.path());
+        let boost = AutoBoost::new(crate::boost::Config {
+            auto: true,
+            ..Default::default()
+        });
+        let mut service = Service::new(ec, None, boost);
+        assert_eq!(service.status().auto_cooler_boost, Some(true));
+
+        set_temp(sysfs.path(), Fan::Cpu, 97);
+        for _ in 0..3 {
+            service.tick().unwrap();
+        }
+        assert!(service.ec.cooler_boost().unwrap());
+
+        service.stop();
+        assert!(!service.ec.cooler_boost().unwrap());
     }
 }

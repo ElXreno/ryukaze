@@ -29,7 +29,8 @@ the fans take it, straight between the dots when adaptive, in steps when
 the EC goes through it. It's on the fan when you let go, until the daemon
 restarts; Copy as Nix puts the curves on the clipboard in the shape of
 `services.ryukaze.settings`, to keep them. Adaptive and the GPU fan's help
-are switches under it.
+are switches under it, and "Cooler boost when hot" sits under the cooler
+boost switch.
 
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
@@ -55,6 +56,15 @@ super_battery = false
 [profiles.battery]
 shift_mode = "eco"
 super_battery = true
+
+# Cooler boost by itself, in any fan mode: on once the CPU or GPU has
+# stayed at its mark for 6 s, off once both have been 10 °C below for
+# 10 s. Only a boost it started does it end, and one switched off by hand
+# stays off until it has cooled down. Off by default; the marks below.
+[cooler_boost]
+auto = false
+cpu_c = 95
+gpu_c = 85
 
 # The advanced fan mode, below. These are the defaults.
 [fans]
@@ -122,6 +132,7 @@ the tachometer (approximate: the constant is MControlCenter's).
 | `ResetFanCurve` | `s` | back to the configured curve, or the EC's own |
 | `SetAdaptiveFans` | `b` | adaptive or stepping in advanced, until the daemon restarts |
 | `SetGpuFanFollowsCpu` | `b` | while adaptive, the GPU fan at least at the CPU curve's speed |
+| `SetAutoCoolerBoost` | `b` | cooler boost by itself when hot, until the daemon restarts |
 
 Every setter reads the value back and fails if the EC didn't take it.
 [data/io.github.kontonkara.ryukaze.conf](data/io.github.kontonkara.ryukaze.conf)
