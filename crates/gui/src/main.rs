@@ -3,6 +3,7 @@
 mod app;
 mod appearance;
 mod client;
+mod curve;
 mod icon;
 mod instance;
 mod theme;

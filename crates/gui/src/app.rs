@@ -3,12 +3,15 @@ use std::{future::Future, time::Duration};
 use iced::{
     Alignment, Element, Length, Subscription, Task, Theme, mouse,
     widget::{
-        button, column, container, mouse_area, progress_bar, row, scrollable, slider, space, text,
-        toggler,
+        button, canvas, column, container, mouse_area, progress_bar, row, scrollable, slider,
+        space, text, toggler,
     },
     window,
 };
-use ryukaze_core::Status;
+use ryukaze_core::{
+    Status,
+    fans::{Curve, Fan},
+};
 
 use crate::{
     appearance,
@@ -37,13 +40,19 @@ pub struct App {
     /// The window while it's open; without it the app lives in the tray.
     window: Option<window::Id>,
     tray: Option<tray::Handle>,
+    /// Whose curve the editor shows.
+    curve_fan: Fan,
+    /// The curve while a dot is dragged, set on release.
+    curve_draft: Option<Curve>,
+    /// The curves went to the clipboard since the last change.
+    copied: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Connected(Result<Client, String>),
     Tick,
-    Status(Result<Status, String>),
+    Status(Box<Result<Status, String>>),
     ShiftMode(String),
     FanMode(String),
     SuperBattery(bool),
@@ -57,6 +66,11 @@ pub enum Message {
     Show,
     WindowClosed(window::Id),
     Quit,
+    CurveFan(Fan),
+    CurveDragged(Curve),
+    CurveReleased,
+    CurveReset,
+    CurvesCopied,
 }
 
 impl App {
@@ -71,6 +85,9 @@ impl App {
             dark: false,
             window: None,
             tray: None,
+            curve_fan: Fan::Cpu,
+            curve_draft: None,
+            copied: false,
         };
         let connect = Task::perform(client::connect(session), Message::Connected);
         if hidden {
@@ -96,7 +113,7 @@ impl App {
             }
             Message::Tick => self.refresh(),
             Message::Status(status) => {
-                self.status = Some(status);
+                self.status = Some(*status);
                 self.show_in_tray()
             }
             Message::ShiftMode(mode) => {
@@ -141,10 +158,56 @@ impl App {
                 if self.window == Some(id) {
                     self.window = None;
                     self.charge_limit = None;
+                    self.curve_draft = None;
                 }
                 Task::none()
             }
             Message::Quit => iced::exit(),
+            Message::CurveFan(fan) => {
+                self.curve_fan = fan;
+                self.curve_draft = None;
+                Task::none()
+            }
+            Message::CurveDragged(curve) => {
+                self.curve_draft = Some(curve);
+                self.copied = false;
+                Task::none()
+            }
+            Message::CurveReleased => match self.curve_draft.take() {
+                Some(curve) => {
+                    // Shown until the daemon's status has it.
+                    self.set_curve_in_status(curve);
+                    let fan = self.curve_fan.to_string();
+                    self.call(move |client| async move {
+                        client
+                            .set_fan_curve(&fan, &curve.temps, &curve.speeds)
+                            .await
+                    })
+                }
+                None => Task::none(),
+            },
+            Message::CurveReset => {
+                self.copied = false;
+                let fan = self.curve_fan.to_string();
+                self.call(move |client| async move { client.reset_fan_curve(&fan).await })
+            }
+            Message::CurvesCopied => {
+                let Some(Ok(status)) = &self.status else {
+                    return Task::none();
+                };
+                self.copied = true;
+                iced::clipboard::write(crate::curve::as_nix(&curves(status)))
+            }
+        }
+    }
+
+    fn set_curve_in_status(&mut self, curve: Curve) {
+        if let Some(Ok(status)) = &mut self.status {
+            let slot = match self.curve_fan {
+                Fan::Cpu => &mut status.cpu_curve,
+                Fan::Gpu => &mut status.gpu_curve,
+            };
+            *slot = Some((curve.temps.to_vec(), curve.speeds.to_vec()));
         }
     }
 
@@ -228,6 +291,11 @@ impl App {
         if let Some(on) = status.cooler_boost {
             fans = fans.push(switch("Cooler boost", on, Message::CoolerBoost));
         }
+        if status.fan_mode.as_deref() == Some("advanced")
+            && let Some(editor) = self.curve_editor(status)
+        {
+            fans = fans.push(editor);
+        }
         sections = sections.push(section("Fans", fans));
 
         let mut battery = column![].spacing(12);
@@ -264,12 +332,63 @@ impl App {
         }
     }
 
+    /// Advanced's curves, one fan at a time: a step graph to drag, a way
+    /// back to the config's (reset) and into it (copy as Nix).
+    fn curve_editor<'a>(&'a self, status: &'a Status) -> Option<Element<'a, Message>> {
+        let (_, reported) = curves(status)
+            .into_iter()
+            .find(|&(fan, _)| fan == self.curve_fan)?;
+        let curve = self.curve_draft.unwrap_or(reported);
+        let now = match self.curve_fan {
+            Fan::Cpu => status.cpu_temp.zip(status.cpu_fan),
+            Fan::Gpu => status.gpu_temp.zip(status.gpu_fan),
+        };
+
+        let tabs = row(Fan::ALL.map(|fan| {
+            let chosen = fan == self.curve_fan;
+            button(
+                text(fan.to_string().to_uppercase())
+                    .size(13)
+                    .width(Length::Fill)
+                    .center(),
+            )
+            .on_press_maybe((!chosen).then_some(Message::CurveFan(fan)))
+            .padding([4, 12])
+            .width(72)
+            .style(theme::segment(chosen))
+            .into()
+        }))
+        .spacing(6);
+        let graph = canvas(crate::curve::Editor { curve, now })
+            .width(Length::Fill)
+            .height(200);
+        let hint = if self.copied {
+            "Copied, for services.ryukaze.settings"
+        } else {
+            "Drag a dot: sideways for where a step starts, up or down for its speed"
+        };
+        let small = |label| {
+            button(text(label).size(13))
+                .padding([4, 12])
+                .style(theme::segment(false))
+        };
+        let actions = row![
+            text(hint).size(12).style(theme::muted).width(Length::Fill),
+            small("Reset").on_press(Message::CurveReset),
+            small("Copy as Nix").on_press(Message::CurvesCopied),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
+        Some(column![tabs, graph, actions].spacing(10).into())
+    }
+
     fn refresh(&self) -> Task<Message> {
         let Some(client) = self.client.clone() else {
             return Task::none();
         };
         Task::perform(async move { client.status().await }, |result| {
-            Message::Status(result.map_err(client::describe))
+            Message::Status(Box::new(result.map_err(client::describe)))
         })
     }
 
@@ -409,6 +528,17 @@ fn banner<'a>(message: &str) -> Element<'a, Message> {
         .into()
 }
 
+/// The curves the daemon reports, checked the way it checks them.
+fn curves(status: &Status) -> Vec<(Fan, Curve)> {
+    [(Fan::Cpu, &status.cpu_curve), (Fan::Gpu, &status.gpu_curve)]
+        .into_iter()
+        .filter_map(|(fan, curve)| {
+            let (temps, speeds) = curve.as_ref()?;
+            Some((fan, Curve::new(temps, speeds).ok()?))
+        })
+        .collect()
+}
+
 pub fn capitalize(word: &str) -> String {
     let mut chars = word.chars();
     match chars.next() {
@@ -432,6 +562,9 @@ mod tests {
             dark: false,
             window: None,
             tray: None,
+            curve_fan: Fan::Cpu,
+            curve_draft: None,
+            copied: false,
         }
     }
 
@@ -505,5 +638,53 @@ mod tests {
         let mut ui = simulator(app.view(window::Id::unique()));
         assert!(ui.find("ryukazed isn't running").is_ok());
         assert!(ui.find("Eco").is_err());
+    }
+
+    fn advanced() -> Status {
+        let curve = |temps: &[u8], speeds: &[u8]| Some((temps.to_vec(), speeds.to_vec()));
+        Status {
+            fan_mode: Some("advanced".into()),
+            cpu_curve: curve(&[50, 57, 64, 71, 78, 85], &[0, 40, 45, 50, 57, 65, 80]),
+            gpu_curve: curve(&[55, 60, 65, 70, 75, 80], &[0, 48, 55, 62, 68, 77, 85]),
+            ..alpha17()
+        }
+    }
+
+    #[test]
+    fn the_curve_editor_is_advanced_only() {
+        let editing = app(advanced());
+        let mut ui = simulator(editing.view(window::Id::unique()));
+        assert!(ui.find("CPU").is_ok());
+        assert!(ui.find("Copy as Nix").is_ok());
+
+        let auto = app(alpha17());
+        let mut ui = simulator(auto.view(window::Id::unique()));
+        assert!(ui.find("Copy as Nix").is_err());
+    }
+
+    #[test]
+    fn switches_fans_and_resets() {
+        let messages = clicks(&app(advanced()), &["GPU", "Reset", "Copy as Nix"]);
+        assert!(matches!(
+            &messages[..],
+            [
+                Message::CurveFan(Fan::Gpu),
+                Message::CurveReset,
+                Message::CurvesCopied
+            ]
+        ));
+    }
+
+    #[test]
+    fn a_released_curve_shows_before_the_daemon_answers() {
+        let mut app = app(advanced());
+        let curve = Curve::new(&[50, 57, 64, 71, 78, 85], &[0, 30, 35, 40, 50, 60, 100]).unwrap();
+        let _ = app.update(Message::CurveDragged(curve));
+        let _ = app.update(Message::CurveReleased);
+        let Some(Ok(status)) = &app.status else {
+            panic!("no status");
+        };
+        assert_eq!(status.cpu_curve.as_ref().unwrap().1, curve.speeds);
+        assert!(app.curve_draft.is_none());
     }
 }

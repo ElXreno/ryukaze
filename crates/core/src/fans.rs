@@ -15,6 +15,11 @@ pub enum Fan {
 
 impl Fan {
     pub const ALL: [Fan; 2] = [Fan::Cpu, Fan::Gpu];
+
+    /// `cpu` or `gpu`, as it's written everywhere.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|fan| fan.to_string() == name)
+    }
 }
 
 impl fmt::Display for Fan {

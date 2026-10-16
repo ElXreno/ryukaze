@@ -62,6 +62,14 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub gpu_rpm: Option<u16>,
 
+    /// The curve the fan follows in the advanced fan mode, as (temps,
+    /// speeds); see `fans::Curve`. Only where ryukaze can set curves.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub cpu_curve: Option<(Vec<u8>, Vec<u8>)>,
+
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub gpu_curve: Option<(Vec<u8>, Vec<u8>)>,
+
     /// Battery charge end threshold in percent.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub charge_limit: Option<u8>,

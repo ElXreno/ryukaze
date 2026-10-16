@@ -2,7 +2,7 @@ use std::{fmt::Display, io, path::Path};
 
 use ryukaze_core::{
     Status,
-    fans::{self, Fan, Layout},
+    fans::{self, Curve, Fan, Layout},
     msi_ec::MsiEc,
     raw_ec::RawEc,
 };
@@ -21,15 +21,17 @@ pub struct Service {
 pub struct Fans {
     raw: RawEc,
     layout: &'static Layout,
-    /// The configured curves, for the advanced fan mode.
-    curves: config::Fans,
+    configured: config::Fans,
+    /// The curves advanced runs on: the configured ones, the EC's own where
+    /// none is, until a client sets others.
+    active: [Curve; 2],
 }
 
 impl Fans {
     /// `None`, with the reason in the journal, when this EC can't have them.
-    pub fn open(sysfs: &Path, firmware: Option<&str>, curves: config::Fans) -> Option<Self> {
+    pub fn open(sysfs: &Path, firmware: Option<&str>, configured: config::Fans) -> Option<Self> {
         let Some(layout) = firmware.and_then(fans::layout) else {
-            if !curves.is_empty() {
+            if !configured.is_empty() {
                 warn!("fan curves: this EC firmware's layout isn't known, leaving the fans alone");
             }
             return None;
@@ -39,11 +41,23 @@ impl Fans {
             warn!("fan curves and rpm: EC RAM unreadable (ec_sys loaded? root?): {err}");
             return None;
         }
-        Some(Self {
+        let mut fans = Self {
             raw,
             layout,
-            curves,
-        })
+            configured,
+            active: [layout.factory(Fan::Cpu), layout.factory(Fan::Gpu)],
+        };
+        for fan in Fan::ALL {
+            fans.reset(fan);
+        }
+        Some(fans)
+    }
+
+    fn reset(&mut self, fan: Fan) {
+        self.active[fan as usize] = self
+            .configured
+            .get(fan)
+            .unwrap_or_else(|| self.layout.factory(fan));
     }
 }
 
@@ -65,7 +79,7 @@ impl Service {
     /// The curves that go with the fan mode the EC is in now: wherever the
     /// EC may have reloaded its own (start, msi-ec binding, resume).
     pub fn sync_curves(&self) -> fdo::Result<()> {
-        if self.fans.as_ref().is_none_or(|fans| fans.curves.is_empty()) {
+        if self.fans.is_none() {
             return Ok(());
         }
         let mode = self.ec.fan_mode().map_err(|e| error("fan_mode", e))?;
@@ -102,21 +116,19 @@ impl Service {
         }
     }
 
-    /// For each fan with a configured curve: that curve in advanced, the
-    /// EC's own otherwise.
+    /// The active curves in advanced, the EC's own otherwise.
     fn put_curves(&self, advanced: bool) -> fdo::Result<()> {
         let Some(fans) = &self.fans else {
             return Ok(());
         };
         for fan in Fan::ALL {
-            let Some(configured) = fans.curves.get(fan) else {
-                continue;
-            };
-            let (want, which) = if advanced {
-                (configured, "configured")
+            let factory = fans.layout.factory(fan);
+            let want = if advanced {
+                fans.active[fan as usize]
             } else {
-                (fans.layout.factory(fan), "factory")
+                factory
             };
+            let which = if want == factory { "factory" } else { "custom" };
             let name = format!("{fan} fan curve");
             let read = || {
                 fans.layout
@@ -150,6 +162,10 @@ impl Service {
             let fans = self.fans.as_ref()?;
             fans.layout.rpm(&fans.raw, fan).ok()
         };
+        let curve = |fan: Fan| {
+            let Curve { temps, speeds } = self.fans.as_ref()?.active[fan as usize];
+            Some((temps.to_vec(), speeds.to_vec()))
+        };
         Status {
             firmware: field("fw_version", ec.firmware()),
             firmware_date: field("fw_release_date", ec.firmware_date()),
@@ -165,6 +181,8 @@ impl Service {
             gpu_fan: field("gpu/realtime_fan_speed", ec.gpu_fan()),
             cpu_rpm: rpm(Fan::Cpu),
             gpu_rpm: rpm(Fan::Gpu),
+            cpu_curve: curve(Fan::Cpu),
+            gpu_curve: curve(Fan::Gpu),
             charge_limit: field("charge_limit", ec.charge_limit()),
         }
     }
@@ -202,6 +220,23 @@ impl Service {
             self.put_curves(false)?;
         }
         Ok(())
+    }
+
+    /// The curve advanced runs `fan` ("cpu" or "gpu") on, until the daemon
+    /// restarts; see `fans::Curve`. In advanced it's on the fan at once.
+    pub fn set_fan_curve(&mut self, fan: &str, temps: Vec<u8>, speeds: Vec<u8>) -> fdo::Result<()> {
+        let fan = parse_fan(fan)?;
+        let curve = Curve::new(&temps, &speeds).map_err(fdo::Error::InvalidArgs)?;
+        let fans = self.fans.as_mut().ok_or_else(no_curves)?;
+        fans.active[fan as usize] = curve;
+        self.sync_curves()
+    }
+
+    /// Back to the configured curve, or the EC's own where none is.
+    pub fn reset_fan_curve(&mut self, fan: &str) -> fdo::Result<()> {
+        let fan = parse_fan(fan)?;
+        self.fans.as_mut().ok_or_else(no_curves)?.reset(fan);
+        self.sync_curves()
     }
 
     pub fn set_super_battery(&mut self, on: bool) -> fdo::Result<()> {
@@ -298,12 +333,19 @@ fn raw_error(name: &str, err: io::Error) -> fdo::Error {
     fdo::Error::IOError(format!("{name}: EC RAM: {err}"))
 }
 
+fn parse_fan(name: &str) -> fdo::Result<Fan> {
+    Fan::from_name(name)
+        .ok_or_else(|| fdo::Error::InvalidArgs(format!("no fan {name:?}: cpu or gpu")))
+}
+
+fn no_curves() -> fdo::Error {
+    fdo::Error::NotSupported("fan curves: this EC's layout isn't known".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-
-    use ryukaze_core::fans::Curve;
 
     use crate::config::FanCurve;
 
@@ -393,5 +435,72 @@ mod tests {
         service.set_fan_mode("advanced").unwrap();
         assert_eq!(ram(sysfs.path()), before);
         assert_eq!(service.status().cpu_rpm, None);
+        assert!(service.status().cpu_curve.is_none());
+        assert!(
+            service
+                .set_fan_curve("cpu", vec![0; 6], vec![0; 7])
+                .is_err()
+        );
+    }
+
+    const LOUD: [u8; 7] = [20, 40, 50, 60, 70, 80, 100];
+
+    #[test]
+    fn a_set_curve_is_on_at_once_in_advanced() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        service.set_fan_mode("advanced").unwrap();
+        service
+            .set_fan_curve("gpu", vec![50, 55, 60, 65, 70, 75], LOUD.to_vec())
+            .unwrap();
+        assert_eq!(ram(sysfs.path())[0x8a..0x91], LOUD);
+        assert_eq!(service.status().gpu_curve.unwrap().1, LOUD);
+    }
+
+    #[test]
+    fn a_set_curve_waits_for_advanced() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        service
+            .set_fan_curve("cpu", vec![50, 55, 60, 65, 70, 75], LOUD.to_vec())
+            .unwrap();
+        // In auto the EC keeps its own.
+        assert_eq!(ram(sysfs.path())[0x72..0x79], [0, 40, 45, 50, 57, 65, 80]);
+        service.set_fan_mode("advanced").unwrap();
+        assert_eq!(ram(sysfs.path())[0x72..0x79], LOUD);
+    }
+
+    #[test]
+    fn reset_goes_back_to_the_configured_curve() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        service.set_fan_mode("advanced").unwrap();
+        service
+            .set_fan_curve("cpu", vec![50, 55, 60, 65, 70, 75], LOUD.to_vec())
+            .unwrap();
+        service.reset_fan_curve("cpu").unwrap();
+        assert_eq!(ram(sysfs.path())[0x72..0x79], QUIET);
+        // No curve configured for the GPU: its reset is the EC's own.
+        service.reset_fan_curve("gpu").unwrap();
+        assert_eq!(ram(sysfs.path())[0x8a..0x91], [0, 48, 55, 62, 68, 77, 85]);
+    }
+
+    #[test]
+    fn rejects_bad_fans_and_curves() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        let before = ram(sysfs.path());
+        assert!(
+            service
+                .set_fan_curve("pump", vec![50, 55, 60, 65, 70, 75], LOUD.to_vec())
+                .is_err()
+        );
+        let falling = vec![50, 40, 30, 20, 10, 0, 0];
+        assert!(
+            service
+                .set_fan_curve("cpu", vec![50, 55, 60, 65, 70, 75], falling)
+                .is_err()
+        );
+        assert_eq!(ram(sysfs.path()), before);
     }
 }

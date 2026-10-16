@@ -8,24 +8,24 @@ use iced::{
 };
 
 /// What the styles draw with.
-struct Colors {
-    background: Color,
-    card: Color,
-    border: Color,
-    text: Color,
-    muted: Color,
+pub struct Colors {
+    pub background: Color,
+    pub card: Color,
+    pub border: Color,
+    pub text: Color,
+    pub muted: Color,
     /// A choice not taken, and under the pointer.
-    idle: Color,
-    hover: Color,
+    pub idle: Color,
+    pub hover: Color,
     /// The choice taken, a switch that's on, a filled bar.
-    strong: Color,
-    on_strong: Color,
+    pub strong: Color,
+    pub on_strong: Color,
     /// An empty track, and a switch that's off: its track, the track under
     /// the pointer, its knob.
-    track: Color,
-    track_hover: Color,
-    knob: Color,
-    danger: Color,
+    pub track: Color,
+    pub track_hover: Color,
+    pub knob: Color,
+    pub danger: Color,
 }
 
 const LIGHT: Colors = Colors {
@@ -62,7 +62,7 @@ const DARK: Colors = Colors {
 
 /// iced picks its built-in Light or Dark from the desktop's preference;
 /// only which of the two it is matters here.
-fn colors(theme: &Theme) -> &'static Colors {
+pub fn colors(theme: &Theme) -> &'static Colors {
     if theme.extended_palette().is_dark {
         &DARK
     } else {

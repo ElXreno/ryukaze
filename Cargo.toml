@@ -18,7 +18,7 @@ anyhow = "1"
 futures-util = { version = "0.3", default-features = false }
 # Software rendering only: a GPU renderer opens Vulkan/GL, and on a hybrid
 # laptop that can wake the discrete GPU for a small settings window.
-iced = { version = "0.14", default-features = false, features = ["tiny-skia", "wayland", "x11", "tokio", "crisp"] }
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "wayland", "x11", "tokio", "crisp", "canvas"] }
 ksni = { version = "0.3.6", default-features = false, features = ["tokio"] }
 # 0.45 draws with the same tiny-skia as iced.
 resvg = { version = "0.45", default-features = false }

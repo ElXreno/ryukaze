@@ -23,6 +23,12 @@ would open Vulkan or GL, which on a hybrid laptop can wake the discrete GPU
 for a settings window. It's plain black on white or white on black, as the
 desktop prefers (the XDG settings portal's `color-scheme`).
 
+In the advanced fan mode the window shows each fan's curve as the step
+graph the EC follows: drag a dot sideways for where a step starts, up or
+down for its speed. It's on the fan when you let go, until the daemon
+restarts; Copy as Nix puts the curves on the clipboard in the shape of
+`services.ryukaze.settings`, to keep them.
+
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
 starting `ryukaze` again while it runs brings its window up.
@@ -83,6 +89,8 @@ constant is MControlCenter's).
 | `SetSuperBattery` | `b` | |
 | `SetCoolerBoost` | `b` | |
 | `SetChargeLimit` | `y` | 10 to 100; charging resumes 10 points below |
+| `SetFanCurve` | `s ay ay` | `cpu` or `gpu`, 6 temperatures, 7 speeds: the curve advanced runs on until the daemon restarts |
+| `ResetFanCurve` | `s` | back to the configured curve, or the EC's own |
 
 Every setter reads the value back and fails if the EC didn't take it.
 [data/io.github.kontonkara.ryukaze.conf](data/io.github.kontonkara.ryukaze.conf)
