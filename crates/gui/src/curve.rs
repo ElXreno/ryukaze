@@ -1,6 +1,7 @@
-//! The advanced fan mode's curve as a step graph to drag. The EC steps,
-//! it doesn't interpolate, so the graph does too: one dot where each step
-//! starts, sideways for its temperature, up or down for its speed.
+//! The advanced fan mode's curve as a graph to drag: one dot where each
+//! step starts, sideways for its temperature, up or down for its speed. The
+//! line is drawn as the fans will take it: steps when the EC goes through
+//! the curve itself, straight between the dots when ryukazed adapts.
 
 use iced::{
     Point, Rectangle, Renderer, Theme, mouse,
@@ -26,6 +27,8 @@ pub struct Editor {
     pub curve: Curve,
     /// The temperature the EC reads and the speed it runs at now.
     pub now: Option<(u8, u8)>,
+    /// The daemon adapts: the fans go straight between the dots.
+    pub smooth: bool,
 }
 
 #[derive(Default)]
@@ -226,7 +229,9 @@ impl canvas::Program<Message> for Editor {
         }
 
         let curve = &self.curve;
-        let steps = Path::new(|path| {
+        // As the fans will take it: steps when the EC goes through the
+        // curve itself, straight between the dots when the daemon adapts.
+        let line = Path::new(|path| {
             path.move_to(Self::to_screen(
                 bounds,
                 TEMP_MIN,
@@ -234,7 +239,9 @@ impl canvas::Program<Message> for Editor {
             ));
             for (step, &temp) in curve.temps.iter().enumerate() {
                 let temp = f32::from(temp);
-                path.line_to(Self::to_screen(bounds, temp, f32::from(curve.speeds[step])));
+                if !self.smooth {
+                    path.line_to(Self::to_screen(bounds, temp, f32::from(curve.speeds[step])));
+                }
                 path.line_to(Self::to_screen(
                     bounds,
                     temp,
@@ -248,7 +255,7 @@ impl canvas::Program<Message> for Editor {
             ));
         });
         frame.stroke(
-            &steps,
+            &line,
             Stroke::default().with_color(colors.strong).with_width(2.0),
         );
 

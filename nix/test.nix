@@ -81,7 +81,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("grep -q 'ryukaze --hidden' /etc/systemd/user/ryukaze.service")
         machine.succeed("test -e /run/current-system/sw/share/applications/ryukaze.desktop")
 
-    with subtest("fan curves turn on ec_sys writes"):
+    with subtest("ec_sys is there for the fans"):
         machine.succeed("grep -q 'options ec_sys write_support=1' /etc/modprobe.d/nixos.conf")
         # No msi-ec here, so no firmware and no layout: the fans are left alone.
         machine.succeed("journalctl -u ryukazed.service | grep -q \"layout isn't known\"")

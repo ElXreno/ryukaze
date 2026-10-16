@@ -10,6 +10,8 @@ use ryukaze_core::{
 };
 use serde::Deserialize;
 
+use crate::adaptive::Smoothing;
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -22,13 +24,36 @@ pub struct Config {
     pub fans: Fans,
 }
 
-/// The curves the fans follow in the advanced fan mode; a fan without one
-/// keeps the EC's own.
-#[derive(Debug, Default, Deserialize)]
+/// The advanced fan mode: the curves the fans follow (a fan without one
+/// keeps the EC's own) and how.
+#[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Fans {
     pub cpu: Option<FanCurve>,
     pub gpu: Option<FanCurve>,
+
+    /// The daemon sets the speed, straight between the curve's dots at the
+    /// smoothed temperature; off, the EC steps through the curve itself.
+    pub adaptive: bool,
+
+    /// While adaptive: the GPU fan runs at least as fast as the CPU's curve
+    /// asks, as the EC's own modes have it. It would sit still otherwise
+    /// while the dGPU sleeps.
+    pub gpu_follows_cpu: bool,
+
+    pub smoothing: Smoothing,
+}
+
+impl Default for Fans {
+    fn default() -> Self {
+        Self {
+            cpu: None,
+            gpu: None,
+            adaptive: true,
+            gpu_follows_cpu: true,
+            smoothing: Smoothing::default(),
+        }
+    }
 }
 
 impl Fans {
@@ -173,6 +198,26 @@ mod tests {
         let cpu = config.fans.get(Fan::Cpu).unwrap();
         assert_eq!(cpu.speeds[6], 100);
         assert!(config.fans.get(Fan::Gpu).is_none());
+        // Adaptive, with the GPU fan helping, unless told otherwise.
+        assert!(config.fans.adaptive && config.fans.gpu_follows_cpu);
+    }
+
+    #[test]
+    fn reads_fan_options() {
+        let config = load(
+            r#"
+            [fans]
+            adaptive = false
+            gpu_follows_cpu = false
+
+            [fans.smoothing]
+            fall_secs = 30
+            "#,
+        )
+        .unwrap();
+        assert!(!config.fans.adaptive && !config.fans.gpu_follows_cpu);
+        assert_eq!(config.fans.smoothing.fall_secs, 30.0);
+        assert_eq!(config.fans.smoothing.rise_secs, 10.0);
     }
 
     #[test]

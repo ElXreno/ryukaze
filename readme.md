@@ -23,11 +23,13 @@ would open Vulkan or GL, which on a hybrid laptop can wake the discrete GPU
 for a settings window. It's plain black on white or white on black, as the
 desktop prefers (the XDG settings portal's `color-scheme`).
 
-In the advanced fan mode the window shows each fan's curve as the step
-graph the EC follows: drag a dot sideways for where a step starts, up or
-down for its speed. It's on the fan when you let go, until the daemon
+In the advanced fan mode the window shows each fan's curve: drag a dot
+sideways for where a step starts, up or down for its speed. It's drawn as
+the fans take it, straight between the dots when adaptive, in steps when
+the EC goes through it. It's on the fan when you let go, until the daemon
 restarts; Copy as Nix puts the curves on the clipboard in the shape of
-`services.ryukaze.settings`, to keep them.
+`services.ryukaze.settings`, to keep them. Adaptive and the GPU fan's help
+are switches under it.
 
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
@@ -54,9 +56,18 @@ super_battery = false
 shift_mode = "eco"
 super_battery = true
 
-# The fan curves for the advanced fan mode: below temps[0] °C the fan runs
-# at speeds[0] %, from temps[i] up at speeds[i + 1]. Temperatures rise,
-# speeds don't fall, 150 % is the most. Auto and silent keep the EC's own.
+# The advanced fan mode, below. These are the defaults.
+[fans]
+adaptive = true
+gpu_follows_cpu = true
+
+[fans.smoothing]
+rise_secs = 10
+fall_secs = 60
+panic_c = 90
+
+# A fan's curve: dots at (20 °C, speeds[0]) and (temps[i], speeds[i + 1]).
+# Temperatures rise, speeds don't fall, 150 % is the most.
 [fans.cpu]
 temps = [55, 62, 69, 76, 83, 90]
 speeds = [0, 30, 35, 40, 50, 60, 100]
@@ -68,14 +79,32 @@ suspend it keeps logind waiting long enough to note the modes, and puts
 them back after resume: through S3 the EC drops advanced, cooler boost and
 super battery and reloads its own curves.
 
-## Fan curves and rpm
+## The advanced fan mode
 
-msi-ec has neither, so they're read and written in the EC's RAM through
-ec_sys, and only on EC firmware whose layout has been checked against the
-firmware itself: a wrong address elsewhere could be anything. So far that's
-17KKIMS1.115 (Alpha 17 C7VG). Only the curve bytes are ever written, each
-curve is read back, and rpm comes from the tachometer (approximate: the
-constant is MControlCenter's).
+Auto and silent run the fans on the EC's own curves, capped by the shift
+mode (eco 43 %, comfort 60 %) and with the two fans running together.
+Advanced lifts the caps, lets each fan go its own way, and runs them on
+your curves (or the EC's, where you set none), in one of two ways:
+
+- **Adaptive** (the default): ryukazed reads the temperatures every two
+  seconds and smooths them, quick on the way up (10 s) and slow on the way
+  down (60 s), so a burst of load doesn't send the fans chasing it; from
+  90 °C a reading goes straight through. The speed comes off the curve
+  straight between its dots, and the EC is held at it, with a step to full
+  speed from 90 °C (CPU) or 85 °C (GPU) left in its table in case ryukazed
+  isn't there to react. When ryukazed stops it hands the curves back to
+  the EC. With `gpu_follows_cpu` (the default) the GPU fan runs at least as
+  fast as the CPU's curve asks; otherwise it would stand still whenever the
+  dGPU sleeps, as the EC reads its temperature as 0.
+- **Stepping**: the curves go into the EC, which steps through them on its
+  own temperatures.
+
+The curves, the speeds and the rpm are all in the EC's RAM, which msi-ec
+doesn't cover: ryukaze uses ec_sys, and only on EC firmware whose layout
+has been checked against the firmware itself, as a wrong address elsewhere
+could be anything. So far that's 17KKIMS1.115 (Alpha 17 C7VG). Only the
+curve bytes are ever written and every table is read back; rpm comes from
+the tachometer (approximate: the constant is MControlCenter's).
 
 ## D-Bus API
 
@@ -91,6 +120,8 @@ constant is MControlCenter's).
 | `SetChargeLimit` | `y` | 10 to 100; charging resumes 10 points below |
 | `SetFanCurve` | `s ay ay` | `cpu` or `gpu`, 6 temperatures, 7 speeds: the curve advanced runs on until the daemon restarts |
 | `ResetFanCurve` | `s` | back to the configured curve, or the EC's own |
+| `SetAdaptiveFans` | `b` | adaptive or stepping in advanced, until the daemon restarts |
+| `SetGpuFanFollowsCpu` | `b` | while adaptive, the GPU fan at least at the CPU curve's speed |
 
 Every setter reads the value back and fails if the EC didn't take it.
 [data/io.github.kontonkara.ryukaze.conf](data/io.github.kontonkara.ryukaze.conf)

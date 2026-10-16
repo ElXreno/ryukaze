@@ -18,6 +18,8 @@ pub trait Ryukaze {
     fn set_charge_limit(&self, percent: u8) -> zbus::Result<()>;
     fn set_fan_curve(&self, fan: &str, temps: &[u8], speeds: &[u8]) -> zbus::Result<()>;
     fn reset_fan_curve(&self, fan: &str) -> zbus::Result<()>;
+    fn set_adaptive_fans(&self, on: bool) -> zbus::Result<()>;
+    fn set_gpu_fan_follows_cpu(&self, on: bool) -> zbus::Result<()>;
 }
 
 pub type Client = RyukazeProxy<'static>;

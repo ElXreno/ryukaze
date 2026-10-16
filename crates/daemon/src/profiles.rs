@@ -51,6 +51,16 @@ impl Profiles {
         self.power_changed().await;
     }
 
+    /// The adaptive fans' tick.
+    pub async fn adapt(&self) {
+        report(self.service().await.get_mut().await.adapt());
+    }
+
+    /// Hands the fans back to the EC's own stepping before the daemon exits.
+    pub async fn stop(&self) {
+        self.service().await.get_mut().await.stop_adapting();
+    }
+
     pub async fn sleeping(&mut self) {
         self.before_sleep = Some(self.service().await.get().await.snapshot());
     }

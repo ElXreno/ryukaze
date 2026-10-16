@@ -1,4 +1,4 @@
-use std::{fmt::Display, io, path::Path};
+use std::{fmt::Display, io, path::Path, time::Instant};
 
 use ryukaze_core::{
     Status,
@@ -6,10 +6,13 @@ use ryukaze_core::{
     msi_ec::MsiEc,
     raw_ec::RawEc,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zbus::fdo;
 
-use crate::config;
+use crate::{
+    adaptive::{self, Smoothed, Smoothing},
+    config,
+};
 
 pub struct Service {
     ec: MsiEc,
@@ -25,6 +28,36 @@ pub struct Fans {
     /// The curves advanced runs on: the configured ones, the EC's own where
     /// none is, until a client sets others.
     active: [Curve; 2],
+    adaptive: Adaptive,
+}
+
+/// The adaptive side of advanced, see adaptive.rs.
+#[derive(Debug)]
+struct Adaptive {
+    on: bool,
+    gpu_follows_cpu: bool,
+    smoothing: Smoothing,
+    temps: [Smoothed; 2],
+    /// The speeds the EC is held at, once worked out.
+    targets: [Option<u8>; 2],
+    last_tick: Option<Instant>,
+    ticks: u32,
+}
+
+/// Targets this close to the held speed aren't worth an EC write.
+const HYSTERESIS: u8 = 2;
+
+/// Every this many ticks the tables are checked even if nothing changed:
+/// something else may have written them.
+const VERIFY_EVERY: u32 = 15;
+
+impl Adaptive {
+    /// Starts over: smoothing from the next reading, targets worked out anew.
+    fn rest(&mut self) {
+        self.temps = Default::default();
+        self.targets = [None; 2];
+        self.last_tick = None;
+    }
 }
 
 impl Fans {
@@ -41,11 +74,21 @@ impl Fans {
             warn!("fan curves and rpm: EC RAM unreadable (ec_sys loaded? root?): {err}");
             return None;
         }
+        let adaptive = Adaptive {
+            on: configured.adaptive,
+            gpu_follows_cpu: configured.gpu_follows_cpu,
+            smoothing: configured.smoothing,
+            temps: Default::default(),
+            targets: [None; 2],
+            last_tick: None,
+            ticks: 0,
+        };
         let mut fans = Self {
             raw,
             layout,
             configured,
             active: [layout.factory(Fan::Cpu), layout.factory(Fan::Gpu)],
+            adaptive,
         };
         for fan in Fan::ALL {
             fans.reset(fan);
@@ -58,6 +101,19 @@ impl Fans {
             .configured
             .get(fan)
             .unwrap_or_else(|| self.layout.factory(fan));
+        self.adaptive.targets[fan as usize] = None;
+    }
+
+    /// What `fan`'s table should hold.
+    fn want(&self, fan: Fan, advanced: bool) -> Curve {
+        if !advanced {
+            return self.layout.factory(fan);
+        }
+        match (self.adaptive.on, self.adaptive.targets[fan as usize]) {
+            (true, Some(speed)) => adaptive::hold(fan, speed),
+            // Until the first tick works the speed out, the EC steps.
+            _ => self.active[fan as usize],
+        }
     }
 }
 
@@ -116,19 +172,90 @@ impl Service {
         }
     }
 
-    /// The active curves in advanced, the EC's own otherwise.
+    /// One step of the adaptive mode, every couple of seconds: in advanced,
+    /// the speeds the curves ask for at the smoothed temperatures.
+    pub fn adapt(&mut self) -> fdo::Result<()> {
+        let Some(fans) = &mut self.fans else {
+            return Ok(());
+        };
+        if !fans.adaptive.on {
+            return Ok(());
+        }
+        if self.ec.fan_mode().map_err(|e| error("fan_mode", e))? != "advanced" {
+            fans.adaptive.rest();
+            return Ok(());
+        }
+        let adaptive = &mut fans.adaptive;
+        let now = Instant::now();
+        let dt = adaptive
+            .last_tick
+            .replace(now)
+            .map_or(0.0, |last| (now - last).as_secs_f32());
+
+        let readings = [self.ec.cpu_temp(), self.ec.gpu_temp()];
+        let mut wanted: [Option<f32>; 2] = [None; 2];
+        for fan in Fan::ALL {
+            let i = fan as usize;
+            if let Ok(temp) = &readings[i] {
+                let seen = adaptive.temps[i].update(f32::from(*temp), dt, &adaptive.smoothing);
+                wanted[i] = Some(adaptive::speed_at(&fans.active[i], seen));
+            }
+        }
+        if adaptive.gpu_follows_cpu
+            && let [Some(cpu), gpu] = &mut wanted
+        {
+            *gpu = Some(gpu.map_or(*cpu, |gpu| gpu.max(*cpu)));
+        }
+
+        let mut changed = false;
+        for (target, wanted) in adaptive.targets.iter_mut().zip(wanted) {
+            let Some(wanted) = wanted else {
+                continue;
+            };
+            let speed = wanted.round().clamp(0.0, 100.0) as u8;
+            let close = target.is_some_and(|held| {
+                held.abs_diff(speed) < HYSTERESIS && (held == 0) == (speed == 0)
+            });
+            if !close {
+                *target = Some(speed);
+                changed = true;
+            }
+        }
+        adaptive.ticks = adaptive.ticks.wrapping_add(1);
+        if changed || adaptive.ticks.is_multiple_of(VERIFY_EVERY) {
+            self.put_curves(true)?;
+        }
+        Ok(())
+    }
+
+    /// As the daemon stops: from the held speeds back to the curves as
+    /// the EC steps them, so the fans go on following the temperature.
+    pub fn stop_adapting(&mut self) {
+        if let Some(fans) = &mut self.fans {
+            fans.adaptive.on = false;
+        }
+        if let Err(err) = self.sync_curves() {
+            warn!("{err}");
+        }
+    }
+
+    /// What goes with the mode: in advanced the active curves, held flat
+    /// by the adaptive mode or as they are; the EC's own otherwise.
     fn put_curves(&self, advanced: bool) -> fdo::Result<()> {
         let Some(fans) = &self.fans else {
             return Ok(());
         };
         for fan in Fan::ALL {
             let factory = fans.layout.factory(fan);
-            let want = if advanced {
-                fans.active[fan as usize]
-            } else {
-                factory
+            let want = fans.want(fan, advanced);
+            let held = advanced
+                .then(|| fans.adaptive.targets[fan as usize])
+                .flatten();
+            let which = match held {
+                Some(speed) if fans.adaptive.on => format!("held at {speed}%"),
+                _ if want == factory => "factory".into(),
+                _ => "custom".into(),
             };
-            let which = if want == factory { "factory" } else { "custom" };
             let name = format!("{fan} fan curve");
             let read = || {
                 fans.layout
@@ -144,7 +271,12 @@ impl Service {
             if read()? != want {
                 return Err(fdo::Error::Failed(format!("{name}: the EC didn't take it")));
             }
-            info!("{name}: {which}");
+            // Held speeds change all the time; only the rest is worth the journal.
+            if held.is_some() && fans.adaptive.on {
+                debug!("{name}: {which}");
+            } else {
+                info!("{name}: {which}");
+            }
         }
         Ok(())
     }
@@ -183,6 +315,8 @@ impl Service {
             gpu_rpm: rpm(Fan::Gpu),
             cpu_curve: curve(Fan::Cpu),
             gpu_curve: curve(Fan::Gpu),
+            adaptive_fans: self.fans.as_ref().map(|fans| fans.adaptive.on),
+            gpu_fan_follows_cpu: self.fans.as_ref().map(|fans| fans.adaptive.gpu_follows_cpu),
             charge_limit: field("charge_limit", ec.charge_limit()),
         }
     }
@@ -229,6 +363,8 @@ impl Service {
         let curve = Curve::new(&temps, &speeds).map_err(fdo::Error::InvalidArgs)?;
         let fans = self.fans.as_mut().ok_or_else(no_curves)?;
         fans.active[fan as usize] = curve;
+        fans.adaptive.targets[fan as usize] = None;
+        self.adapt()?;
         self.sync_curves()
     }
 
@@ -236,7 +372,35 @@ impl Service {
     pub fn reset_fan_curve(&mut self, fan: &str) -> fdo::Result<()> {
         let fan = parse_fan(fan)?;
         self.fans.as_mut().ok_or_else(no_curves)?.reset(fan);
+        self.adapt()?;
         self.sync_curves()
+    }
+
+    /// Whether advanced is adaptive, until the daemon restarts; off, the EC
+    /// steps through the curves itself.
+    pub fn set_adaptive_fans(&mut self, on: bool) -> fdo::Result<()> {
+        let fans = self.fans.as_mut().ok_or_else(no_curves)?;
+        if fans.adaptive.on == on {
+            return Ok(());
+        }
+        fans.adaptive.on = on;
+        fans.adaptive.rest();
+        info!("adaptive fans: {}", if on { "on" } else { "off" });
+        self.adapt()?;
+        self.sync_curves()
+    }
+
+    /// While adaptive: whether the GPU fan runs at least as fast as the
+    /// CPU's curve asks, until the daemon restarts.
+    pub fn set_gpu_fan_follows_cpu(&mut self, on: bool) -> fdo::Result<()> {
+        let fans = self.fans.as_mut().ok_or_else(no_curves)?;
+        if fans.adaptive.gpu_follows_cpu == on {
+            return Ok(());
+        }
+        fans.adaptive.gpu_follows_cpu = on;
+        fans.adaptive.targets[Fan::Gpu as usize] = None;
+        info!("gpu fan follows the cpu: {}", if on { "on" } else { "off" });
+        self.adapt()
     }
 
     pub fn set_super_battery(&mut self, on: bool) -> fdo::Result<()> {
@@ -355,11 +519,14 @@ mod tests {
     fn alpha17(firmware: &str) -> tempfile::TempDir {
         let sysfs = tempfile::tempdir().unwrap();
         let device = sysfs.path().join("devices/platform/msi-ec");
-        fs::create_dir_all(&device).unwrap();
+        fs::create_dir_all(device.join("cpu")).unwrap();
+        fs::create_dir_all(device.join("gpu")).unwrap();
         for (attr, text) in [
             ("fw_version", firmware),
             ("fan_mode", "auto\n"),
             ("available_fan_modes", "auto\nsilent\nadvanced\n"),
+            ("cpu/realtime_temperature", "62\n"),
+            ("gpu/realtime_temperature", "0\n"),
         ] {
             fs::write(device.join(attr), text).unwrap();
         }
@@ -374,12 +541,18 @@ mod tests {
         sysfs
     }
 
+    /// The EC steps through the curves: what most of these tests are about.
     fn service(sysfs: &Path) -> Service {
+        service_with(sysfs, false)
+    }
+
+    fn service_with(sysfs: &Path, adaptive: bool) -> Service {
         let curves = config::Fans {
             cpu: Some(FanCurve(
                 Curve::new(&[55, 62, 69, 76, 83, 90], &QUIET).unwrap(),
             )),
-            gpu: None,
+            adaptive,
+            ..config::Fans::default()
         };
         let ec = MsiEc::new(sysfs);
         let firmware = ec.firmware().ok();
@@ -501,6 +674,82 @@ mod tests {
                 .set_fan_curve("cpu", vec![50, 55, 60, 65, 70, 75], falling)
                 .is_err()
         );
+        assert_eq!(ram(sysfs.path()), before);
+    }
+
+    fn table(sysfs: &Path, fan: Fan) -> Curve {
+        let ram = ram(sysfs);
+        let (temps, speeds) = match fan {
+            Fan::Cpu => (0x6a, 0x72),
+            Fan::Gpu => (0x82, 0x8a),
+        };
+        Curve::new(&ram[temps..temps + 6], &ram[speeds..speeds + 7]).unwrap()
+    }
+
+    fn set_temp(sysfs: &Path, fan: Fan, temp: u8) {
+        let attr = format!("devices/platform/msi-ec/{fan}/realtime_temperature");
+        fs::write(sysfs.join(attr), format!("{temp}\n")).unwrap();
+    }
+
+    #[test]
+    fn adaptive_holds_what_the_curve_asks() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service_with(sysfs.path(), true);
+        service.set_fan_mode("advanced").unwrap();
+        service.adapt().unwrap();
+        // 62 °C is a dot of the configured curve: 35%.
+        assert_eq!(table(sysfs.path(), Fan::Cpu), adaptive::hold(Fan::Cpu, 35));
+        // The dGPU sleeps (0 °C, 0%), but its fan helps the CPU's.
+        assert_eq!(table(sysfs.path(), Fan::Gpu), adaptive::hold(Fan::Gpu, 35));
+        assert_eq!(service.status().adaptive_fans, Some(true));
+    }
+
+    #[test]
+    fn the_gpu_fan_can_rest() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service_with(sysfs.path(), true);
+        service.set_fan_mode("advanced").unwrap();
+        service.set_gpu_fan_follows_cpu(false).unwrap();
+        assert_eq!(table(sysfs.path(), Fan::Gpu), adaptive::hold(Fan::Gpu, 0));
+    }
+
+    #[test]
+    fn small_changes_wait_and_big_ones_dont() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service_with(sysfs.path(), true);
+        service.set_fan_mode("advanced").unwrap();
+        service.adapt().unwrap();
+        // 63 °C asks for 36%: within the hysteresis of 35.
+        set_temp(sysfs.path(), Fan::Cpu, 63);
+        service.adapt().unwrap();
+        assert_eq!(table(sysfs.path(), Fan::Cpu), adaptive::hold(Fan::Cpu, 35));
+        // A jump straight to 95 °C is past panic, so no smoothing: 100%.
+        set_temp(sysfs.path(), Fan::Cpu, 95);
+        service.adapt().unwrap();
+        assert_eq!(table(sysfs.path(), Fan::Cpu), adaptive::hold(Fan::Cpu, 100));
+    }
+
+    #[test]
+    fn off_or_stopped_the_ec_steps_again() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service_with(sysfs.path(), true);
+        service.set_fan_mode("advanced").unwrap();
+        service.adapt().unwrap();
+        service.set_adaptive_fans(false).unwrap();
+        assert_eq!(ram(sysfs.path())[0x72..0x79], QUIET);
+
+        service.set_adaptive_fans(true).unwrap();
+        assert_eq!(table(sysfs.path(), Fan::Cpu), adaptive::hold(Fan::Cpu, 35));
+        service.stop_adapting();
+        assert_eq!(ram(sysfs.path())[0x72..0x79], QUIET);
+    }
+
+    #[test]
+    fn adaptive_waits_for_advanced() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service_with(sysfs.path(), true);
+        let before = ram(sysfs.path());
+        service.adapt().unwrap();
         assert_eq!(ram(sysfs.path()), before);
     }
 }

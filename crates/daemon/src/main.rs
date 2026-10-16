@@ -2,6 +2,7 @@
 //! io.github.kontonkara.ryukaze on the system bus, or on the session bus
 //! with --session for development, and applies /etc/ryukaze/config.toml.
 
+mod adaptive;
 mod config;
 mod profiles;
 mod service;
@@ -15,7 +16,11 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use ryukaze_core::{BUS_NAME, OBJECT_PATH, msi_ec::MsiEc};
-use tokio::sync::mpsc;
+use tokio::{
+    signal::unix::{SignalKind, signal},
+    sync::mpsc,
+    time::MissedTickBehavior,
+};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -24,6 +29,9 @@ use crate::{
     profiles::Profiles,
     service::{Fans, Service},
 };
+
+/// How often the adaptive fans look at the temperatures.
+const ADAPT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 const USAGE: &str = "usage: ryukazed [--session] [--sysfs <dir>] [--config <file>]";
 
@@ -101,7 +109,11 @@ async fn main() -> Result<()> {
     let mut profiles = Profiles::new(config, args.sysfs, connection);
     profiles.apply_all().await;
 
-    // zbus answers calls on its own tasks; SIGTERM ends the process.
+    // zbus answers calls on its own tasks.
+    let mut tick = tokio::time::interval(ADAPT_EVERY);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
     loop {
         tokio::select! {
             Some(event) = kernel.recv() => match event {
@@ -118,8 +130,12 @@ async fn main() -> Result<()> {
                 }
                 sleep::Event::Woke => profiles.woke().await,
             },
-            else => break,
+            _ = tick.tick() => profiles.adapt().await,
+            _ = terminate.recv() => break,
+            _ = interrupt.recv() => break,
         }
     }
-    std::future::pending().await
+    profiles.stop().await;
+    info!("stopped");
+    Ok(())
 }

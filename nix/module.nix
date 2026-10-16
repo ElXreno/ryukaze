@@ -95,8 +95,8 @@ in
             A profile is applied when the laptop goes on AC or on battery, and
             the charge limit at start. The EC keeps the charge limit across
             reboots, so unsetting it doesn't lift it: set 100. Fan curves are
-            for the advanced fan mode, on EC firmware whose layout ryukaze
-            knows; they load ec_sys with writes on.
+            for the advanced fan mode (see the README), on EC firmware whose
+            layout ryukaze knows.
           '';
         };
       };
@@ -104,13 +104,13 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # EC RAM for the tachometers and, with curves set, the curves: msi-ec
-    # has neither.
+    # EC RAM for what msi-ec doesn't do: the tachometers, and in the
+    # advanced fan mode the curves and the adaptive speeds.
     boot = {
       kernelModules = [
         "ec_sys"
       ];
-      extraModprobeConfig = lib.mkIf (cfg.settings.fans or { } != { }) ''
+      extraModprobeConfig = ''
         options ec_sys write_support=1
       '';
     };

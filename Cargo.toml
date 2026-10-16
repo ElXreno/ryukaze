@@ -26,7 +26,7 @@ rustix = { version = "1.1", features = ["net"] }
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 toml = "1.1"
-tokio = { version = "1.53", features = ["macros", "rt", "sync"] }
+tokio = { version = "1.53", features = ["macros", "rt", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }

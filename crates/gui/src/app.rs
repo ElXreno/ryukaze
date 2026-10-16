@@ -71,6 +71,8 @@ pub enum Message {
     CurveReleased,
     CurveReset,
     CurvesCopied,
+    AdaptiveFans(bool),
+    GpuFollowsCpu(bool),
 }
 
 impl App {
@@ -190,6 +192,12 @@ impl App {
                 self.copied = false;
                 let fan = self.curve_fan.to_string();
                 self.call(move |client| async move { client.reset_fan_curve(&fan).await })
+            }
+            Message::AdaptiveFans(on) => {
+                self.call(move |client| async move { client.set_adaptive_fans(on).await })
+            }
+            Message::GpuFollowsCpu(on) => {
+                self.call(move |client| async move { client.set_gpu_fan_follows_cpu(on).await })
             }
             Message::CurvesCopied => {
                 let Some(Ok(status)) = &self.status else {
@@ -359,9 +367,14 @@ impl App {
             .into()
         }))
         .spacing(6);
-        let graph = canvas(crate::curve::Editor { curve, now })
-            .width(Length::Fill)
-            .height(200);
+        let adaptive = status.adaptive_fans.unwrap_or(false);
+        let graph = canvas(crate::curve::Editor {
+            curve,
+            now,
+            smooth: adaptive,
+        })
+        .width(Length::Fill)
+        .height(200);
         let hint = if self.copied {
             "Copied, for services.ryukaze.settings"
         } else {
@@ -380,7 +393,12 @@ impl App {
         .spacing(6)
         .align_y(Alignment::Center);
 
-        Some(column![tabs, graph, actions].spacing(10).into())
+        let mut editor = column![tabs, graph, actions].spacing(10);
+        editor = editor.push(switch("Adaptive", adaptive, Message::AdaptiveFans));
+        if adaptive && let Some(on) = status.gpu_fan_follows_cpu {
+            editor = editor.push(switch("GPU fan helps the CPU", on, Message::GpuFollowsCpu));
+        }
+        Some(editor.into())
     }
 
     fn refresh(&self) -> Task<Message> {
@@ -646,6 +664,8 @@ mod tests {
             fan_mode: Some("advanced".into()),
             cpu_curve: curve(&[50, 57, 64, 71, 78, 85], &[0, 40, 45, 50, 57, 65, 80]),
             gpu_curve: curve(&[55, 60, 65, 70, 75, 80], &[0, 48, 55, 62, 68, 77, 85]),
+            adaptive_fans: Some(true),
+            gpu_fan_follows_cpu: Some(true),
             ..alpha17()
         }
     }
@@ -660,6 +680,23 @@ mod tests {
         let auto = app(alpha17());
         let mut ui = simulator(auto.view(window::Id::unique()));
         assert!(ui.find("Copy as Nix").is_err());
+    }
+    #[test]
+    fn adaptive_and_its_gpu_switch() {
+        let messages = clicks(&app(advanced()), &["GPU fan helps the CPU", "Adaptive"]);
+        assert!(matches!(
+            &messages[..],
+            [Message::GpuFollowsCpu(false), Message::AdaptiveFans(false)]
+        ));
+
+        // Stepping: no GPU switch, the EC goes its own way there.
+        let stepping = app(Status {
+            adaptive_fans: Some(false),
+            ..advanced()
+        });
+        let mut ui = simulator(stepping.view(window::Id::unique()));
+        assert!(ui.find("Adaptive").is_ok());
+        assert!(ui.find("GPU fan helps the CPU").is_err());
     }
 
     #[test]

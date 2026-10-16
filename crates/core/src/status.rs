@@ -70,6 +70,15 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub gpu_curve: Option<(Vec<u8>, Vec<u8>)>,
 
+    /// In advanced, ryukazed sets the speeds from the smoothed temperatures
+    /// along the curves, rather than the EC stepping through them.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub adaptive_fans: Option<bool>,
+
+    /// While adaptive, the GPU fan runs at least at the CPU curve's speed.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub gpu_fan_follows_cpu: Option<bool>,
+
     /// Battery charge end threshold in percent.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub charge_limit: Option<u8>,
