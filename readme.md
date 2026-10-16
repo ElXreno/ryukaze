@@ -25,6 +25,10 @@ settings window. It's plain black on white or white on black, as the
 desktop prefers (the XDG settings portal's `color-scheme`), or in your
 colours (below).
 
+Under each temperature, a graph has it and the fan's duty over the last
+ten minutes, read off the same polls, and every ten seconds while only the
+tray is up; the pointer over it reads out a moment.
+
 In the advanced fan mode the window shows each fan's curve: drag a dot
 sideways for where a step starts, up or down for its speed. It's drawn as
 the fans take it, straight between the dots when adaptive, in steps when

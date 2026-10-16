@@ -4,6 +4,7 @@ mod app;
 mod appearance;
 mod client;
 mod curve;
+mod history;
 mod icon;
 mod instance;
 mod nix;

@@ -1,4 +1,7 @@
-use std::{future::Future, time::Duration};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use iced::{
     Alignment, Element, Length, Subscription, Task, Theme, mouse,
@@ -16,6 +19,7 @@ use ryukaze_core::{
 use crate::{
     appearance,
     client::{self, Client},
+    history::{self, History},
     icon, instance, theme, tray,
 };
 
@@ -31,6 +35,8 @@ pub struct App {
     client: Option<Client>,
     /// `None` until the first answer; `Err` while the daemon can't be reached.
     status: Option<Result<Status, String>>,
+    /// The sensors at each answer, for the graphs.
+    history: History,
     /// The charge limit while its slider is held, applied on release.
     charge_limit: Option<u8>,
     /// Where cooler boost comes on by itself (CPU, GPU) while a slider is
@@ -92,6 +98,7 @@ impl App {
             session,
             client: None,
             status: None,
+            history: History::default(),
             charge_limit: None,
             error: None,
             boost_marks: None,
@@ -126,6 +133,9 @@ impl App {
             }
             Message::Tick => self.refresh(),
             Message::Status(status) => {
+                if let Ok(status) = &*status {
+                    self.history.push(Instant::now(), status);
+                }
                 self.status = Some(*status);
                 self.show_in_tray()
             }
@@ -334,14 +344,31 @@ impl App {
         let mut sections = column![].spacing(12);
 
         let gauges: Vec<Element<'a, Message>> = [
-            gauge("CPU", status.cpu_temp, status.cpu_fan, status.cpu_rpm),
-            gauge("GPU", status.gpu_temp, status.gpu_fan, status.gpu_rpm),
+            (Fan::Cpu, status.cpu_temp, status.cpu_fan, status.cpu_rpm),
+            (Fan::Gpu, status.gpu_temp, status.gpu_fan, status.gpu_rpm),
         ]
         .into_iter()
-        .flatten()
+        .filter_map(|(fan, temp, duty, rpm)| {
+            let graph = canvas(history::Graph {
+                history: &self.history,
+                fan,
+            })
+            .width(Length::Fill)
+            .height(64);
+            gauge(fan, temp, duty, rpm, graph)
+        })
         .collect();
         if !gauges.is_empty() {
-            sections = sections.push(section("Sensors", row(gauges).spacing(24)));
+            sections = sections.push(section(
+                "Sensors",
+                column![
+                    row(gauges).spacing(24),
+                    text("The temperature, and the fan fainter, both from 0 to 100")
+                        .size(13)
+                        .style(theme::muted),
+                ]
+                .spacing(10),
+            ));
         }
 
         if let (Some(current), Some(modes)) = (&status.shift_mode, &status.shift_modes) {
@@ -667,13 +694,14 @@ fn switch<'a>(label: &'a str, on: bool, toggle: fn(bool) -> Message) -> Element<
         .into()
 }
 
-/// A temperature and the fan under it. The EC reads 0 °C off a sleeping
-/// GPU, which says it's asleep rather than cold.
+/// A temperature, the fan under it, and how both went. The EC reads 0 °C
+/// off a sleeping GPU, which says it's asleep rather than cold.
 fn gauge<'a>(
-    name: &'a str,
+    sensor: Fan,
     temp: Option<u8>,
     fan: Option<u8>,
     rpm: Option<u16>,
+    graph: impl Into<Element<'a, Message>>,
 ) -> Option<Element<'a, Message>> {
     if temp.is_none() && fan.is_none() {
         return None;
@@ -683,6 +711,7 @@ fn gauge<'a>(
         Some(temp) => text(format!("{temp}°C")).size(26),
         None => text("–").size(26).style(theme::muted),
     };
+    let name = sensor.to_string().to_uppercase();
     let mut gauge = column![text(name).size(13).style(theme::muted), reading].spacing(2);
     if let Some(fan) = fan {
         gauge = gauge.push(
@@ -701,6 +730,7 @@ fn gauge<'a>(
             .padding(iced::Padding::ZERO.top(6)),
         );
     }
+    let gauge = gauge.push(container(graph).padding(iced::Padding::ZERO.top(10)));
     Some(gauge.width(Length::Fill).into())
 }
 
@@ -793,6 +823,7 @@ mod tests {
             session: true,
             client: None,
             status: Some(Ok(status)),
+            history: History::default(),
             charge_limit: None,
             error: None,
             boost_marks: None,
