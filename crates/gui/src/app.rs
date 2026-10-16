@@ -47,7 +47,7 @@ pub struct App {
     curve_fan: Fan,
     /// The curve while a dot is dragged, set on release.
     curve_draft: Option<Curve>,
-    /// The curves went to the clipboard since the last change.
+    /// The settings went to the clipboard since the last change.
     copied: bool,
 }
 
@@ -73,7 +73,7 @@ pub enum Message {
     CurveDragged(Curve),
     CurveReleased,
     CurveReset,
-    CurvesCopied,
+    CopyAsNix,
     AdaptiveFans(bool),
     GpuFollowsCpu(bool),
     AutoCoolerBoost(bool),
@@ -153,6 +153,8 @@ impl App {
             },
             Message::Applied(result) => {
                 self.error = result.err();
+                // What was copied no longer matches.
+                self.copied = false;
                 self.refresh()
             }
             Message::Dark(dark) => {
@@ -252,12 +254,12 @@ impl App {
             Message::GpuFollowsCpu(on) => {
                 self.call(move |client| async move { client.set_gpu_fan_follows_cpu(on).await })
             }
-            Message::CurvesCopied => {
+            Message::CopyAsNix => {
                 let Some(Ok(status)) = &self.status else {
                     return Task::none();
                 };
                 self.copied = true;
-                iced::clipboard::write(crate::curve::as_nix(&curves(status)))
+                iced::clipboard::write(crate::nix::settings(status, &curves(status)))
             }
         }
     }
@@ -403,6 +405,21 @@ impl App {
             sections = sections.push(section("Graphics", gpu_mode(now, next)));
         }
 
+        let hint = if self.copied {
+            "Copied, for services.ryukaze.settings"
+        } else {
+            "Changes here last until ryukazed restarts"
+        };
+        sections = sections.push(
+            row![
+                text(hint).size(12).style(theme::muted).width(Length::Fill),
+                small_button("Copy as Nix", Message::CopyAsNix),
+            ]
+            .spacing(6)
+            .padding([0, 4])
+            .align_y(Alignment::Center),
+        );
+
         sections.into()
     }
 
@@ -428,8 +445,8 @@ impl App {
         }
     }
 
-    /// Advanced's curves, one fan at a time: a step graph to drag, a way
-    /// back to the config's (reset) and into it (copy as Nix).
+    /// Advanced's curves, one fan at a time: a step graph to drag, and a
+    /// way back to the config's.
     fn curve_editor<'a>(&'a self, status: &'a Status) -> Option<Element<'a, Message>> {
         let (_, reported) = curves(status)
             .into_iter()
@@ -463,20 +480,10 @@ impl App {
         })
         .width(Length::Fill)
         .height(200);
-        let hint = if self.copied {
-            "Copied, for services.ryukaze.settings"
-        } else {
-            "Drag a dot: sideways for where a step starts, up or down for its speed"
-        };
-        let small = |label| {
-            button(text(label).size(13))
-                .padding([4, 12])
-                .style(theme::segment(false))
-        };
+        let hint = "Drag a dot: sideways for where a step starts, up or down for its speed";
         let actions = row![
             text(hint).size(12).style(theme::muted).width(Length::Fill),
-            small("Reset").on_press(Message::CurveReset),
-            small("Copy as Nix").on_press(Message::CurvesCopied),
+            small_button("Reset", Message::CurveReset),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
@@ -630,6 +637,14 @@ fn gpu_mode<'a>(now: &str, next: &str) -> Element<'a, Message> {
     ]
     .spacing(8)
     .into()
+}
+
+fn small_button<'a>(label: &'a str, press: Message) -> Element<'a, Message> {
+    button(text(label).size(13))
+        .on_press(press)
+        .padding([4, 12])
+        .style(theme::segment(false))
+        .into()
 }
 
 /// One of a row of choices; the chosen one is filled and does nothing.
@@ -1006,12 +1021,13 @@ mod tests {
         let editing = app(advanced());
         let mut ui = simulator(editing.view(window::Id::unique()));
         assert!(ui.find("CPU").is_ok());
-        assert!(ui.find("Copy as Nix").is_ok());
+        assert!(ui.find("Reset").is_ok());
 
         let auto = app(alpha17());
         let mut ui = simulator(auto.view(window::Id::unique()));
-        assert!(ui.find("Copy as Nix").is_err());
+        assert!(ui.find("Reset").is_err());
     }
+
     #[test]
     fn adaptive_and_its_gpu_switch() {
         let messages = clicks(&app(advanced()), &["GPU fan helps the CPU", "Adaptive"]);
@@ -1031,15 +1047,26 @@ mod tests {
     }
 
     #[test]
+    fn copies_the_settings_as_nix() {
+        let mut app = app(alpha17());
+        let messages = clicks(&app, &["Copy as Nix"]);
+        assert!(matches!(&messages[..], [Message::CopyAsNix]));
+
+        let shown =
+            |app: &App, text: &str| simulator(app.view(window::Id::unique())).find(text).is_ok();
+        let _ = app.update(Message::CopyAsNix);
+        assert!(shown(&app, "Copied, for services.ryukaze.settings"));
+        // A change after the copy isn't in it.
+        let _ = app.update(Message::Applied(Ok(())));
+        assert!(shown(&app, "Changes here last until ryukazed restarts"));
+    }
+
+    #[test]
     fn switches_fans_and_resets() {
-        let messages = clicks(&app(advanced()), &["GPU", "Reset", "Copy as Nix"]);
+        let messages = clicks(&app(advanced()), &["GPU", "Reset"]);
         assert!(matches!(
             &messages[..],
-            [
-                Message::CurveFan(Fan::Gpu),
-                Message::CurveReset,
-                Message::CurvesCopied
-            ]
+            [Message::CurveFan(Fan::Gpu), Message::CurveReset]
         ));
     }
 

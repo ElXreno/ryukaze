@@ -6,6 +6,7 @@ mod client;
 mod curve;
 mod icon;
 mod instance;
+mod nix;
 mod theme;
 mod tray;
 

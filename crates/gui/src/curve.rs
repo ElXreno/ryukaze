@@ -7,7 +7,7 @@ use iced::{
     Point, Rectangle, Renderer, Theme, mouse,
     widget::canvas::{self, Frame, Geometry, Path, Stroke, Text},
 };
-use ryukaze_core::fans::{Curve, Fan};
+use ryukaze_core::fans::Curve;
 
 use crate::{app::Message, theme};
 
@@ -78,26 +78,6 @@ pub fn drag(curve: Curve, handle: usize, temp: f32, speed: f32) -> Curve {
 /// `value` between `low` and `high`, `high` winning should they cross.
 fn within(value: u8, low: u8, high: u8) -> u8 {
     value.max(low).min(high)
-}
-
-/// The curves as they'd go into `services.ryukaze.settings`.
-pub fn as_nix(curves: &[(Fan, Curve)]) -> String {
-    let list = |values: &[u8]| {
-        values
-            .iter()
-            .map(u8::to_string)
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    let mut nix = String::from("fans = {\n");
-    for (fan, curve) in curves {
-        nix += &format!(
-            "  {fan} = {{\n    temps = [ {} ];\n    speeds = [ {} ];\n  }};\n",
-            list(&curve.temps),
-            list(&curve.speeds)
-        );
-    }
-    nix + "};\n"
 }
 
 impl Editor {
@@ -362,14 +342,5 @@ mod tests {
             curve = drag(curve, handle, temp, speed);
             assert!(Curve::new(&curve.temps, &curve.speeds).is_ok(), "{curve:?}");
         }
-    }
-
-    #[test]
-    fn writes_nix() {
-        let nix = as_nix(&[(Fan::Cpu, factory())]);
-        assert_eq!(
-            nix,
-            "fans = {\n  cpu = {\n    temps = [ 50 57 64 71 78 85 ];\n    speeds = [ 0 40 45 50 57 65 80 ];\n  };\n};\n"
-        );
     }
 }

@@ -28,13 +28,15 @@ colours (below).
 In the advanced fan mode the window shows each fan's curve: drag a dot
 sideways for where a step starts, up or down for its speed. It's drawn as
 the fans take it, straight between the dots when adaptive, in steps when
-the EC goes through it. It's on the fan when you let go, until the daemon
-restarts; Copy as Nix puts the curves on the clipboard in the shape of
-`services.ryukaze.settings`, to keep them. Adaptive and the GPU fan's help
-are switches under it, and "Cooler boost when hot" sits under the cooler
-boost switch, with its marks while it's on. Devices has which side of
-Win the Fn key is on, USB Power Share, and the camera where its switch
-does something; Graphics has the GPU MUX.
+the EC goes through it, and it's on the fan when you let go. Adaptive and
+the GPU fan's help are switches under it, and "Cooler boost when hot"
+sits under the cooler boost switch, with its marks while it's on. Devices
+has which side of Win the Fn key is on, USB Power Share, and the camera
+where its switch does something; Graphics has the GPU MUX.
+
+What the window changes lasts until the daemon restarts. Copy as Nix, at
+the bottom, puts the settings on the clipboard in the shape of
+`services.ryukaze.settings`, to keep them.
 
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
