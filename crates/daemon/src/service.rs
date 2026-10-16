@@ -6,7 +6,7 @@ use std::{
 };
 
 use ryukaze_core::{
-    Status,
+    COOLER_BOOST_MARKS, Status,
     fans::{self, Curve, Fan, Layout},
     gpu_mux::{self, GpuMode, GpuMux},
     msi_ec::MsiEc,
@@ -354,6 +354,8 @@ impl Service {
             warn!("battery: {err}");
             None
         });
+        // Where there's a cooler boost to switch.
+        let boost = ec.cooler_boost().ok().map(|_| self.boost.config);
         let mux = |read: fn(&GpuMux, &RawEc) -> io::Result<GpuMode>| {
             let (raw, mux) = self.gpu_mux.as_ref()?;
             read(mux, raw).ok().map(|mode| mode.to_string())
@@ -381,7 +383,9 @@ impl Service {
             gpu_curve: curve(Fan::Gpu),
             adaptive_fans: self.fans.as_ref().map(|fans| fans.adaptive.on),
             gpu_fan_follows_cpu: self.fans.as_ref().map(|fans| fans.adaptive.gpu_follows_cpu),
-            auto_cooler_boost: ec.cooler_boost().ok().map(|_| self.boost.config.auto),
+            auto_cooler_boost: boost.map(|boost| boost.auto),
+            cooler_boost_cpu_c: boost.map(|boost| boost.cpu_c),
+            cooler_boost_gpu_c: boost.map(|boost| boost.gpu_c),
             webcam: field("webcam", ec.webcam()),
             fn_key: field("fn_key", ec.fn_key()),
             usb_share: self
@@ -565,6 +569,29 @@ impl Service {
             Some(want) if !on => self.set_cooler_boost(want),
             _ => Ok(()),
         }
+    }
+
+    /// The CPU and GPU temperatures, °C, cooler boost comes on at by
+    /// itself, until the daemon restarts.
+    pub fn set_cooler_boost_marks(&mut self, cpu_c: u8, gpu_c: u8) -> fdo::Result<()> {
+        for (name, mark) in [("CPU", cpu_c), ("GPU", gpu_c)] {
+            if !COOLER_BOOST_MARKS.contains(&mark) {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "{name} mark {mark} °C is outside {}..{}",
+                    COOLER_BOOST_MARKS.start(),
+                    COOLER_BOOST_MARKS.end()
+                )));
+            }
+        }
+        let config = &mut self.boost.config;
+        if (config.cpu_c, config.gpu_c) != (cpu_c, gpu_c) {
+            info!(
+                "cooler boost marks: CPU {} -> {cpu_c} °C, GPU {} -> {gpu_c} °C",
+                config.cpu_c, config.gpu_c
+            );
+            (config.cpu_c, config.gpu_c) = (cpu_c, gpu_c);
+        }
+        Ok(())
     }
 
     pub fn set_super_battery(&mut self, on: bool) -> fdo::Result<()> {
@@ -950,6 +977,32 @@ mod tests {
 
         service.stop();
         assert!(!service.ec.cooler_boost().unwrap());
+    }
+
+    #[test]
+    fn boosts_at_the_marks_set() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let ec = MsiEc::new(sysfs.path());
+        let boost = AutoBoost::new(crate::boost::Config {
+            auto: true,
+            ..Default::default()
+        });
+        let mut service = Service::new(ec, None, boost);
+        let marks = |service: &Service| {
+            let status = service.status();
+            (status.cooler_boost_cpu_c, status.cooler_boost_gpu_c)
+        };
+        assert_eq!(marks(&service), (Some(95), Some(85)));
+        assert!(service.set_cooler_boost_marks(50, 85).is_err());
+        assert!(service.set_cooler_boost_marks(80, 101).is_err());
+        service.set_cooler_boost_marks(80, 75).unwrap();
+        assert_eq!(marks(&service), (Some(80), Some(75)));
+
+        set_temp(sysfs.path(), Fan::Cpu, 82);
+        for _ in 0..3 {
+            service.tick().unwrap();
+        }
+        assert!(service.ec.cooler_boost().unwrap());
     }
 
     #[test]

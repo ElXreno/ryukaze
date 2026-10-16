@@ -9,7 +9,7 @@ use iced::{
     window,
 };
 use ryukaze_core::{
-    Status,
+    COOLER_BOOST_MARKS, Status,
     fans::{Curve, Fan},
 };
 
@@ -33,6 +33,9 @@ pub struct App {
     status: Option<Result<Status, String>>,
     /// The charge limit while its slider is held, applied on release.
     charge_limit: Option<u8>,
+    /// Where cooler boost comes on by itself (CPU, GPU) while a slider is
+    /// held, applied on release.
+    boost_marks: Option<(u8, u8)>,
     /// Why the last change didn't go through.
     error: Option<String>,
     /// What the desktop prefers; light until it says.
@@ -74,6 +77,8 @@ pub enum Message {
     AdaptiveFans(bool),
     GpuFollowsCpu(bool),
     AutoCoolerBoost(bool),
+    BoostMarkDragged(Fan, u8),
+    BoostMarksReleased,
     Webcam(bool),
     FnKey(String),
     UsbShare(bool),
@@ -89,6 +94,7 @@ impl App {
             status: None,
             charge_limit: None,
             error: None,
+            boost_marks: None,
             dark: false,
             window: None,
             tray: None,
@@ -165,6 +171,7 @@ impl App {
                 if self.window == Some(id) {
                     self.window = None;
                     self.charge_limit = None;
+                    self.boost_marks = None;
                     self.curve_draft = None;
                 }
                 Task::none()
@@ -215,6 +222,32 @@ impl App {
             }
             Message::AutoCoolerBoost(on) => {
                 self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
+            }
+            Message::BoostMarkDragged(fan, mark) => {
+                let Some(Ok(status)) = &self.status else {
+                    return Task::none();
+                };
+                let Some(mut marks) = self.boost_marks.or(boost_marks(status)) else {
+                    return Task::none();
+                };
+                match fan {
+                    Fan::Cpu => marks.0 = mark,
+                    Fan::Gpu => marks.1 = mark,
+                }
+                self.boost_marks = Some(marks);
+                Task::none()
+            }
+            Message::BoostMarksReleased => {
+                let Some((cpu, gpu)) = self.boost_marks.take() else {
+                    return Task::none();
+                };
+                // Shown until the daemon's status has them.
+                if let Some(Ok(status)) = &mut self.status {
+                    (status.cooler_boost_cpu_c, status.cooler_boost_gpu_c) = (Some(cpu), Some(gpu));
+                }
+                self.call(
+                    move |client| async move { client.set_cooler_boost_marks(cpu, gpu).await },
+                )
             }
             Message::GpuFollowsCpu(on) => {
                 self.call(move |client| async move { client.set_gpu_fan_follows_cpu(on).await })
@@ -329,6 +362,9 @@ impl App {
                 on,
                 Message::AutoCoolerBoost,
             ));
+            if on && let Some(marks) = self.boost_marks.or(boost_marks(status)) {
+                fans = fans.push(marks_sliders(marks));
+            }
         }
         if status.fan_mode.as_deref() == Some("advanced")
             && let Some(editor) = self.curve_editor(status)
@@ -675,6 +711,36 @@ fn charge_limit<'a>(percent: u8) -> Element<'a, Message> {
     .into()
 }
 
+fn boost_marks(status: &Status) -> Option<(u8, u8)> {
+    status.cooler_boost_cpu_c.zip(status.cooler_boost_gpu_c)
+}
+
+/// Where cooler boost comes on by itself, a slider per sensor.
+fn marks_sliders<'a>((cpu, gpu): (u8, u8)) -> Element<'a, Message> {
+    let mark = |name, fan, value: u8| {
+        row![
+            text(name).width(40),
+            slider(COOLER_BOOST_MARKS, value, move |mark| {
+                Message::BoostMarkDragged(fan, mark)
+            })
+            .on_release(Message::BoostMarksReleased)
+            .style(theme::level),
+            text(format!("{value}°C")).width(48).align_x(Alignment::End),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+    };
+    column![
+        mark("CPU", Fan::Cpu, cpu),
+        mark("GPU", Fan::Gpu, gpu),
+        text("On after 6 s at its mark, off after 10 s with both 10 °C under theirs")
+            .size(13)
+            .style(theme::muted),
+    ]
+    .spacing(8)
+    .into()
+}
+
 fn banner<'a>(message: &str) -> Element<'a, Message> {
     container(text(message.to_owned()).size(14))
         .padding([8, 12])
@@ -714,6 +780,7 @@ mod tests {
             status: Some(Ok(status)),
             charge_limit: None,
             error: None,
+            boost_marks: None,
             dark: false,
             window: None,
             tray: None,
@@ -805,6 +872,37 @@ mod tests {
         };
         let messages = clicks(&app(status), &["Charge USB when off"]);
         assert!(matches!(&messages[..], [Message::UsbShare(true)]));
+    }
+
+    #[test]
+    fn cooler_boost_marks() {
+        let status = Status {
+            cooler_boost: Some(false),
+            auto_cooler_boost: Some(true),
+            cooler_boost_cpu_c: Some(95),
+            cooler_boost_gpu_c: Some(85),
+            ..alpha17()
+        };
+        let shown =
+            |app: &App, text: &str| simulator(app.view(window::Id::unique())).find(text).is_ok();
+
+        let mut marked = app(status.clone());
+        assert!(shown(&marked, "95°C") && shown(&marked, "85°C"));
+        let _ = marked.update(Message::BoostMarkDragged(Fan::Cpu, 90));
+        assert!(shown(&marked, "90°C"));
+        let _ = marked.update(Message::BoostMarksReleased);
+        let Some(Ok(status_now)) = &marked.status else {
+            panic!("no status");
+        };
+        assert_eq!(boost_marks(status_now), Some((90, 85)));
+        assert!(marked.boost_marks.is_none());
+
+        // Only while it boosts by itself.
+        let off = app(Status {
+            auto_cooler_boost: Some(false),
+            ..status
+        });
+        assert!(!shown(&off, "95°C"));
     }
 
     #[test]

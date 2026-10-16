@@ -25,6 +25,7 @@ pub trait Ryukaze {
     fn set_fn_key(&self, side: &str) -> zbus::Result<()>;
     fn set_usb_share(&self, on: bool) -> zbus::Result<()>;
     fn set_gpu_mode(&self, mode: &str) -> zbus::Result<()>;
+    fn set_cooler_boost_marks(&self, cpu_c: u8, gpu_c: u8) -> zbus::Result<()>;
 }
 
 pub type Client = RyukazeProxy<'static>;

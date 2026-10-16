@@ -18,3 +18,7 @@ pub const BUS_NAME: &str = "io.github.kontonkara.ryukaze";
 
 /// Where ryukazed serves its interface.
 pub const OBJECT_PATH: &str = "/io/github/kontonkara/ryukaze";
+
+/// Where the temperatures cooler boost comes on at by itself may sit, °C:
+/// lower, it would come on at everyday loads.
+pub const COOLER_BOOST_MARKS: std::ops::RangeInclusive<u8> = 60..=100;

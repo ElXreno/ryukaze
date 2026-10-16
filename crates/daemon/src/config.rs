@@ -5,6 +5,7 @@ use std::{fs, io, path::Path};
 
 use anyhow::{Context, Result, bail};
 use ryukaze_core::{
+    COOLER_BOOST_MARKS,
     fans::{Curve, Fan},
     power_supply::Source,
 };
@@ -146,6 +147,17 @@ impl Config {
                 path.display()
             );
         }
+        let boost = &config.cooler_boost;
+        for (key, mark) in [("cpu_c", boost.cpu_c), ("gpu_c", boost.gpu_c)] {
+            if !COOLER_BOOST_MARKS.contains(&mark) {
+                bail!(
+                    "{}: cooler_boost.{key} {mark} is outside {}..{}",
+                    path.display(),
+                    COOLER_BOOST_MARKS.start(),
+                    COOLER_BOOST_MARKS.end()
+                );
+            }
+        }
         Ok(config)
     }
 }
@@ -206,6 +218,8 @@ mod tests {
         assert!(load("charge_limit = 5\n").is_err());
         assert!(load("fn_key = \"middle\"\n").is_err());
         assert!(load("fn_key = \"left\"\nwebcam = false\n").is_ok());
+        assert!(load("[cooler_boost]\ncpu_c = 40\n").is_err());
+        assert!(load("[cooler_boost]\ngpu_c = 80\n").is_ok());
     }
 
     #[test]

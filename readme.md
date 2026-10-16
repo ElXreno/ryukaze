@@ -32,9 +32,9 @@ the EC goes through it. It's on the fan when you let go, until the daemon
 restarts; Copy as Nix puts the curves on the clipboard in the shape of
 `services.ryukaze.settings`, to keep them. Adaptive and the GPU fan's help
 are switches under it, and "Cooler boost when hot" sits under the cooler
-boost switch. Devices has which side of Win the Fn key is on, USB Power
-Share, and the camera where its switch does something; Graphics has the
-GPU MUX.
+boost switch, with its marks while it's on. Devices has which side of
+Win the Fn key is on, USB Power Share, and the camera where its switch
+does something; Graphics has the GPU MUX.
 
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
@@ -100,7 +100,8 @@ super_battery = true
 # Cooler boost by itself, in any fan mode: on once the CPU or GPU has
 # stayed at its mark for 6 s, off once both have been 10 °C below for
 # 10 s. Only a boost it started does it end, and one switched off by hand
-# stays off until it has cooled down. Off by default; the marks below.
+# stays off until it has cooled down. Off by default; the marks below,
+# from 60 to 100 °C.
 [cooler_boost]
 auto = false
 cpu_c = 95
@@ -191,6 +192,7 @@ firmware reads that one for the Win/Fn swap, not for the MUX.
 | `SetAdaptiveFans` | `b` | adaptive or stepping in advanced, until the daemon restarts |
 | `SetGpuFanFollowsCpu` | `b` | while adaptive, the GPU fan at least at the CPU curve's speed |
 | `SetAutoCoolerBoost` | `b` | cooler boost by itself when hot, until the daemon restarts |
+| `SetCoolerBoostMarks` | `y y` | the CPU and GPU °C (60 to 100) it comes on at, until the daemon restarts |
 | `SetWebcam` | `b` | the camera on or off |
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |

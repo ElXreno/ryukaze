@@ -83,6 +83,13 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub auto_cooler_boost: Option<bool>,
 
+    /// The temperatures, °C, it comes on at; see `COOLER_BOOST_MARKS`.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub cooler_boost_cpu_c: Option<u8>,
+
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub cooler_boost_gpu_c: Option<u8>,
+
     /// The integrated camera is on.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub webcam: Option<bool>,
