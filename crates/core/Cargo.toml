@@ -1,0 +1,12 @@
+[package]
+name = "ryukaze-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+zvariant.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

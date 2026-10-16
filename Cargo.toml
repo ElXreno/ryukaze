@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/core",
+  "crates/daemon",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/kontonkara/ryukaze"
+
+[workspace.dependencies]
+ryukaze-core = { path = "crates/core" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+tokio = { version = "1.53", features = ["macros", "rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+zvariant = "5.15"
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,13 @@
+[package]
+name = "ryukazed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ryukaze-core.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus.workspace = true
