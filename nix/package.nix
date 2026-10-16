@@ -42,6 +42,7 @@ rustPlatform.buildRustPackage {
     install -Dm644 data/io.github.kontonkara.ryukaze.conf \
       $out/share/dbus-1/system.d/io.github.kontonkara.ryukaze.conf
     install -Dm644 data/ryukaze.desktop $out/share/applications/ryukaze.desktop
+    install -Dm644 data/ryukaze.svg $out/share/icons/hicolor/scalable/apps/ryukaze.svg
   '';
 
   postFixup = ''

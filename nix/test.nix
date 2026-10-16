@@ -13,6 +13,9 @@ pkgs.testers.runNixOSTest {
         ryukaze = {
           enable = true;
           users = [ "alice" ];
+          tray = {
+            enable = true;
+          };
           settings = {
             profiles = {
               ac = {
@@ -52,6 +55,10 @@ pkgs.testers.runNixOSTest {
         # No msi-ec in the VM, so the daemon itself answers.
         out = machine.fail(f"su alice -c '{call} SetCoolerBoost b true' 2>&1")
         assert "msi-ec doesn't expose it" in out, out
+
+    with subtest("graphical sessions get the tray"):
+        machine.succeed("grep -q 'ryukaze --hidden' /etc/systemd/user/ryukaze.service")
+        machine.succeed("test -e /run/current-system/sw/share/applications/ryukaze.desktop")
 
     with subtest("the daemon logs what it couldn't do"):
         machine.succeed("journalctl -u ryukazed.service | grep -q 'msi-ec is not bound'")

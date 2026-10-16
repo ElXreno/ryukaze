@@ -1,18 +1,21 @@
-//! ryukaze: a window onto ryukazed.
+//! ryukaze: a window and a tray icon onto ryukazed.
 
 mod app;
 mod appearance;
 mod client;
+mod icon;
+mod instance;
 mod theme;
+mod tray;
 
-use iced::window;
-
-const USAGE: &str = "usage: ryukaze [--session]";
+const USAGE: &str = "usage: ryukaze [--hidden] [--session]";
 
 fn main() -> iced::Result {
-    let mut session = false;
+    let (mut session, mut hidden) = (false, false);
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
+            // Start in the tray only, as at login.
+            "--hidden" => hidden = true,
             // Talk to `ryukazed --session`.
             "--session" => session = true,
             _ => {
@@ -22,8 +25,12 @@ fn main() -> iced::Result {
         }
     }
 
-    iced::application(
-        move || app::App::new(session),
+    if instance::hand_over(hidden) {
+        return Ok(());
+    }
+
+    iced::daemon(
+        move || app::App::new(session, hidden),
         app::App::update,
         app::App::view,
     )
@@ -31,14 +38,5 @@ fn main() -> iced::Result {
     .theme(app::App::theme)
     .style(|_, theme| theme::window(theme))
     .subscription(app::App::subscription)
-    .window(window::Settings {
-        size: (420.0, 600.0).into(),
-        min_size: Some((360.0, 420.0).into()),
-        platform_specific: window::settings::PlatformSpecific {
-            application_id: "ryukaze".into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    })
     .run()
 }

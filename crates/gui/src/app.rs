@@ -3,18 +3,22 @@ use std::{future::Future, time::Duration};
 use iced::{
     Alignment, Element, Length, Subscription, Task, Theme, mouse,
     widget::{button, column, container, mouse_area, row, slider, space, text, toggler},
+    window,
 };
 use ryukaze_core::Status;
 
 use crate::{
     appearance,
     client::{self, Client},
-    theme,
+    icon, instance, theme, tray,
 };
 
 /// Picks the EC makes on its own (Fn keys, the daemon's power profiles)
-/// show up within this.
+/// show up within this while the window is open.
 const REFRESH: Duration = Duration::from_secs(2);
+
+/// With only the tray up, its menu and tooltip can lag a little.
+const REFRESH_HIDDEN: Duration = Duration::from_secs(10);
 
 pub struct App {
     session: bool,
@@ -27,6 +31,9 @@ pub struct App {
     error: Option<String>,
     /// What the desktop prefers; light until it says.
     dark: bool,
+    /// The window while it's open; without it the app lives in the tray.
+    window: Option<window::Id>,
+    tray: Option<tray::Handle>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,22 +49,33 @@ pub enum Message {
     ChargeLimitReleased,
     Applied(Result<(), String>),
     Dark(bool),
+    TrayReady(tray::Handle),
+    /// From the tray or a second start.
+    Show,
+    WindowClosed(window::Id),
+    Quit,
 }
 
 impl App {
-    pub fn new(session: bool) -> (Self, Task<Message>) {
-        let app = Self {
+    /// `hidden` starts with only the tray, as at login.
+    pub fn new(session: bool, hidden: bool) -> (Self, Task<Message>) {
+        let mut app = Self {
             session,
             client: None,
             status: None,
             charge_limit: None,
             error: None,
             dark: false,
+            window: None,
+            tray: None,
         };
-        (
-            app,
-            Task::perform(client::connect(session), Message::Connected),
-        )
+        let connect = Task::perform(client::connect(session), Message::Connected);
+        if hidden {
+            (app, connect)
+        } else {
+            let open = app.open();
+            (app, Task::batch([connect, open]))
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -68,7 +86,7 @@ impl App {
             }
             Message::Connected(Err(err)) => {
                 self.status = Some(Err(err));
-                Task::none()
+                self.show_in_tray()
             }
             Message::Tick if self.client.is_none() => {
                 Task::perform(client::connect(self.session), Message::Connected)
@@ -76,7 +94,7 @@ impl App {
             Message::Tick => self.refresh(),
             Message::Status(status) => {
                 self.status = Some(status);
-                Task::none()
+                self.show_in_tray()
             }
             Message::ShiftMode(mode) => {
                 self.call(move |client| async move { client.set_shift_mode(&mode).await })
@@ -108,22 +126,46 @@ impl App {
                 self.dark = dark;
                 Task::none()
             }
+            Message::TrayReady(tray) => {
+                self.tray = Some(tray);
+                self.show_in_tray()
+            }
+            Message::Show => match self.window {
+                Some(id) => window::gain_focus(id),
+                None => self.open(),
+            },
+            Message::WindowClosed(id) => {
+                if self.window == Some(id) {
+                    self.window = None;
+                    self.charge_limit = None;
+                }
+                Task::none()
+            }
+            Message::Quit => iced::exit(),
         }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        let refresh = if self.window.is_some() {
+            REFRESH
+        } else {
+            REFRESH_HIDDEN
+        };
         Subscription::batch([
-            iced::time::every(REFRESH).map(|_| Message::Tick),
+            iced::time::every(refresh).map(|_| Message::Tick),
             Subscription::run(appearance::dark).map(Message::Dark),
+            Subscription::run(tray::run),
+            Subscription::run(instance::serve),
+            window::close_events().map(Message::WindowClosed),
         ])
     }
 
     /// iced's plain Light or Dark; the styles in theme.rs only ask which.
-    pub fn theme(&self) -> Theme {
+    pub fn theme(&self, _window: window::Id) -> Theme {
         if self.dark { Theme::Dark } else { Theme::Light }
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, _window: window::Id) -> Element<'_, Message> {
         let firmware = match &self.status {
             Some(Ok(status)) => status.firmware.clone().unwrap_or_default(),
             _ => String::new(),
@@ -183,6 +225,28 @@ impl App {
         sections.into()
     }
 
+    fn open(&mut self) -> Task<Message> {
+        let (id, opened) = window::open(window::Settings {
+            size: (420.0, 600.0).into(),
+            min_size: Some((360.0, 420.0).into()),
+            icon: icon::window(),
+            platform_specific: window::settings::PlatformSpecific {
+                application_id: "ryukaze".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        self.window = Some(id);
+        opened.discard()
+    }
+
+    fn show_in_tray(&self) -> Task<Message> {
+        match (&self.tray, &self.status) {
+            (Some(tray), Some(status)) => Task::future(tray.clone().show(status.clone())).discard(),
+            _ => Task::none(),
+        }
+    }
+
     fn refresh(&self) -> Task<Message> {
         let Some(client) = self.client.clone() else {
             return Task::none();
@@ -207,8 +271,20 @@ impl App {
 }
 
 /// Modes in this order, whatever order the driver lists them in.
-const SHIFT_ORDER: &[&str] = &["eco", "comfort", "sport", "turbo"];
-const FAN_ORDER: &[&str] = &["auto", "silent", "basic", "advanced"];
+pub const SHIFT_ORDER: &[&str] = &["eco", "comfort", "sport", "turbo"];
+pub const FAN_ORDER: &[&str] = &["auto", "silent", "basic", "advanced"];
+
+/// `modes` in `order`, unknown ones last.
+pub fn ordered<'a>(modes: &'a [String], order: &[&str]) -> Vec<&'a String> {
+    let mut modes: Vec<&String> = modes.iter().collect();
+    modes.sort_by_key(|mode| {
+        order
+            .iter()
+            .position(|known| known == mode)
+            .unwrap_or(order.len())
+    });
+    modes
+}
 
 fn section<'a>(title: &'a str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     let title = text(title.to_uppercase()).size(12).style(theme::muted);
@@ -225,16 +301,8 @@ fn modes_row<'a>(
     order: &[&str],
     pick: fn(String) -> Message,
 ) -> Element<'a, Message> {
-    let mut modes: Vec<&String> = modes.iter().collect();
-    modes.sort_by_key(|mode| {
-        order
-            .iter()
-            .position(|known| known == mode)
-            .unwrap_or(order.len())
-    });
-
     let mut buttons = row![].spacing(6);
-    for mode in modes {
+    for mode in ordered(modes, order) {
         let chosen = mode == current;
         buttons = buttons.push(
             button(text(capitalize(mode)).width(Length::Fill).center())
@@ -287,7 +355,7 @@ fn banner<'a>(message: &str) -> Element<'a, Message> {
         .into()
 }
 
-fn capitalize(word: &str) -> String {
+pub fn capitalize(word: &str) -> String {
     let mut chars = word.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
@@ -308,6 +376,8 @@ mod tests {
             charge_limit: None,
             error: None,
             dark: false,
+            window: None,
+            tray: None,
         }
     }
 
@@ -327,7 +397,7 @@ mod tests {
     }
 
     fn clicks(app: &App, targets: &[&str]) -> Vec<Message> {
-        let mut ui = simulator(app.view());
+        let mut ui = simulator(app.view(window::Id::unique()));
         for &target in targets {
             ui.click(target)
                 .unwrap_or_else(|_| panic!("no {target:?} on screen"));
@@ -366,7 +436,7 @@ mod tests {
             ..alpha17()
         };
         let app = app(status);
-        let mut ui = simulator(app.view());
+        let mut ui = simulator(app.view(window::Id::unique()));
         assert!(ui.find("Super battery").is_err());
         assert!(ui.find("Charge limit").is_err());
         assert!(ui.find("Cooler boost").is_ok());
@@ -378,7 +448,7 @@ mod tests {
             status: Some(Err("ryukazed isn't running".into())),
             ..app(alpha17())
         };
-        let mut ui = simulator(app.view());
+        let mut ui = simulator(app.view(window::Id::unique()));
         assert!(ui.find("ryukazed isn't running").is_ok());
         assert!(ui.find("Eco").is_err());
     }

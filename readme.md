@@ -10,7 +10,8 @@ embedded controller. It works through the upstream
 narrow D-Bus API on the system bus. `ryukaze` is a window onto it.
 
 Early days: the daemon reports the EC's state, switches its modes and
-follows the power source, and the window switches them by hand.
+follows the power source; the window and the tray icon switch them by
+hand.
 
 ## The window
 
@@ -21,6 +22,10 @@ renders in software: a GPU renderer would open Vulkan or GL, which on a
 hybrid laptop can wake the discrete GPU for a settings window. It's plain
 black on white or white on black, as the desktop prefers (the XDG settings
 portal's `color-scheme`).
+
+The tray icon has the modes and switches in its menu and opens the window
+on a click. `ryukaze --hidden` starts with the tray only, as at login;
+starting `ryukaze` again while it runs brings its window up.
 
 ## Config
 
@@ -75,6 +80,7 @@ lets everyone call `Status` and only root call the setters.
   services.ryukaze = {
     enable = true;
     users = [ "alice" ]; # may change the EC; everyone may read it
+    tray.enable = true; # the icon in graphical sessions
     settings = {
       charge_limit = 80;
       profiles.ac.shift_mode = "turbo";

@@ -44,6 +44,14 @@ in
           description = "Users allowed to change the EC over D-Bus. Everyone may read its status.";
         };
 
+        tray = {
+          enable = lib.mkEnableOption ''
+            the ryukaze tray icon in graphical sessions. It starts with the
+            session, hidden; a click or another start of ryukaze opens the
+            window
+          '';
+        };
+
         settings = lib.mkOption {
           inherit (toml) type;
           default = { };
@@ -77,6 +85,9 @@ in
       etc = {
         "ryukaze/config.toml".source = configFile;
       };
+
+      # The window and its launcher entry.
+      systemPackages = [ cfg.package ];
     };
 
     services = {
@@ -89,6 +100,24 @@ in
     };
 
     systemd = {
+      user = {
+        services = {
+          ryukaze = lib.mkIf cfg.tray.enable {
+            description = "ryukaze tray icon";
+            partOf = [ "graphical-session.target" ];
+            after = [ "graphical-session.target" ];
+            wantedBy = [ "graphical-session.target" ];
+
+            # No wait for the panel: the icon registers whenever a
+            # StatusNotifierWatcher shows up.
+            serviceConfig = {
+              ExecStart = "${cfg.package}/bin/ryukaze --hidden";
+              Restart = "on-failure";
+            };
+          };
+        };
+      };
+
       services = {
         ryukazed = {
           description = "MSI laptop EC daemon";

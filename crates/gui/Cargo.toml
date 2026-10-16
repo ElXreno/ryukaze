@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 ryukaze-core.workspace = true
 iced.workspace = true
+ksni.workspace = true
+resvg.workspace = true
+tokio.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
