@@ -4,6 +4,7 @@ use ryukaze_core::{
     Status,
     fans::{self, Curve, Fan, Layout},
     msi_ec::MsiEc,
+    power_supply::{self, Source},
     raw_ec::RawEc,
 };
 use tracing::{debug, info, warn};
@@ -328,6 +329,14 @@ impl Service {
             let Curve { temps, speeds } = self.fans.as_ref()?.active[fan as usize];
             Some((temps.to_vec(), speeds.to_vec()))
         };
+        let battery = power_supply::battery(ec.sysfs()).unwrap_or_else(|err| {
+            warn!("battery: {err}");
+            None
+        });
+        let on_ac = power_supply::source(ec.sysfs())
+            .ok()
+            .flatten()
+            .map(|source| source == Source::Ac);
         Status {
             firmware: field("fw_version", ec.firmware()),
             firmware_date: field("fw_release_date", ec.firmware_date()),
@@ -350,6 +359,11 @@ impl Service {
             auto_cooler_boost: ec.cooler_boost().ok().map(|_| self.boost.config.auto),
             webcam: field("webcam", ec.webcam()),
             fn_key: field("fn_key", ec.fn_key()),
+            on_ac,
+            battery_level: battery.as_ref().map(|battery| battery.level),
+            battery_state: battery.as_ref().map(|battery| battery.state.clone()),
+            battery_watts: battery.as_ref().and_then(|battery| battery.watts),
+            battery_health: battery.as_ref().and_then(|battery| battery.health),
             charge_limit: field("charge_limit", ec.charge_limit()),
         }
     }

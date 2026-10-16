@@ -16,11 +16,12 @@ hand.
 ## The window
 
 `ryukaze` shows the CPU and GPU temperatures and fan speeds, the shift and
-fan modes, cooler boost, super battery and the charge limit, whichever this
-EC has, and polls the daemon every two seconds, so picks made elsewhere (Fn
-keys, the power profiles) show up. It renders in software: a GPU renderer
-would open Vulkan or GL, which on a hybrid laptop can wake the discrete GPU
-for a settings window. It's plain black on white or white on black, as the
+fan modes, cooler boost, the battery (its charge, what it's doing, how worn
+it is), super battery and the charge limit, whichever this EC has, and
+polls the daemon every two seconds, so picks made elsewhere (Fn keys, the
+power profiles) show up. It renders in software: a GPU renderer would open
+Vulkan or GL, which on a hybrid laptop can wake the discrete GPU for a
+settings window. It's plain black on white or white on black, as the
 desktop prefers (the XDG settings portal's `color-scheme`).
 
 In the advanced fan mode the window shows each fan's curve: drag a dot

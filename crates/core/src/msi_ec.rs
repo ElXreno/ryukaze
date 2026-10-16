@@ -10,6 +10,7 @@ use std::{
 };
 
 pub struct MsiEc {
+    sysfs: PathBuf,
     device: PathBuf,
     power_supply: PathBuf,
 }
@@ -18,9 +19,15 @@ impl MsiEc {
     /// `sysfs` is `/sys`, or a fake tree for tests and `ryukazed --sysfs`.
     pub fn new(sysfs: &Path) -> Self {
         Self {
+            sysfs: sysfs.to_owned(),
             device: sysfs.join("devices/platform/msi-ec"),
             power_supply: sysfs.join("class/power_supply"),
         }
+    }
+
+    /// The sysfs it reads, for what isn't msi-ec's (the power supplies).
+    pub fn sysfs(&self) -> &Path {
+        &self.sysfs
     }
 
     /// Whether the driver is bound: it isn't when it rejected this firmware.

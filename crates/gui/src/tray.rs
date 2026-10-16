@@ -98,6 +98,9 @@ impl ksni::Tray for Tray {
                     0 => "GPU asleep".to_owned(),
                     temp => format!("GPU {temp}°C"),
                 }),
+                status
+                    .battery_level
+                    .map(|level| format!("battery {level}%")),
             ]
             .into_iter()
             .flatten()

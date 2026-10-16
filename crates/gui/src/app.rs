@@ -326,6 +326,9 @@ impl App {
         sections = sections.push(section("Fans", fans));
 
         let mut battery = column![].spacing(12);
+        if let Some(summary) = battery_summary(status) {
+            battery = battery.push(summary);
+        }
         if let Some(on) = status.super_battery {
             battery = battery.push(switch("Super battery", on, Message::SuperBattery));
         }
@@ -497,6 +500,46 @@ fn modes_row<'a>(
         );
     }
     buttons.into()
+}
+
+/// The charge, what the battery is doing, and how worn it is.
+fn battery_summary<'a>(status: &Status) -> Option<Element<'a, Message>> {
+    let level = status.battery_level?;
+    let watts = status
+        .battery_watts
+        .filter(|&watts| watts >= 0.5)
+        .map(|watts| format!(" · {watts:.0} W"))
+        .unwrap_or_default();
+    // Not charging on AC at or over the limit's lower edge: the EC holds it.
+    let held = status.on_ac == Some(true)
+        && status
+            .charge_limit
+            .is_some_and(|limit| limit < 100 && level + 10 >= limit);
+    let doing = match status.battery_state.as_deref() {
+        Some("Charging") => format!("Charging{watts}"),
+        Some("Discharging") => format!("On battery{watts}"),
+        Some("Not charging") if held => "Held at the charge limit".to_owned(),
+        Some("Full") => "Full".to_owned(),
+        Some(other) => other.to_owned(),
+        None => String::new(),
+    };
+    let health = status
+        .battery_health
+        .map(|health| format!("Health {health}%"))
+        .unwrap_or_default();
+    Some(
+        column![
+            row![
+                text(format!("{level}%")).size(26),
+                space::horizontal(),
+                text(health).size(13).style(theme::muted),
+            ]
+            .align_y(Alignment::Center),
+            text(doing).size(13).style(theme::muted),
+        ]
+        .spacing(2)
+        .into(),
+    )
 }
 
 /// Where Fn sits: a choice of two rather than a "swap", which would depend
@@ -684,6 +727,33 @@ mod tests {
             &messages[..],
             [Message::CoolerBoost(true), Message::SuperBattery(true)]
         ));
+    }
+
+    #[test]
+    fn tells_what_the_battery_does() {
+        let held = Status {
+            on_ac: Some(true),
+            battery_level: Some(91),
+            battery_state: Some("Not charging".into()),
+            battery_watts: Some(0.0),
+            battery_health: Some(96),
+            ..alpha17()
+        };
+        let holding = app(held);
+        let mut ui = simulator(holding.view(window::Id::unique()));
+        for shown in ["91%", "Held at the charge limit", "Health 96%"] {
+            assert!(ui.find(shown).is_ok(), "{shown}");
+        }
+
+        let charging = app(Status {
+            on_ac: Some(true),
+            battery_level: Some(40),
+            battery_state: Some("Charging".into()),
+            battery_watts: Some(44.6),
+            ..alpha17()
+        });
+        let mut ui = simulator(charging.view(window::Id::unique()));
+        assert!(ui.find("Charging · 45 W").is_ok());
     }
 
     #[test]

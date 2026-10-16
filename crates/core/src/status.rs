@@ -91,6 +91,27 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub fn_key: Option<String>,
 
+    /// A Mains supply is online.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub on_ac: Option<bool>,
+
+    /// Percent.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub battery_level: Option<u8>,
+
+    /// As the kernel says: `Charging`, `Discharging`, `Not charging`,
+    /// `Full` or `Unknown`.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub battery_state: Option<String>,
+
+    /// Watts going in or out.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub battery_watts: Option<f64>,
+
+    /// Full charge now against the design's, percent.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub battery_health: Option<u8>,
+
     /// Battery charge end threshold in percent.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub charge_limit: Option<u8>,
