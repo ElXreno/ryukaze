@@ -4,7 +4,7 @@
 use iced::{
     Border, Color, Theme, color,
     theme::Style,
-    widget::{button, container, slider, text, toggler},
+    widget::{button, container, progress_bar, slider, text, toggler},
 };
 
 /// What the styles draw with.
@@ -153,4 +153,14 @@ pub fn level(theme: &Theme, status: slider::Status) -> slider::Style {
     style.handle.border_width = 2.0;
     style.handle.border_color = colors.card;
     style
+}
+
+/// A fan's duty: a thin filled bar on a track.
+pub fn duty(theme: &Theme) -> progress_bar::Style {
+    let colors = colors(theme);
+    progress_bar::Style {
+        background: colors.track.into(),
+        bar: colors.strong.into(),
+        border: Border::default().rounded(2),
+    }
 }

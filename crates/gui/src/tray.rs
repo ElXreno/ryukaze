@@ -93,6 +93,11 @@ impl ksni::Tray for Tray {
                     .fan_mode
                     .as_deref()
                     .map(|mode| format!("fans {mode}")),
+                status.cpu_temp.map(|temp| format!("CPU {temp}°C")),
+                status.gpu_temp.map(|temp| match temp {
+                    0 => "GPU asleep".to_owned(),
+                    temp => format!("GPU {temp}°C"),
+                }),
             ]
             .into_iter()
             .flatten()

@@ -78,6 +78,26 @@ impl MsiEc {
         write(&self.device.join("cooler_boost"), on_off(on))
     }
 
+    /// What the EC reads off the CPU, in °C.
+    pub fn cpu_temp(&self) -> io::Result<u8> {
+        self.read_number("cpu/realtime_temperature")
+    }
+
+    /// The GPU's temperature in °C as the EC sees it; 0 while the GPU sleeps.
+    pub fn gpu_temp(&self) -> io::Result<u8> {
+        self.read_number("gpu/realtime_temperature")
+    }
+
+    /// The CPU fan's duty in percent.
+    pub fn cpu_fan(&self) -> io::Result<u8> {
+        self.read_number("cpu/realtime_fan_speed")
+    }
+
+    /// The GPU fan's duty in percent.
+    pub fn gpu_fan(&self) -> io::Result<u8> {
+        self.read_number("gpu/realtime_fan_speed")
+    }
+
     /// The charge end threshold msi-ec adds to the battery; charging
     /// resumes 10 points below it.
     pub fn charge_limit(&self) -> io::Result<u8> {
@@ -111,6 +131,12 @@ impl MsiEc {
 
     fn read_list(&self, attr: &str) -> io::Result<Vec<String>> {
         Ok(self.read(attr)?.lines().map(str::to_owned).collect())
+    }
+
+    fn read_number(&self, attr: &str) -> io::Result<u8> {
+        let text = self.read(attr)?;
+        text.parse()
+            .map_err(|_| invalid(&self.device.join(attr), &text))
     }
 
     fn read_on_off(&self, attr: &str) -> io::Result<bool> {
@@ -166,6 +192,16 @@ mod tests {
         ] {
             fs::write(device.join(attr), text).unwrap();
         }
+        for (attr, text) in [
+            ("cpu/realtime_temperature", "61\n"),
+            ("cpu/realtime_fan_speed", "45\n"),
+            ("gpu/realtime_temperature", "0\n"),
+            ("gpu/realtime_fan_speed", "0\n"),
+        ] {
+            let path = device.join(attr);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
         fs::write(battery.join("charge_control_end_threshold"), "80\n").unwrap();
         sysfs
     }
@@ -182,6 +218,9 @@ mod tests {
         assert!(!ec.super_battery().unwrap());
         assert!(ec.cooler_boost().unwrap());
         assert_eq!(ec.charge_limit().unwrap(), 80);
+        assert_eq!(ec.cpu_temp().unwrap(), 61);
+        assert_eq!(ec.cpu_fan().unwrap(), 45);
+        assert_eq!(ec.gpu_temp().unwrap(), 0);
     }
 
     #[test]

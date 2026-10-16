@@ -39,6 +39,21 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub cooler_boost: Option<bool>,
 
+    /// What the EC reads off the CPU, in °C.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub cpu_temp: Option<u8>,
+
+    /// The GPU's temperature in °C as the EC sees it; 0 while it sleeps.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub gpu_temp: Option<u8>,
+
+    /// Fan duty in percent.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub cpu_fan: Option<u8>,
+
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub gpu_fan: Option<u8>,
+
     /// Battery charge end threshold in percent.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub charge_limit: Option<u8>,

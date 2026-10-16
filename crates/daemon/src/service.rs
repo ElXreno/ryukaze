@@ -30,6 +30,10 @@ impl Service {
             fan_modes: field("available_fan_modes", ec.fan_modes()),
             super_battery: field("super_battery", ec.super_battery()),
             cooler_boost: field("cooler_boost", ec.cooler_boost()),
+            cpu_temp: field("cpu/realtime_temperature", ec.cpu_temp()),
+            gpu_temp: field("gpu/realtime_temperature", ec.gpu_temp()),
+            cpu_fan: field("cpu/realtime_fan_speed", ec.cpu_fan()),
+            gpu_fan: field("gpu/realtime_fan_speed", ec.gpu_fan()),
             charge_limit: field("charge_limit", ec.charge_limit()),
         }
     }

@@ -2,7 +2,10 @@ use std::{future::Future, time::Duration};
 
 use iced::{
     Alignment, Element, Length, Subscription, Task, Theme, mouse,
-    widget::{button, column, container, mouse_area, row, slider, space, text, toggler},
+    widget::{
+        button, column, container, mouse_area, progress_bar, row, scrollable, slider, space, text,
+        toggler,
+    },
     window,
 };
 use ryukaze_core::Status;
@@ -187,15 +190,29 @@ impl App {
         if let Some(err) = &self.error {
             page = page.push(banner(err));
         }
-        // Tiled wide, the panel keeps its shape in the middle.
-        container(container(page).max_width(560))
-            .padding(20)
-            .center_x(Length::Fill)
-            .into()
+        // Tiled wide, the panel keeps its shape in the middle; tiled short,
+        // it scrolls.
+        scrollable(
+            container(container(page).max_width(560))
+                .padding(20)
+                .center_x(Length::Fill),
+        )
+        .into()
     }
 
     fn sections<'a>(&'a self, status: &'a Status) -> Element<'a, Message> {
         let mut sections = column![].spacing(12);
+
+        let gauges: Vec<Element<'a, Message>> = [
+            gauge("CPU", status.cpu_temp, status.cpu_fan),
+            gauge("GPU", status.gpu_temp, status.gpu_fan),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !gauges.is_empty() {
+            sections = sections.push(section("Sensors", row(gauges).spacing(24)));
+        }
 
         if let (Some(current), Some(modes)) = (&status.shift_mode, &status.shift_modes) {
             sections = sections.push(section(
@@ -227,7 +244,7 @@ impl App {
 
     fn open(&mut self) -> Task<Message> {
         let (id, opened) = window::open(window::Settings {
-            size: (420.0, 600.0).into(),
+            size: (420.0, 700.0).into(),
             min_size: Some((360.0, 420.0).into()),
             icon: icon::window(),
             platform_specific: window::settings::PlatformSpecific {
@@ -323,6 +340,33 @@ fn switch<'a>(label: &'a str, on: bool, toggle: fn(bool) -> Message) -> Element<
         .on_press(toggle(!on))
         .interaction(mouse::Interaction::Pointer)
         .into()
+}
+
+/// A temperature and the fan under it. The EC reads 0 °C off a sleeping
+/// GPU, which says it's asleep rather than cold.
+fn gauge<'a>(name: &'a str, temp: Option<u8>, fan: Option<u8>) -> Option<Element<'a, Message>> {
+    if temp.is_none() && fan.is_none() {
+        return None;
+    }
+    let reading = match temp {
+        Some(0) => text("Asleep").size(26).style(theme::muted),
+        Some(temp) => text(format!("{temp}°C")).size(26),
+        None => text("–").size(26).style(theme::muted),
+    };
+    let mut gauge = column![text(name).size(13).style(theme::muted), reading].spacing(2);
+    if let Some(fan) = fan {
+        gauge = gauge.push(
+            column![
+                text(format!("Fan {fan}%")).size(13).style(theme::muted),
+                progress_bar(0.0..=100.0, f32::from(fan))
+                    .girth(4)
+                    .style(theme::duty),
+            ]
+            .spacing(6)
+            .padding(iced::Padding::ZERO.top(6)),
+        );
+    }
+    Some(gauge.width(Length::Fill).into())
 }
 
 fn charge_limit<'a>(percent: u8) -> Element<'a, Message> {

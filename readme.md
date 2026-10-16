@@ -15,13 +15,13 @@ hand.
 
 ## The window
 
-`ryukaze` shows the shift and fan modes, cooler boost, super battery and
-the charge limit, whichever this EC has, and polls the daemon every two
-seconds, so picks made elsewhere (Fn keys, the power profiles) show up. It
-renders in software: a GPU renderer would open Vulkan or GL, which on a
-hybrid laptop can wake the discrete GPU for a settings window. It's plain
-black on white or white on black, as the desktop prefers (the XDG settings
-portal's `color-scheme`).
+`ryukaze` shows the CPU and GPU temperatures and fan duty, the shift and
+fan modes, cooler boost, super battery and the charge limit, whichever this
+EC has, and polls the daemon every two seconds, so picks made elsewhere (Fn
+keys, the power profiles) show up. It renders in software: a GPU renderer
+would open Vulkan or GL, which on a hybrid laptop can wake the discrete GPU
+for a settings window. It's plain black on white or white on black, as the
+desktop prefers (the XDG settings portal's `color-scheme`).
 
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
