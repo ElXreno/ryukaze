@@ -115,6 +115,41 @@ impl History {
         runs
     }
 
+    /// Where `fan`'s sensor read nothing (a sleeping GPU), as (from, to)
+    /// seconds before the newest reading, out to the readings either side.
+    fn asleep(&self, fan: Fan) -> Vec<(f32, f32)> {
+        let readings = self.readings(fan);
+        let Some(newest) = readings.back() else {
+            return Vec::new();
+        };
+        let ago = |i: usize| newest.at.duration_since(readings[i].at).as_secs_f32();
+        let joined = |i: usize| readings[i + 1].at.duration_since(readings[i].at) <= GAP;
+        let mut stretches = Vec::new();
+        let mut start = None;
+        for (i, reading) in readings.iter().enumerate() {
+            if reading.temp.is_some() {
+                continue;
+            }
+            let first = *start.get_or_insert(i);
+            let last = i + 1 == readings.len();
+            if last || readings[i + 1].temp.is_some() || !joined(i) {
+                start = None;
+                let from = if first > 0 && joined(first - 1) {
+                    ago(first - 1)
+                } else {
+                    ago(first)
+                };
+                let to = if !last && joined(i) {
+                    ago(i + 1)
+                } else {
+                    ago(i)
+                };
+                stretches.push((from, to));
+            }
+        }
+        stretches
+    }
+
     /// The reading nearest `ago` seconds before the newest, and how long
     /// before it was.
     fn near(&self, fan: Fan, ago: f32) -> Option<(f32, Reading)> {
@@ -193,6 +228,29 @@ impl canvas::Program<Message> for Graph<'_> {
                 ..Text::default()
             });
         };
+
+        // Shaded, so a sleeping GPU isn't a line along the bottom.
+        for (from, to) in self.history.asleep(self.fan) {
+            let top = Self::to_screen(bounds, from, 100);
+            let bottom = Self::to_screen(bounds, to, 0);
+            let size = Size::new(bottom.x - top.x, bottom.y - top.y);
+            if size.width < 1.0 {
+                continue;
+            }
+            frame.fill(&Path::rectangle(top, size), colors.idle);
+            if size.width >= 48.0 {
+                frame.fill_text(Text {
+                    content: "Asleep".to_owned(),
+                    position: Point::new(top.x + size.width / 2.0, top.y + size.height / 2.0),
+                    color: colors.muted,
+                    size: 11.0.into(),
+                    font: theme::font(),
+                    align_x: text::Alignment::Center,
+                    align_y: iced::alignment::Vertical::Center,
+                    ..Text::default()
+                });
+            }
+        }
 
         for value in [0, 50, 100] {
             let from = Self::to_screen(bounds, SPAN.as_secs_f32(), value);
@@ -311,6 +369,27 @@ mod tests {
 
         let (ago, reading) = history.near(Fan::Gpu, 3.5).unwrap();
         assert_eq!((ago, reading.temp, reading.fan), (4.0, None, Some(0)));
+
+        // Shaded from where the line stops to where it starts again.
+        assert_eq!(history.asleep(Fan::Gpu), [(6.0, 0.0)]);
+        assert!(history.asleep(Fan::Cpu).is_empty());
+    }
+
+    #[test]
+    fn asleep_up_to_now_and_across_a_gap() {
+        let start = Instant::now();
+        let mut history = History::default();
+        for (secs, temp) in [(0, 0), (10, 0), (100, 0), (110, 50), (120, 0)] {
+            history.push(
+                start + Duration::from_secs(secs),
+                &status((60, 40), (temp, 0)),
+            );
+        }
+        // The daemon was away between 10 s and 100 s: no shade there.
+        assert_eq!(
+            history.asleep(Fan::Gpu),
+            [(120.0, 110.0), (20.0, 10.0), (10.0, 0.0)]
+        );
     }
 
     #[test]
