@@ -16,6 +16,12 @@ pkgs.testers.runNixOSTest {
           tray = {
             enable = true;
           };
+          theme = {
+            mode = "dark";
+            dark = {
+              strong = "#fab387";
+            };
+          };
           settings = {
             profiles = {
               ac = {
@@ -77,9 +83,10 @@ pkgs.testers.runNixOSTest {
         out = machine.fail(f"su alice -c '{call} SetCoolerBoost b true' 2>&1")
         assert "msi-ec doesn't expose it" in out, out
 
-    with subtest("graphical sessions get the tray"):
+    with subtest("graphical sessions get the tray, in its colours"):
         machine.succeed("grep -q 'ryukaze --hidden' /etc/systemd/user/ryukaze.service")
         machine.succeed("test -e /run/current-system/sw/share/applications/ryukaze.desktop")
+        machine.succeed("grep -q 'strong = \"#fab387\"' /etc/xdg/ryukaze/theme.toml")
 
     with subtest("ec_sys is there for the fans"):
         machine.succeed("grep -q 'options ec_sys write_support=1' /etc/modprobe.d/nixos.conf")

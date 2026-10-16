@@ -9,8 +9,11 @@ ryukaze-core.workspace = true
 iced.workspace = true
 ksni.workspace = true
 resvg.workspace = true
+serde.workspace = true
 tokio.workspace = true
+toml.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
 iced_test = "0.14"
+tempfile.workspace = true

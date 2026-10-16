@@ -29,6 +29,7 @@ fn main() -> iced::Result {
     if instance::hand_over(hidden) {
         return Ok(());
     }
+    theme::load();
 
     iced::daemon(
         move || app::App::new(session, hidden),

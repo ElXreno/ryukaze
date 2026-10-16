@@ -252,7 +252,11 @@ impl App {
 
     /// iced's plain Light or Dark; the styles in theme.rs only ask which.
     pub fn theme(&self, _window: window::Id) -> Theme {
-        if self.dark { Theme::Dark } else { Theme::Light }
+        if theme::is_dark(self.dark) {
+            Theme::Dark
+        } else {
+            Theme::Light
+        }
     }
 
     pub fn view(&self, _window: window::Id) -> Element<'_, Message> {

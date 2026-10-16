@@ -228,10 +228,11 @@ mod tests {
     #[test]
     fn the_readme_example_parses() {
         let readme = include_str!("../../../readme.md");
-        let (_, rest) = readme
-            .split_once("```toml\n")
-            .expect("a toml block in the readme");
-        let (example, _) = rest.split_once("```").unwrap();
+        let example = readme
+            .split("```toml\n")
+            .filter_map(|block| block.split_once("```").map(|(toml, _)| toml))
+            .find(|toml| toml.contains("[profiles."))
+            .expect("a config example in the readme");
         let config = load(example).unwrap();
         assert_eq!(config.charge_limit, Some(80));
         assert_eq!(config.fn_key.as_deref(), Some("left"));

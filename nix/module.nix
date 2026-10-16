@@ -52,6 +52,25 @@ in
           '';
         };
 
+        theme = lib.mkOption {
+          type = lib.types.nullOr toml.type;
+          default = null;
+          example = {
+            mode = "dark";
+            dark = {
+              background = "#11111b";
+              card = "#1e1e2e";
+              text = "#cdd6f4";
+              strong = "#fab387";
+            };
+          };
+          description = ''
+            The window's colours for everyone, as /etc/xdg/ryukaze/theme.toml
+            (see the README); a user's ~/.config/ryukaze/theme.toml replaces
+            it. The window reads it at start.
+          '';
+        };
+
         settings = lib.mkOption {
           inherit (toml) type;
           default = { };
@@ -118,6 +137,9 @@ in
     environment = {
       etc = {
         "ryukaze/config.toml".source = configFile;
+        "xdg/ryukaze/theme.toml" = lib.mkIf (cfg.theme != null) {
+          source = toml.generate "ryukaze-theme.toml" cfg.theme;
+        };
       };
 
       # The window and its launcher entry.

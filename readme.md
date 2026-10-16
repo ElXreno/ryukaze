@@ -22,7 +22,8 @@ polls the daemon every two seconds, so picks made elsewhere (Fn keys, the
 power profiles) show up. It renders in software: a GPU renderer would open
 Vulkan or GL, which on a hybrid laptop can wake the discrete GPU for a
 settings window. It's plain black on white or white on black, as the
-desktop prefers (the XDG settings portal's `color-scheme`).
+desktop prefers (the XDG settings portal's `color-scheme`), or in your
+colours (below).
 
 In the advanced fan mode the window shows each fan's curve: drag a dot
 sideways for where a step starts, up or down for its speed. It's drawn as
@@ -37,6 +38,33 @@ Share, and the camera where its switch does something.
 The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
 starting `ryukaze` again while it runs brings its window up.
+
+### Colours
+
+`ryukaze/theme.toml`, the first found in the XDG config dirs
+(`~/.config`, then `/etc/xdg`), is read at start. `mode` fixes the window
+light or dark whatever the desktop prefers, and `[light]` and `[dark]`
+take any of these colours over the built-in ones, as `#rrggbb` or
+`#rrggbbaa`:
+
+```toml
+mode = "dark"
+
+[dark]
+background = "#11111b" # behind everything
+card = "#1e1e2e"       # the panels
+border = "#313244"
+text = "#cdd6f4"
+muted = "#a6adc8"      # titles, hints
+idle = "#313244"       # a choice not taken
+hover = "#45475a"
+strong = "#fab387"     # the choice taken, a switch on, a filled bar
+on_strong = "#1e1e2e"  # text on it
+track = "#45475a"      # an empty bar, a switch off
+track_hover = "#585b70"
+knob = "#a6adc8"       # a switch's knob while off
+danger = "#f38ba8"     # what went wrong
+```
 
 ## Config
 

@@ -2334,7 +2334,10 @@ dependencies = [
  "ksni",
  "resvg",
  "ryukaze-core",
+ "serde",
+ "tempfile",
  "tokio",
+ "toml",
  "zbus",
 ]
 
