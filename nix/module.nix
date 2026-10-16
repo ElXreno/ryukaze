@@ -57,6 +57,7 @@ in
           default = null;
           example = {
             mode = "dark";
+            font = "Inter";
             dark = {
               background = "#11111b";
               card = "#1e1e2e";

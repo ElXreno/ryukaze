@@ -43,12 +43,13 @@ starting `ryukaze` again while it runs brings its window up.
 
 `ryukaze/theme.toml`, the first found in the XDG config dirs
 (`~/.config`, then `/etc/xdg`), is read at start. `mode` fixes the window
-light or dark whatever the desktop prefers, and `[light]` and `[dark]`
-take any of these colours over the built-in ones, as `#rrggbb` or
-`#rrggbbaa`:
+light or dark whatever the desktop prefers, `font` names a font family
+the system has, and `[light]` and `[dark]` take any of these colours over
+the built-in ones, as `#rrggbb` or `#rrggbbaa`:
 
 ```toml
 mode = "dark"
+font = "Inter"
 
 [dark]
 background = "#11111b" # behind everything

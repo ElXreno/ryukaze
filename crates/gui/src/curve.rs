@@ -188,6 +188,7 @@ impl canvas::Program<Message> for Editor {
                 position,
                 color: colors.muted,
                 size: 11.0.into(),
+                font: theme::font(),
                 ..Text::default()
             });
         };
@@ -286,6 +287,7 @@ impl canvas::Program<Message> for Editor {
                     position: Point::new(x, (at.y - 20.0).max(0.0)),
                     color: colors.text,
                     size: 12.0.into(),
+                    font: theme::font(),
                     ..Text::default()
                 });
             }

@@ -38,6 +38,7 @@ fn main() -> iced::Result {
     )
     .title("ryukaze")
     .theme(app::App::theme)
+    .default_font(theme::font())
     .style(|_, theme| theme::window(theme))
     .subscription(app::App::subscription)
     .run()

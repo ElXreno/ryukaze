@@ -12,7 +12,7 @@ use std::{
 };
 
 use iced::{
-    Border, Color, Theme, color,
+    Border, Color, Font, Theme, color,
     theme::Style,
     widget::{button, container, progress_bar, slider, text, toggler},
 };
@@ -98,12 +98,15 @@ impl Colors {
 struct Palettes {
     /// Light or dark whatever the desktop prefers.
     mode: Option<Mode>,
+    /// A family the system has; iced's default otherwise.
+    font: Option<&'static str>,
     light: Colors,
     dark: Colors,
 }
 
 const BUILT_IN: Palettes = Palettes {
     mode: None,
+    font: None,
     light: LIGHT,
     dark: DARK,
 };
@@ -122,11 +125,13 @@ enum Mode {
     Dark,
 }
 
-/// `ryukaze/theme.toml`: `mode`, and colours over the built-in ones by name.
+/// `ryukaze/theme.toml`: `mode`, `font`, and colours over the built-in ones
+/// by name.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct File {
     mode: Option<Mode>,
+    font: Option<String>,
     light: HashMap<String, String>,
     dark: HashMap<String, String>,
 }
@@ -176,6 +181,8 @@ fn parse(text: &str) -> Result<Palettes, String> {
     let file: File = toml::from_str(text).map_err(|err| err.to_string())?;
     let mut palettes = Palettes {
         mode: file.mode,
+        // Read once at start, and iced keeps font names for good.
+        font: file.font.map(|name| &*name.leak()),
         ..BUILT_IN
     };
     for (name, table, colors) in [
@@ -192,6 +199,11 @@ fn parse(text: &str) -> Result<Palettes, String> {
         }
     }
     Ok(palettes)
+}
+
+/// What all text is drawn in.
+pub fn font() -> Font {
+    palettes().font.map_or(Font::DEFAULT, Font::with_name)
 }
 
 /// Whether the window is dark: as the theme file fixes it, or as the
@@ -315,6 +327,7 @@ mod tests {
         let palettes = parse(
             r##"
             mode = "dark"
+            font = "Inter"
 
             [dark]
             strong = "#fab387"
@@ -323,6 +336,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(palettes.mode, Some(Mode::Dark));
+        assert_eq!(palettes.font, Some("Inter"));
         assert_eq!(palettes.dark.strong, color!(0xfab387));
         assert_eq!(palettes.dark.muted, color!(0xcdd6f4, 128.0 / 255.0));
         assert_eq!(palettes.dark.background, DARK.background);
@@ -333,6 +347,7 @@ mod tests {
     fn an_empty_file_changes_nothing() {
         let palettes = parse("").unwrap();
         assert_eq!(palettes.mode, None);
+        assert_eq!(palettes.font, None);
         assert_eq!((palettes.light, palettes.dark), (LIGHT, DARK));
     }
 
@@ -385,5 +400,6 @@ mod tests {
         let palettes = parse(example).unwrap();
         assert_eq!(palettes.mode, Some(Mode::Dark));
         assert_ne!(palettes.dark, DARK);
+        assert!(palettes.font.is_some());
     }
 }
