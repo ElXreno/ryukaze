@@ -1,13 +1,13 @@
 //! /etc/ryukaze/config.toml. Every key is optional: what's unset, the
 //! daemon leaves alone.
 
-use std::{fs, io, path::Path};
+use std::{collections::BTreeMap, fs, io, path::Path};
 
 use anyhow::{Context, Result, bail};
 use ryukaze_core::{
     COOLER_BOOST_MARKS,
     fans::{Curve, Fan},
-    keyboard::Color,
+    keyboard::{self, Color},
     power_supply::Source,
 };
 use serde::Deserialize;
@@ -54,6 +54,20 @@ pub struct Config {
 pub struct Keyboard {
     /// Every key alike: `#rrggbb`, or `off`.
     pub color: Option<KeyboardColor>,
+
+    /// Keys and groups of keys in their own, by name: a single key over a
+    /// group, a smaller group over a larger one.
+    pub keys: BTreeMap<String, KeyboardColor>,
+}
+
+impl Keyboard {
+    /// The keys with their own colours; their names were checked at load.
+    pub fn own(&self) -> Vec<(Vec<u8>, Color)> {
+        self.keys
+            .iter()
+            .filter_map(|(name, &KeyboardColor(color))| Some((keyboard::named(name)?, color)))
+            .collect()
+    }
 }
 
 /// A [`Color`] checked as it's parsed.
@@ -259,6 +273,14 @@ impl Config {
                 );
             }
         }
+        for name in config.keyboard.keys.keys() {
+            if keyboard::named(name).is_none() {
+                bail!(
+                    "{}: keyboard.keys: no key or group is called {name:?}",
+                    path.display()
+                );
+            }
+        }
         let boost = &config.cooler_boost;
         for (key, mark) in [("cpu_c", boost.cpu_c), ("gpu_c", boost.gpu_c)] {
             if !COOLER_BOOST_MARKS.contains(&mark) {
@@ -338,6 +360,15 @@ mod tests {
         assert_eq!(
             off.keyboard.color.map(|KeyboardColor(color)| color),
             Some(Color::OFF)
+        );
+        assert!(load("[keyboard.keys]\nhome = \"off\"\n").is_err());
+        let wasd = load("[keyboard.keys]\nwasd = \"#ff0000\"\nf7 = \"off\"\n").unwrap();
+        assert_eq!(
+            wasd.keyboard.own(),
+            [
+                (vec![0x40], Color::OFF),
+                (vec![0x1a, 0x04, 0x16, 0x07], Color([255, 0, 0]))
+            ]
         );
         assert!(
             !load("[power_profiles_daemon]\nsync = false\n")

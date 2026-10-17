@@ -113,8 +113,10 @@ impl Profiles {
         if let Some(side) = &self.config.fn_key {
             report(service.set_fn_key(side));
         }
-        if let Some(KeyboardColor(color)) = self.config.keyboard.color {
-            report(service.set_keyboard(color));
+        service.set_keyboard_keys(self.config.keyboard.own());
+        match self.config.keyboard.color {
+            Some(KeyboardColor(color)) => report(service.set_keyboard(color)),
+            None => report(service.keyboard_back()),
         }
         report(service.sync_curves());
         drop(service);

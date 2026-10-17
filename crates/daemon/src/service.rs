@@ -50,6 +50,8 @@ pub struct Service {
     /// The keyboard's backlight as last set, to set again when the
     /// controller loses it.
     keyboard_color: Option<Color>,
+    /// Keys with their own colours, over that one.
+    keyboard_keys: Vec<(Vec<u8>, Color)>,
     /// Where the controller's hidraw node is.
     dev: PathBuf,
 }
@@ -219,6 +221,7 @@ impl Service {
             dgpu_seen: None,
             proc: PathBuf::from("/proc"),
             keyboard_color: None,
+            keyboard_keys: Vec::new(),
             dev: PathBuf::from("/dev"),
         }
     }
@@ -338,26 +341,40 @@ impl Service {
         Ok(Some(format!("shift mode {mode}")))
     }
 
-    /// Every key in `color`; kept, so it goes back on when the controller
-    /// appears, should it not be there yet.
+    /// Keys with their own colours, from the config: lit with the next
+    /// colour for all, or by `keyboard_back`.
+    pub fn set_keyboard_keys(&mut self, keys: Vec<(Vec<u8>, Color)>) {
+        self.keyboard_keys = keys;
+    }
+
+    /// Every key in `color` but those with their own; kept, so it goes
+    /// back on when the controller appears, should it not be there yet.
     pub fn set_keyboard(&mut self, color: Color) -> fdo::Result<()> {
         self.keyboard_color = Some(color);
         let klc = self.keyboard().ok_or_else(|| {
             fdo::Error::NotSupported("keyboard: no backlight controller ryukaze knows".into())
         })?;
-        klc.set(color)
-            .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))?;
+        self.light(&klc)?;
         info!("keyboard: {color}");
         Ok(())
     }
 
-    /// The keyboard's colour again, if one was set: after sleep, and when
-    /// a hidraw device appears, which may be the controller coming back.
+    /// The keyboard's colours again, if any were set: at start for keys
+    /// alone, after sleep, and when a hidraw device appears, which may be
+    /// the controller coming back.
     pub fn keyboard_back(&self) -> fdo::Result<()> {
-        let (Some(color), Some(klc)) = (self.keyboard_color, self.keyboard()) else {
+        match self.keyboard() {
+            Some(klc) => self.light(&klc),
+            None => Ok(()),
+        }
+    }
+
+    fn light(&self, klc: &Klc) -> fdo::Result<()> {
+        let keys = keyboard::paint(self.keyboard_color, &self.keyboard_keys);
+        if keys.is_empty() {
             return Ok(());
-        };
-        klc.set(color)
+        }
+        klc.set(&keys)
             .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
     }
 

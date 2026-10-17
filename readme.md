@@ -167,13 +167,17 @@ gpu_c = 85
 [power_profiles_daemon]
 sync = true
 
-# The keyboard's backlight, every key alike: #rrggbb, or off. Set at start,
-# after sleep and when its controller comes back, on a controller checked:
-# the SteelSeries KLC (1038:113a) of the Alpha 17 C7VG. The colour goes to
-# the LEDs as it is, and they show light shades nearly white, blue strong:
-# a #fab387 peach on screen is about #ff6000 there.
+# The keyboard's backlight (see below), every key alike: #rrggbb, or off.
+# Set at start, after sleep and when its controller comes back.
 [keyboard]
 color = "#ff6000"
+
+# Keys and groups of keys in their own colours, over that one: a single key
+# over a group, a smaller group over a larger one. Without a colour for all,
+# the other keys keep theirs.
+[keyboard.keys]
+wasd = "#ff0000"
+arrows = "#ffffff"
 
 # The advanced fan mode, below. These are the defaults.
 [fans]
@@ -244,6 +248,32 @@ mode after a restart isn't already the one wanted, and waits for the
 answer. It doesn't write the `MsiDCVarData` EFI variable, as other MUX
 switchers do: the firmware reads that one for the Win/Fn swap, not for
 the MUX.
+
+## The keyboard's backlight
+
+On a controller checked, the SteelSeries KLC (1038:113a) of the Alpha 17
+C7VG, ryukazed colours the keys: all of them with `keyboard.color`, and
+some by name with `keyboard.keys`. The colour goes to the LEDs as it is,
+and they show light shades nearly white and blue strong: a `#fab387`
+peach on screen is about `#ff6000` there.
+
+Keys: `a` to `z`, `0` to `9`, `f1` to `f12`, `esc`, `tab`, `capslock`,
+`enter`, `backspace`, `space`, `minus`, `equal`, `lbracket`, `rbracket`,
+`backslash`, `semicolon`, `apostrophe`, `grave`, `comma`, `dot`, `slash`,
+`102nd` (the `\` between AltGr and Fn), `prtsc`, `scrolllock`, `insert`,
+`delete`, `pageup`, `pagedown` (Home and End share them), `up`, `down`,
+`left`, `right`, `numlock`, `kp0` to `kp9`, `kpslash`, `kpasterisk`,
+`kpminus`, `kpplus`, `kpenter`, `kpdot`, `lctrl`, `lshift`, `lalt`, `win`,
+`ralt`, `rshift`, `fn`, `copilot`, and `power`, the power button's light.
+
+Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
+Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
+(Ctrl, Shift, Alt, Win, Copilot, Fn) and `wasd`.
+
+The controller takes the colours from a HID feature report on its first
+interface: `0c 00 66 00`, then (key, red, green, blue) for up to about a
+hundred keys, each key its HID usage. A report changes the keys it lists
+and leaves the others, so all of them take two.
 
 ## D-Bus API
 
@@ -325,9 +355,5 @@ sysfs tree.
 - MSI Alpha 17 C7VG, EC firmware 17KKIMS1.115. msi-ec has the Fn key on
   the wrong side on it, which ryukaze turns round, and its camera bits
   (`webcam`, `webcam_block`) leave the camera working, so ryukaze doesn't
-  offer them there.
-  Its keyboard's backlight controller, a SteelSeries KLC (1038:113a),
-  takes the colours from a HID feature report: `0c 00 66 00`, then
-  (key, red, green, blue) for up to about a hundred keys, each key its
-  HID usage. A report changes the keys it lists and leaves the others, so
-  ryukazed sends two.
+  offer them there. Its keyboard's backlight is a SteelSeries KLC
+  (1038:113a).
