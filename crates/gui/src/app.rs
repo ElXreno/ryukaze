@@ -91,6 +91,7 @@ pub enum Message {
     FnKey(String),
     UsbShare(bool),
     GpuMode(String),
+    Scenario(String),
 }
 
 impl App {
@@ -245,6 +246,9 @@ impl App {
             Message::GpuMode(mode) => {
                 self.call(move |client| async move { client.set_gpu_mode(&mode).await })
             }
+            Message::Scenario(name) => {
+                self.call(move |client| async move { client.set_scenario(&name).await })
+            }
             Message::AutoCoolerBoost(on) => {
                 self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
             }
@@ -383,6 +387,15 @@ impl App {
                         .style(theme::muted),
                 ]
                 .spacing(10),
+            ));
+        }
+
+        // In the config's order; none picked while the modes make none.
+        if let Some(scenarios) = &status.scenarios {
+            let current = status.scenario.as_deref().unwrap_or_default();
+            sections = sections.push(section(
+                "Scenario",
+                modes_row(current, scenarios, &[], Message::Scenario),
             ));
         }
 
@@ -882,6 +895,18 @@ mod tests {
             Message::ShiftMode(shift),
             Message::FanMode(fan),
         ] if shift == "eco" && fan == "silent"));
+    }
+
+    #[test]
+    fn picks_a_scenario() {
+        let mut status = alpha17();
+        status.scenarios = Some(["silent", "balanced", "performance"].map(Into::into).into());
+        status.scenario = Some("balanced".into());
+        // The one in force isn't picked again.
+        let messages = clicks(&app(status), &["Balanced", "Performance"]);
+        assert!(matches!(&messages[..], [
+            Message::Scenario(name)
+        ] if name == "performance"));
     }
 
     #[test]

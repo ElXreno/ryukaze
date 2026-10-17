@@ -88,10 +88,15 @@ impl ksni::Tray for Tray {
     fn tool_tip(&self) -> ksni::ToolTip {
         let description = match &self.status {
             Ok(status) => [
-                status.shift_mode.as_deref().map(capitalize),
+                // The scenario says the modes in a word.
+                match &status.scenario {
+                    Some(scenario) => Some(capitalize(scenario)),
+                    None => status.shift_mode.as_deref().map(capitalize),
+                },
                 status
                     .fan_mode
                     .as_deref()
+                    .filter(|_| status.scenario.is_none())
                     .map(|mode| format!("fans {mode}")),
                 status.cpu_temp.map(|temp| format!("CPU {temp}°C")),
                 status.gpu_temp.map(|temp| match temp {
@@ -123,6 +128,16 @@ impl ksni::Tray for Tray {
         let mut items = Vec::new();
         match &self.status {
             Ok(status) => {
+                if let Some(scenarios) = &status.scenarios {
+                    let current = status.scenario.as_deref().unwrap_or_default();
+                    items.push(modes_menu(
+                        "Scenario",
+                        current,
+                        scenarios,
+                        &[],
+                        Message::Scenario,
+                    ));
+                }
                 if let (Some(current), Some(modes)) = (&status.shift_mode, &status.shift_modes) {
                     items.push(modes_menu(
                         "Performance",
@@ -144,11 +159,20 @@ impl ksni::Tray for Tray {
                 if let Some(on) = status.cooler_boost {
                     items.push(check("Cooler boost", on, Message::CoolerBoost));
                 }
+                if let Some(on) = status.auto_cooler_boost {
+                    items.push(check("Cooler boost when hot", on, Message::AutoCoolerBoost));
+                }
                 if let Some(on) = status.super_battery {
                     items.push(check("Super battery", on, Message::SuperBattery));
                 }
                 if let Some(on) = status.webcam {
                     items.push(check("Camera", on, Message::Webcam));
+                }
+                if let Some(on) = status.usb_share {
+                    items.push(check("Charge USB when off", on, Message::UsbShare));
+                }
+                if let (Some(now), Some(next)) = (&status.gpu_mode, &status.gpu_mode_next) {
+                    items.push(graphics_menu(now, next));
                 }
             }
             Err(err) => items.push(
@@ -225,6 +249,48 @@ fn check(label: &str, on: bool, toggle: fn(bool) -> Message) -> MenuItem<Tray> {
         label: label.into(),
         checked: on,
         activate: Box::new(move |tray: &mut Tray| tray.send(toggle(!on))),
+        ..Default::default()
+    }
+    .into()
+}
+
+/// The MUX: the pick is the mode after a restart, as in the window.
+fn graphics_menu(now: &str, next: &str) -> MenuItem<Tray> {
+    let modes = ["hybrid", "discrete"];
+    let mut submenu = vec![
+        RadioGroup {
+            selected: modes
+                .iter()
+                .position(|mode| *mode == next)
+                .unwrap_or(usize::MAX),
+            select: Box::new(move |tray: &mut Tray, index| {
+                if let Some(mode) = modes.get(index) {
+                    tray.send(Message::GpuMode((*mode).to_owned()));
+                }
+            }),
+            options: modes
+                .iter()
+                .map(|mode| RadioItem {
+                    label: capitalize(mode),
+                    ..Default::default()
+                })
+                .collect(),
+        }
+        .into(),
+    ];
+    if now != next {
+        submenu.push(
+            StandardItem {
+                label: format!("Switches to {next} at the next restart"),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+        );
+    }
+    SubMenu {
+        label: "Graphics".into(),
+        submenu,
         ..Default::default()
     }
     .into()

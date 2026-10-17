@@ -15,15 +15,15 @@ hand.
 
 ## The window
 
-`ryukaze` shows the CPU and GPU temperatures and fan speeds, the shift and
-fan modes, cooler boost, the battery (its charge, what it's doing, how worn
-it is), super battery and the charge limit, whichever this EC has, and
-polls the daemon every two seconds, so picks made elsewhere (Fn keys, the
-power profiles) show up. It renders in software: a GPU renderer would open
-Vulkan or GL, which on a hybrid laptop can wake the discrete GPU for a
-settings window. It's plain black on white or white on black, as the
-desktop prefers (the XDG settings portal's `color-scheme`), or in your
-colours (below).
+`ryukaze` shows the CPU and GPU temperatures and fan speeds, the
+scenarios, the shift and fan modes, cooler boost, the battery (its charge,
+what it's doing, how worn it is), super battery and the charge limit,
+whichever this EC has, and polls the daemon every two seconds, so picks
+made elsewhere (Fn keys, the power profiles) show up. It renders in
+software: a GPU renderer would open Vulkan or GL, which on a hybrid laptop
+can wake the discrete GPU for a settings window. It's plain black on white
+or white on black, as the desktop prefers (the XDG settings portal's
+`color-scheme`), or in your colours (below).
 
 Under each temperature, a graph has it and the fan's duty over the last
 ten minutes, read off the same polls, and every ten seconds while only the
@@ -42,9 +42,10 @@ What the window changes lasts until the daemon restarts. Copy as Nix, at
 the bottom, puts the settings on the clipboard in the shape of
 `services.ryukaze.settings`, to keep them.
 
-The tray icon has the modes and switches in its menu and opens the window
-on a click. `ryukaze --hidden` starts with the tray only, as at login;
-starting `ryukaze` again while it runs brings its window up.
+The tray icon has the scenarios, the modes, the switches and the GPU MUX
+in its menu, the scenario and the temperatures in its tooltip, and opens
+the window on a click. `ryukaze --hidden` starts with the tray only, as at
+login; starting `ryukaze` again while it runs brings its window up.
 
 `ryukaze --next-scenario` steps to the next scenario (see the config),
 prints its name and exits: for the key MSI Center had it on, Fn+F7, which
@@ -237,6 +238,7 @@ firmware reads that one for the Win/Fn swap, not for the MUX.
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
+| `SetScenario` | `s` | one of `scenarios` |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |
 
 Every setter reads the value back and fails if the EC didn't take it.

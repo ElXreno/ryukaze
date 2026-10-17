@@ -567,6 +567,19 @@ impl Service {
         Ok(scenario.name)
     }
 
+    /// One of the scenarios in Status.
+    pub fn set_scenario(&mut self, name: &str) -> fdo::Result<()> {
+        let Some(scenario) = self.scenarios.iter().find(|s| s.name == name).cloned() else {
+            let names = self.scenario_names().unwrap_or_default();
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{name} is not one of: {}",
+                names.join(", ")
+            )));
+        };
+        info!("scenario: {name}");
+        self.apply_profile(&scenario.modes())
+    }
+
     /// One of the shift modes in Status.
     pub fn set_shift_mode(&mut self, mode: &str) -> fdo::Result<()> {
         self.poke.notify_one();
@@ -1265,6 +1278,21 @@ mod tests {
         assert_eq!(service.status().scenario.as_deref(), Some("games"));
         // A lone one stays put.
         assert_eq!(service.next_scenario().unwrap(), "games");
+    }
+
+    #[test]
+    fn picks_a_scenario_by_name() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        service.set_scenario("silent").unwrap();
+        let status = service.status();
+        assert_eq!(status.scenario.as_deref(), Some("silent"));
+        assert_eq!(status.fan_mode.as_deref(), Some("silent"));
+        let err = service.set_scenario("loud").unwrap_err();
+        assert!(
+            err.to_string().contains("silent, balanced, performance"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -31,6 +31,7 @@ pub trait Ryukaze {
     fn set_gpu_mode(&self, mode: &str) -> zbus::Result<()>;
     fn set_cooler_boost_marks(&self, cpu_c: u8, gpu_c: u8) -> zbus::Result<()>;
     fn next_scenario(&self) -> zbus::Result<String>;
+    fn set_scenario(&self, name: &str) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn modes_changed(&self, modes: Status) -> zbus::Result<()>;
