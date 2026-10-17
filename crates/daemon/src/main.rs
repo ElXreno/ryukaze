@@ -32,7 +32,8 @@ use crate::{
     service::{Fans, Service},
 };
 
-/// How often the adaptive fans look at the temperatures.
+/// How often the adaptive fans look at the temperatures, and the daemon at
+/// the modes, which the EC may change by itself (Fn+F8).
 const ADAPT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 const USAGE: &str = "usage: ryukazed [--session] [--sysfs <dir>] [--config <file>]";
@@ -93,9 +94,11 @@ async fn main() -> Result<()> {
     } else {
         zbus::connection::Builder::system()?
     };
+    let service = Service::new(ec, fans, boost, scenarios);
+    let poke = service.poke();
     let connection = builder
         .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, Service::new(ec, fans, boost, scenarios))?
+        .serve_at(OBJECT_PATH, service)?
         .build()
         .await
         .with_context(|| format!("cannot take {BUS_NAME} on the bus"))?;
@@ -134,7 +137,11 @@ async fn main() -> Result<()> {
                 }
                 sleep::Event::Woke => profiles.woke().await,
             },
-            _ = tick.tick() => profiles.tick().await,
+            _ = poke.notified() => profiles.look().await,
+            _ = tick.tick() => {
+                profiles.tick().await;
+                profiles.look().await;
+            }
             _ = terminate.recv() => break,
             _ = interrupt.recv() => break,
         }

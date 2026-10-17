@@ -2,6 +2,7 @@ use std::{
     fmt::Display,
     io,
     path::Path,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -14,8 +15,9 @@ use ryukaze_core::{
     raw_ec::RawEc,
     usb_share::{self, UsbShare},
 };
+use tokio::sync::Notify;
 use tracing::{debug, info, warn};
-use zbus::fdo;
+use zbus::{fdo, object_server::SignalEmitter};
 
 use crate::{
     adaptive::{self, Smoothed, Smoothing},
@@ -33,6 +35,9 @@ pub struct Service {
     gpu_mux: Option<(RawEc, GpuMux)>,
     /// The configured scenarios, or the built-in ones.
     scenarios: Vec<Scenario>,
+    /// Told by the setters that may change the modes, so a change is
+    /// announced at once rather than at the next tick.
+    poke: Arc<Notify>,
 }
 
 /// Fan curves and tachometers, where the EC's layout is known and its RAM
@@ -198,6 +203,7 @@ impl Service {
             usb_share,
             gpu_mux,
             scenarios,
+            poke: Arc::new(Notify::new()),
         }
     }
 
@@ -229,6 +235,33 @@ impl Service {
             warn!("{err}");
         }
         first.map_or(Ok(()), Err)
+    }
+
+    /// Notified whenever a setter may have changed the modes.
+    pub fn poke(&self) -> Arc<Notify> {
+        self.poke.clone()
+    }
+
+    /// What `ModesChanged` carries: the four modes and the scenario they
+    /// make.
+    pub fn modes(&self) -> Status {
+        let now = self.snapshot();
+        let scenario = self.scenario(&now);
+        Status {
+            shift_mode: now.shift_mode,
+            fan_mode: now.fan_mode,
+            super_battery: now.super_battery,
+            cooler_boost: now.cooler_boost,
+            scenario,
+            ..Status::default()
+        }
+    }
+
+    fn scenario(&self, now: &Snapshot) -> Option<String> {
+        self.scenarios
+            .iter()
+            .find(|scenario| now.has(&scenario.modes()))
+            .map(|scenario| scenario.name.clone())
     }
 
     /// Every couple of seconds: the adaptive fans and the automatic boost.
@@ -445,11 +478,7 @@ impl Service {
             super_battery: field("super_battery", ec.super_battery()),
             cooler_boost: field("cooler_boost", ec.cooler_boost()),
         };
-        let scenario = self
-            .scenarios
-            .iter()
-            .find(|scenario| now.has(&scenario.modes()))
-            .map(|scenario| scenario.name.clone());
+        let scenario = self.scenario(&now);
         let scenarios = (!self.scenarios.is_empty())
             .then(|| self.scenarios.iter().map(|s| s.name.clone()).collect());
         Status {
@@ -493,6 +522,11 @@ impl Service {
         }
     }
 
+    /// The modes changed, whoever changed them: a client, a power profile,
+    /// the automatic boost, or the EC itself (Fn+F8). Seen within a tick.
+    #[zbus(signal)]
+    pub async fn modes_changed(emitter: &SignalEmitter<'_>, modes: Status) -> zbus::Result<()>;
+
     /// Applies the scenario after the one the EC is in (the first, if it's
     /// in none) and names it.
     pub fn next_scenario(&mut self) -> fdo::Result<String> {
@@ -515,6 +549,7 @@ impl Service {
 
     /// One of the shift modes in Status.
     pub fn set_shift_mode(&mut self, mode: &str) -> fdo::Result<()> {
+        self.poke.notify_one();
         let modes = self.ec.shift_modes().map_err(|e| error("shift_mode", e))?;
         check_mode(mode, &modes)?;
         apply(
@@ -528,6 +563,7 @@ impl Service {
     /// One of the fan modes in Status. Advanced runs on the configured
     /// curves, the others on the EC's own.
     pub fn set_fan_mode(&mut self, mode: &str) -> fdo::Result<()> {
+        self.poke.notify_one();
         let modes = self.ec.fan_modes().map_err(|e| error("fan_mode", e))?;
         check_mode(mode, &modes)?;
         let advanced = mode == "advanced";
@@ -705,6 +741,7 @@ impl Service {
     }
 
     pub fn set_super_battery(&mut self, on: bool) -> fdo::Result<()> {
+        self.poke.notify_one();
         apply(
             "super_battery",
             on,
@@ -714,6 +751,7 @@ impl Service {
     }
 
     pub fn set_cooler_boost(&mut self, on: bool) -> fdo::Result<()> {
+        self.poke.notify_one();
         apply(
             "cooler_boost",
             on,
@@ -1142,6 +1180,33 @@ mod tests {
         assert_eq!(service.status().scenario, None);
         assert_eq!(service.next_scenario().unwrap(), "silent");
         assert_eq!(service.status().super_battery, Some(false));
+    }
+
+    #[tokio::test]
+    async fn mode_setters_poke_and_modes_say_what_changed() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        let poke = service.poke();
+        let before = service.modes();
+        assert_eq!(before.scenario.as_deref(), Some("balanced"));
+        // Only the modes: nothing the window polls for.
+        assert_eq!(before.cpu_temp, None);
+
+        service.set_cooler_boost(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), poke.notified())
+            .await
+            .expect("a poke");
+        let after = service.modes();
+        assert_eq!(after.cooler_boost, Some(true));
+        assert_ne!(after, before);
+
+        // By the EC itself: no poke, but the next look sees it.
+        fs::write(
+            sysfs.path().join("devices/platform/msi-ec/shift_mode"),
+            "turbo\n",
+        )
+        .unwrap();
+        assert_eq!(service.modes().scenario.as_deref(), Some("performance"));
     }
 
     #[test]

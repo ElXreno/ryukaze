@@ -1,5 +1,9 @@
 //! ryukazed as seen from here.
 
+use iced::{
+    futures::{SinkExt, Stream, StreamExt},
+    stream,
+};
 use ryukaze_core::Status;
 
 /// Mirrors crates/daemon/src/service.rs; zbus takes only literals here.
@@ -27,6 +31,9 @@ pub trait Ryukaze {
     fn set_gpu_mode(&self, mode: &str) -> zbus::Result<()>;
     fn set_cooler_boost_marks(&self, cpu_c: u8, gpu_c: u8) -> zbus::Result<()>;
     fn next_scenario(&self) -> zbus::Result<String>;
+
+    #[zbus(signal)]
+    fn modes_changed(&self, modes: Status) -> zbus::Result<()>;
 }
 
 pub type Client = RyukazeProxy<'static>;
@@ -66,5 +73,26 @@ pub fn next_scenario(session: bool) -> Result<String, String> {
     runtime.block_on(async {
         let client = connect(session).await?;
         client.next_scenario().await.map_err(describe)
+    })
+}
+
+/// The modes each time ryukazed says they changed. Silent while it can't
+/// be reached: the polls cover that.
+pub fn modes(session: &bool) -> impl Stream<Item = Status> + use<> {
+    let session = *session;
+    stream::channel(4, async move |mut output| {
+        let Ok(client) = connect(session).await else {
+            return;
+        };
+        let Ok(mut changes) = client.receive_modes_changed().await else {
+            return;
+        };
+        while let Some(change) = changes.next().await {
+            if let Ok(args) = change.args()
+                && output.send(args.modes).await.is_err()
+            {
+                return;
+            }
+        }
     })
 }

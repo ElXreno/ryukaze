@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use ryukaze_core::{
-    OBJECT_PATH,
+    OBJECT_PATH, Status,
     power_supply::{self, Source},
 };
 use tracing::{info, warn};
@@ -22,6 +22,8 @@ pub struct Profiles {
     applied: Option<Source>,
     /// The EC's modes as they were when the laptop went to sleep.
     before_sleep: Option<Snapshot>,
+    /// The modes as last seen; none before the first look.
+    announced: Option<Status>,
 }
 
 impl Profiles {
@@ -32,7 +34,24 @@ impl Profiles {
             connection,
             applied: None,
             before_sleep: None,
+            announced: None,
         }
+    }
+
+    /// Announces the modes when they differ from the last look: after a
+    /// setter, and every tick for what the EC changes by itself.
+    pub async fn look(&mut self) {
+        let service = self.service().await;
+        let modes = service.get().await.modes();
+        if self
+            .announced
+            .as_ref()
+            .is_some_and(|before| *before != modes)
+            && let Err(err) = Service::modes_changed(service.signal_emitter(), modes.clone()).await
+        {
+            warn!("announcing the modes: {err}");
+        }
+        self.announced = Some(modes);
     }
 
     /// At start and when msi-ec binds: everything, as if just booted.

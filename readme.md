@@ -231,6 +231,11 @@ firmware reads that one for the Win/Fn swap, not for the MUX.
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |
 
 Every setter reads the value back and fails if the EC didn't take it.
+The signal `ModesChanged` (`a{sv}`) carries `shift_mode`, `fan_mode`,
+`super_battery`, `cooler_boost` and `scenario`, as in `Status`, whenever
+they change, whatever changed them: a call (at once), a power profile, the
+automatic boost or the EC itself on Fn+F8 (within two seconds). The window
+and the tray take it as it comes.
 [data/io.github.kontonkara.ryukaze.conf](data/io.github.kontonkara.ryukaze.conf)
 lets everyone call `Status` and only root call the setters.
 

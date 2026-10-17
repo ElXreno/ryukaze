@@ -62,6 +62,8 @@ pub enum Message {
     Connected(Result<Client, String>),
     Tick,
     Status(Box<Result<Status, String>>),
+    /// ryukazed says the modes changed, from wherever.
+    ModesChanged(Box<Status>),
     ShiftMode(String),
     FanMode(String),
     SuperBattery(bool),
@@ -137,6 +139,16 @@ impl App {
                     self.history.push(Instant::now(), status);
                 }
                 self.status = Some(*status);
+                self.show_in_tray()
+            }
+            Message::ModesChanged(modes) => {
+                if let Some(Ok(status)) = &mut self.status {
+                    status.shift_mode = modes.shift_mode;
+                    status.fan_mode = modes.fan_mode;
+                    status.super_battery = modes.super_battery;
+                    status.cooler_boost = modes.cooler_boost;
+                    status.scenario = modes.scenario;
+                }
                 self.show_in_tray()
             }
             Message::ShiftMode(mode) => {
@@ -292,6 +304,8 @@ impl App {
         };
         Subscription::batch([
             iced::time::every(refresh).map(|_| Message::Tick),
+            Subscription::run_with(self.session, client::modes)
+                .map(|modes| Message::ModesChanged(Box::new(modes))),
             Subscription::run(appearance::dark).map(Message::Dark),
             Subscription::run(tray::run),
             Subscription::run(instance::serve),
@@ -908,6 +922,26 @@ mod tests {
         });
         let mut ui = simulator(charging.view(window::Id::unique()));
         assert!(ui.find("Charging · 45 W").is_ok());
+    }
+
+    #[test]
+    fn takes_the_modes_ryukazed_announces() {
+        let mut app = app(alpha17());
+        let _ = app.update(Message::ModesChanged(Box::new(Status {
+            shift_mode: Some("eco".into()),
+            fan_mode: Some("silent".into()),
+            cooler_boost: Some(true),
+            scenario: Some("silent".into()),
+            ..Status::default()
+        })));
+        let Some(Ok(status)) = &app.status else {
+            panic!("no status");
+        };
+        assert_eq!(status.shift_mode.as_deref(), Some("eco"));
+        assert_eq!(status.cooler_boost, Some(true));
+        assert_eq!(status.scenario.as_deref(), Some("silent"));
+        // The rest stays as polled.
+        assert_eq!(status.charge_limit, Some(80));
     }
 
     #[test]
