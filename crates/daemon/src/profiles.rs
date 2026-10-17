@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use zbus::{Connection, fdo};
 
 use crate::{
-    config::{Config, KeyboardColor},
+    config::Config,
     power_profiles::{self, Link},
     service::{Service, Snapshot},
 };
@@ -130,9 +130,9 @@ impl Profiles {
         let keyboard = &self.config.keyboard;
         let scenario = service.modes().scenario;
         report(service.configure_keyboard(
-            keyboard.color.map(|KeyboardColor(color)| color),
-            keyboard.own(),
-            keyboard.scenario_colors(),
+            keyboard.lightings(),
+            keyboard.profile.clone(),
+            keyboard.scenario_profiles(),
             scenario.as_deref(),
         ));
         report(service.sync_curves());

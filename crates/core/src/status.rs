@@ -111,10 +111,14 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub usb_share: Option<bool>,
 
-    /// The keyboard's backlight, where ryukaze knows its controller:
-    /// `#rrggbb`, `off`, or `default` until one is set, the controller's own.
+    /// The keyboard light's profile shown, where ryukaze knows its
+    /// controller and one is.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
-    pub keyboard_color: Option<String>,
+    pub keyboard_profile: Option<String>,
+
+    /// The profiles `NextKeyboardProfile` steps through, in order.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub keyboard_profiles: Option<Vec<String>>,
 
     /// Where the panel hangs: `hybrid` (off the iGPU) or `discrete` (off
     /// the dGPU).
@@ -166,7 +170,7 @@ pub struct Status {
 
 impl Status {
     /// What `ModesChanged` carries: the four modes, the scenario they make
-    /// and the scenarios there are.
+    /// and the scenarios there are, and the keyboard light's profiles.
     pub fn modes(&self) -> Status {
         Status {
             shift_mode: self.shift_mode.clone(),
@@ -175,6 +179,8 @@ impl Status {
             cooler_boost: self.cooler_boost,
             scenario: self.scenario.clone(),
             scenarios: self.scenarios.clone(),
+            keyboard_profile: self.keyboard_profile.clone(),
+            keyboard_profiles: self.keyboard_profiles.clone(),
             ..Status::default()
         }
     }

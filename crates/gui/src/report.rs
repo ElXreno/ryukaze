@@ -101,7 +101,14 @@ pub fn text(status: &Status) -> String {
                 status.fn_key.as_ref().map(|side| format!("{side} of Win")),
             ),
             ("Charge USB when off", status.usb_share.map(on)),
-            ("Keyboard light", status.keyboard_color.clone()),
+            (
+                "Keyboard light",
+                choices(
+                    status.keyboard_profile.as_deref(),
+                    &status.keyboard_profiles,
+                    &[],
+                ),
+            ),
         ],
         vec![
             (
@@ -352,7 +359,8 @@ mod tests {
             webcam: Some(true),
             fn_key: Some("left".into()),
             usb_share: Some(false),
-            keyboard_color: Some("#fab387".into()),
+            keyboard_profile: Some("orange".into()),
+            keyboard_profiles: Some(vec!["orange".into(), "rainbow".into()]),
             gpu_mode: Some("hybrid".into()),
             gpu_mode_next: Some("discrete".into()),
             dgpu_awake: Some(false),
@@ -389,7 +397,7 @@ Super battery          off
 Camera                 on
 Fn key                 left of Win
 Charge USB when off    off
-Keyboard light         #fab387
+Keyboard light         [orange] rainbow
 
 Graphics               hybrid, discrete after a restart
 dGPU                   asleep for 2 h 5 min

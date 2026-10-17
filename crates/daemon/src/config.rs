@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use ryukaze_core::{
     COOLER_BOOST_MARKS,
     fans::{Curve, Fan},
-    keyboard::{self, Color},
+    keyboard::{self, Color, Effect, Lighting},
     power_supply::Source,
 };
 use serde::Deserialize;
@@ -52,34 +52,157 @@ pub struct Config {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Keyboard {
-    /// Every key alike: `#rrggbb`, or `off`.
-    pub color: Option<KeyboardColor>,
+    /// The profile shown outside the scenarios with one of their own; the
+    /// first if none is named.
+    pub profile: Option<String>,
 
-    /// Keys and groups of keys in their own, by name: a single key over a
-    /// group, a smaller group over a larger one.
-    pub keys: BTreeMap<String, KeyboardColor>,
+    /// What NextKeyboardProfile steps through, in this order.
+    pub profiles: Vec<KeyboardProfile>,
 
-    /// The colour for all while the EC is in a scenario's modes, by the
-    /// scenario's name, over `color`.
-    pub scenarios: BTreeMap<String, KeyboardColor>,
+    /// A profile by scenario, shown while the EC is in its modes.
+    pub scenarios: BTreeMap<String, String>,
 
     /// The numpad dark while NumLock is off, but for NumLock itself.
     pub numpad_follows_numlock: bool,
 }
 
-impl Keyboard {
-    pub fn scenario_colors(&self) -> Vec<(String, Color)> {
-        self.scenarios
+/// One way to light the keyboard.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyboardProfile {
+    pub name: String,
+
+    #[serde(default)]
+    pub effect: EffectName,
+
+    /// The keys without their own: still, breathing, or between flashes;
+    /// with a cycle or a wave, the power button, which they pass by.
+    pub color: Option<KeyboardColor>,
+
+    /// How long a breath, or a round of the rainbow, takes.
+    pub period_ms: Option<u32>,
+
+    /// In `reactive`, what a pressed key flashes, and for how long.
+    pub flash: Option<KeyboardColor>,
+    pub flash_ms: Option<u32>,
+
+    /// Keys and groups of keys in their own colours, by name, still
+    /// whatever the effect: a single key over a group, a smaller group over
+    /// a larger one.
+    #[serde(default)]
+    pub keys: BTreeMap<String, KeyboardColor>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EffectName {
+    #[default]
+    Static,
+    Breathe,
+    Cycle,
+    Wave,
+    Reactive,
+}
+
+impl KeyboardProfile {
+    /// The light it makes, once checked: what its effect needs is there,
+    /// in range, nothing it doesn't use is, and its keys exist.
+    pub fn lighting(&self) -> Result<Lighting, String> {
+        let name = &self.name;
+        let color = self.color.map(|KeyboardColor(color)| color);
+        let needs_color = || {
+            color.map(|_| ()).ok_or_else(|| {
+                format!("keyboard profile {name:?}: {:?} needs a color", self.effect)
+            })
+        };
+        let period = |default: u32| {
+            let period = self.period_ms.unwrap_or(default);
+            if keyboard::PERIODS_MS.contains(&period) {
+                Ok(period)
+            } else {
+                Err(format!(
+                    "keyboard profile {name:?}: period_ms {period} is outside {}..{}",
+                    keyboard::PERIODS_MS.start(),
+                    keyboard::PERIODS_MS.end()
+                ))
+            }
+        };
+        let timed = matches!(
+            self.effect,
+            EffectName::Breathe | EffectName::Cycle | EffectName::Wave
+        );
+        if self.period_ms.is_some() && !timed {
+            return Err(format!(
+                "keyboard profile {name:?}: period_ms is for breathe, cycle and wave"
+            ));
+        }
+        if (self.flash.is_some() || self.flash_ms.is_some()) && self.effect != EffectName::Reactive
+        {
+            return Err(format!("keyboard profile {name:?}: flash is for reactive"));
+        }
+        let effect = match self.effect {
+            EffectName::Static => needs_color().map(|()| Effect::Static)?,
+            EffectName::Breathe => {
+                needs_color()?;
+                Effect::Breathe {
+                    period_ms: period(4000)?,
+                }
+            }
+            EffectName::Cycle => Effect::Cycle {
+                period_ms: period(6000)?,
+            },
+            EffectName::Wave => Effect::Wave {
+                period_ms: period(3000)?,
+            },
+            EffectName::Reactive => {
+                needs_color()?;
+                let KeyboardColor(flash) = self
+                    .flash
+                    .ok_or_else(|| format!("keyboard profile {name:?}: reactive needs a flash"))?;
+                let flash_ms = self.flash_ms.unwrap_or(500);
+                if !keyboard::FLASHES_MS.contains(&flash_ms) {
+                    return Err(format!(
+                        "keyboard profile {name:?}: flash_ms {flash_ms} is outside {}..{}",
+                        keyboard::FLASHES_MS.start(),
+                        keyboard::FLASHES_MS.end()
+                    ));
+                }
+                Effect::Reactive { flash, flash_ms }
+            }
+        };
+        let keys = self
+            .keys
             .iter()
-            .map(|(name, &KeyboardColor(color))| (name.clone(), color))
+            .map(|(key, &KeyboardColor(color))| {
+                keyboard::named(key)
+                    .map(|keys| (keys, color))
+                    .ok_or_else(|| {
+                        format!("keyboard profile {name:?}: no key or group is called {key:?}")
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Lighting {
+            effect,
+            color,
+            keys,
+        })
+    }
+}
+
+impl Keyboard {
+    /// The profiles, by name; checked at load.
+    pub fn lightings(&self) -> Vec<(String, Lighting)> {
+        self.profiles
+            .iter()
+            .filter_map(|profile| Some((profile.name.clone(), profile.lighting().ok()?)))
             .collect()
     }
 
-    /// The keys with their own colours; their names were checked at load.
-    pub fn own(&self) -> Vec<(Vec<u8>, Color)> {
-        self.keys
+    /// (scenario, profile) pairs.
+    pub fn scenario_profiles(&self) -> Vec<(String, String)> {
+        self.scenarios
             .iter()
-            .filter_map(|(name, &KeyboardColor(color))| Some((keyboard::named(name)?, color)))
+            .map(|(scenario, profile)| (scenario.clone(), profile.clone()))
             .collect()
     }
 }
@@ -287,20 +410,49 @@ impl Config {
                 );
             }
         }
-        for name in config.keyboard.scenarios.keys() {
-            if !names.contains(&name.as_str()) {
+        let keyboard = &config.keyboard;
+        for (i, profile) in keyboard.profiles.iter().enumerate() {
+            let name = &profile.name;
+            if name.trim().is_empty() {
+                bail!("{}: keyboard profile {} has no name", path.display(), i + 1);
+            }
+            if keyboard.profiles[..i]
+                .iter()
+                .any(|other| &other.name == name)
+            {
                 bail!(
-                    "{}: keyboard.scenarios.{name} is not one of: {}",
+                    "{}: two keyboard profiles are called {name:?}",
+                    path.display()
+                );
+            }
+            if let Err(err) = profile.lighting() {
+                bail!("{}: {err}", path.display());
+            }
+        }
+        let profile_names: Vec<&str> = keyboard.profiles.iter().map(|p| p.name.as_str()).collect();
+        let named_profiles = keyboard
+            .profile
+            .iter()
+            .map(|profile| ("keyboard.profile".to_owned(), profile));
+        let scenario_profiles = keyboard
+            .scenarios
+            .iter()
+            .map(|(scenario, profile)| (format!("keyboard.scenarios.{scenario}"), profile));
+        for (key, profile) in named_profiles.chain(scenario_profiles) {
+            if !profile_names.contains(&profile.as_str()) {
+                bail!(
+                    "{}: {key} {profile:?} is not a keyboard profile: {}",
                     path.display(),
-                    names.join(", ")
+                    profile_names.join(", ")
                 );
             }
         }
-        for name in config.keyboard.keys.keys() {
-            if keyboard::named(name).is_none() {
+        for scenario in keyboard.scenarios.keys() {
+            if !names.contains(&scenario.as_str()) {
                 bail!(
-                    "{}: keyboard.keys: no key or group is called {name:?}",
-                    path.display()
+                    "{}: keyboard.scenarios.{scenario} is not one of: {}",
+                    path.display(),
+                    names.join(", ")
                 );
             }
         }
@@ -378,28 +530,6 @@ mod tests {
         assert!(load("[cooler_boost]\ncpu_c = 40\n").is_err());
         assert!(load("[cooler_boost]\ngpu_c = 80\n").is_ok());
         assert!(load("").unwrap().power_profiles_daemon.sync);
-        assert!(load("[keyboard]\ncolor = \"peach\"\n").is_err());
-        let off = load("[keyboard]\ncolor = \"off\"\n").unwrap();
-        assert_eq!(
-            off.keyboard.color.map(|KeyboardColor(color)| color),
-            Some(Color::OFF)
-        );
-        assert!(load("[keyboard.keys]\nhome = \"off\"\n").is_err());
-        // Scenarios there are: the built-in ones, without any configured.
-        let silent = load("[keyboard.scenarios]\nsilent = \"#0040ff\"\n").unwrap();
-        assert_eq!(
-            silent.keyboard.scenario_colors(),
-            [("silent".to_owned(), Color([0, 0x40, 0xff]))]
-        );
-        assert!(load("[keyboard.scenarios]\nloud = \"#ff0000\"\n").is_err());
-        let wasd = load("[keyboard.keys]\nwasd = \"#ff0000\"\nf7 = \"off\"\n").unwrap();
-        assert_eq!(
-            wasd.keyboard.own(),
-            [
-                (vec![0x40], Color::OFF),
-                (vec![0x1a, 0x04, 0x16, 0x07], Color([255, 0, 0]))
-            ]
-        );
         assert!(
             !load("[power_profiles_daemon]\nsync = false\n")
                 .unwrap()
@@ -487,8 +617,93 @@ mod tests {
         assert_eq!(ac.scenario.as_deref(), Some("games"));
         assert!(config.power_profiles_daemon.sync);
         assert!(config.keyboard.numpad_follows_numlock);
-        let KeyboardColor(color) = config.keyboard.color.unwrap();
-        assert_eq!(color.to_string(), "#ff6000");
+        assert_eq!(config.keyboard.lightings().len(), 4);
+    }
+
+    #[test]
+    fn reads_keyboard_profiles() {
+        let config = load(
+            r##"
+            [keyboard]
+            profile = "breathe"
+
+            [keyboard.scenarios]
+            performance = "rainbow"
+
+            [[keyboard.profiles]]
+            name = "orange"
+            color = "#ff6000"
+            keys = { wasd = "#ff0000", f7 = "off" }
+
+            [[keyboard.profiles]]
+            name = "breathe"
+            effect = "breathe"
+            color = "#ff6000"
+
+            [[keyboard.profiles]]
+            name = "rainbow"
+            effect = "wave"
+            period_ms = 2500
+
+            [[keyboard.profiles]]
+            name = "typing"
+            effect = "reactive"
+            color = "#301000"
+            flash = "#ffffff"
+            "##,
+        )
+        .unwrap();
+        let lightings = config.keyboard.lightings();
+        let names: Vec<&str> = lightings.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["orange", "breathe", "rainbow", "typing"]);
+        assert_eq!(lightings[0].1.effect, Effect::Static);
+        assert_eq!(
+            lightings[0].1.keys,
+            [
+                (vec![0x40], Color::OFF),
+                (vec![0x1a, 0x04, 0x16, 0x07], Color([255, 0, 0]))
+            ]
+        );
+        assert_eq!(lightings[1].1.effect, Effect::Breathe { period_ms: 4000 });
+        assert_eq!(lightings[2].1.effect, Effect::Wave { period_ms: 2500 });
+        let flash = Color([255; 3]);
+        assert_eq!(
+            lightings[3].1,
+            Lighting {
+                effect: Effect::Reactive {
+                    flash,
+                    flash_ms: 500
+                },
+                color: Some(Color([0x30, 0x10, 0])),
+                keys: Vec::new(),
+            }
+        );
+        assert_eq!(
+            config.keyboard.scenario_profiles(),
+            [("performance".to_owned(), "rainbow".to_owned())]
+        );
+
+        let one = |profile: &str| load(&format!("[[keyboard.profiles]]\nname = \"p\"\n{profile}"));
+        assert!(one("color = \"#ff6000\"\n").is_ok());
+        for bad in [
+            // Still and breathing need a colour, flashing a flash.
+            "",
+            "effect = \"breathe\"\n",
+            "effect = \"reactive\"\ncolor = \"#301000\"\n",
+            // Too quick, and what an effect has no use for.
+            "effect = \"wave\"\nperiod_ms = 500\n",
+            "color = \"#ff6000\"\nperiod_ms = 4000\n",
+            "effect = \"cycle\"\nflash = \"#ffffff\"\n",
+            "effect = \"sparkle\"\n",
+            "color = \"#ff6000\"\nkeys = { home = \"off\" }\n",
+        ] {
+            assert!(one(bad).is_err(), "{bad}");
+        }
+        assert!(load("[keyboard]\nprofile = \"none\"\n").is_err());
+        assert!(load("[keyboard.scenarios]\nsilent = \"none\"\n").is_err());
+        let twice = "[[keyboard.profiles]]\nname = \"p\"\neffect = \"cycle\"\n";
+        assert!(load(&twice.repeat(2)).is_err());
+        assert!(load(&format!("{twice}[keyboard.scenarios]\nloud = \"p\"\n")).is_err());
     }
 
     #[test]

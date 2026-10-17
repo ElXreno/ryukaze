@@ -11,7 +11,7 @@ use ryukaze_core::{
     dgpu::{self, Dgpu},
     fans::{self, Curve, Fan, Layout},
     gpu_mux::{self, GpuMode, GpuMux},
-    keyboard::{self, Color, Klc},
+    keyboard::{self, Klc, Lighting},
     msi_ec::MsiEc,
     power_supply::{self, Source},
     raw_ec::RawEc,
@@ -47,15 +47,14 @@ pub struct Service {
     dgpu_seen: Option<(bool, Instant)>,
     /// Where its users are looked for.
     proc: PathBuf,
-    /// The colour for all the keys as set, by the config or over D-Bus.
-    keyboard_color: Option<Color>,
-    /// The colours for all while the EC is in a scenario's modes.
-    keyboard_scenarios: Vec<(String, Color)>,
-    /// The colour for all as last lit, the one set or a scenario's, to
-    /// light again when the controller loses it.
-    keyboard_lit: Option<Color>,
-    /// Keys with their own colours, over that one.
-    keyboard_keys: Vec<(Vec<u8>, Color)>,
+    /// The keyboard's light profiles, by name, in order.
+    keyboard_profiles: Vec<(String, Lighting)>,
+    /// The one shown outside the scenarios with one of their own.
+    keyboard_default: Option<String>,
+    /// (scenario, profile) pairs.
+    keyboard_scenarios: Vec<(String, String)>,
+    /// The one shown, to show again when the controller loses it.
+    keyboard_profile: Option<String>,
     /// NumLock, where the numpad follows it.
     numlock: Option<bool>,
     /// Where the controller's hidraw node is.
@@ -226,10 +225,10 @@ impl Service {
             dgpu,
             dgpu_seen: None,
             proc: PathBuf::from("/proc"),
-            keyboard_color: None,
+            keyboard_profiles: Vec::new(),
+            keyboard_default: None,
             keyboard_scenarios: Vec::new(),
-            keyboard_lit: None,
-            keyboard_keys: Vec::new(),
+            keyboard_profile: None,
             numlock: None,
             dev: PathBuf::from("/dev"),
         }
@@ -274,9 +273,12 @@ impl Service {
     /// What `ModesChanged` carries; see `Status::modes`.
     pub fn modes(&self) -> Status {
         let now = self.snapshot();
+        let keyboard = self.keyboard().map(|_| ());
         Status {
             scenario: self.scenario(&now),
             scenarios: self.scenario_names(),
+            keyboard_profile: keyboard.and(self.keyboard_profile.clone()),
+            keyboard_profiles: keyboard.and(self.keyboard_names()),
             shift_mode: now.shift_mode,
             fan_mode: now.fan_mode,
             super_battery: now.super_battery,
@@ -350,52 +352,34 @@ impl Service {
         Ok(Some(format!("shift mode {mode}")))
     }
 
-    /// From the config: the colour for all, keys with their own, and the
-    /// colours for all in scenarios; lit at once for `scenario`, the one
-    /// the EC is in.
+    /// From the config: the profiles, the one shown outside the scenarios
+    /// with their own (the first, if none is named), and theirs; shown at
+    /// once for `scenario`, the one the EC is in.
     pub fn configure_keyboard(
         &mut self,
-        color: Option<Color>,
-        keys: Vec<(Vec<u8>, Color)>,
-        scenarios: Vec<(String, Color)>,
+        profiles: Vec<(String, Lighting)>,
+        default: Option<String>,
+        scenarios: Vec<(String, String)>,
         scenario: Option<&str>,
     ) -> fdo::Result<()> {
-        self.keyboard_color = color;
-        self.keyboard_keys = keys;
+        self.keyboard_default = default.or_else(|| profiles.first().map(|(name, _)| name.clone()));
+        self.keyboard_profiles = profiles;
         self.keyboard_scenarios = scenarios;
-        self.keyboard_lit = self.keyboard_color_for(scenario);
-        let configured = self.keyboard_lit.is_some() || !self.keyboard_keys.is_empty();
-        if configured && self.keyboard().is_none() {
-            return Err(fdo::Error::NotSupported(
-                "keyboard: no backlight controller ryukaze knows, yet".into(),
-            ));
-        }
-        if let Some(color) = self.keyboard_lit {
+        self.keyboard_profile = self.keyboard_profile_for(scenario);
+        if let Some(profile) = &self.keyboard_profile {
+            if self.keyboard().is_none() {
+                return Err(no_keyboard(", yet"));
+            }
             info!(
-                "keyboard: {color}, for {}",
+                "keyboard: {profile}, for {}",
                 scenario.unwrap_or("no scenario")
             );
         }
         self.keyboard_back()
     }
 
-    /// Every key in `color` but those with their own, until the scenario
-    /// changes; kept, so it goes back on when the controller appears,
-    /// should it not be there yet.
-    pub fn set_keyboard(&mut self, color: Color) -> fdo::Result<()> {
-        self.keyboard_color = Some(color);
-        self.keyboard_lit = Some(color);
-        let klc = self.keyboard().ok_or_else(|| {
-            fdo::Error::NotSupported("keyboard: no backlight controller ryukaze knows".into())
-        })?;
-        self.light(&klc)?;
-        info!("keyboard: {color}");
-        Ok(())
-    }
-
-    /// The keyboard's colours again, if any were set: at start for keys
-    /// alone, after sleep, and when a hidraw device appears, which may be
-    /// the controller coming back.
+    /// The keyboard's light again: after sleep, and when a hidraw device
+    /// appears, which may be the controller coming back.
     pub fn keyboard_back(&self) -> fdo::Result<()> {
         match self.keyboard() {
             Some(klc) => self.light(&klc),
@@ -403,31 +387,55 @@ impl Service {
         }
     }
 
-    /// The colour for all of `scenario`, the one the EC's modes make, if it
-    /// has one, or else the one set; lit when it isn't already.
+    /// The profile of `scenario`, the one the EC's modes make, if it has
+    /// one, or else the usual one; shown unless it is already.
     pub fn keyboard_for(&mut self, scenario: Option<&str>) -> fdo::Result<()> {
-        let Some(color) = self.keyboard_color_for(scenario) else {
-            return Ok(());
-        };
-        if self.keyboard_lit == Some(color) {
+        let profile = self.keyboard_profile_for(scenario);
+        if profile.is_none() || profile == self.keyboard_profile {
             return Ok(());
         }
-        self.keyboard_lit = Some(color);
-        info!(
-            "keyboard: {color}, for {}",
-            scenario.unwrap_or("no scenario")
-        );
+        self.keyboard_profile = profile;
+        if let Some(profile) = &self.keyboard_profile {
+            info!(
+                "keyboard: {profile}, for {}",
+                scenario.unwrap_or("no scenario")
+            );
+        }
         self.keyboard_back()
     }
 
-    fn keyboard_color_for(&self, scenario: Option<&str>) -> Option<Color> {
+    fn keyboard_profile_for(&self, scenario: Option<&str>) -> Option<String> {
         let own = scenario.and_then(|name| {
             self.keyboard_scenarios
                 .iter()
                 .find(|(known, _)| known == name)
-                .map(|&(_, color)| color)
+                .map(|(_, profile)| profile.clone())
         });
-        own.or(self.keyboard_color)
+        own.or_else(|| self.keyboard_default.clone())
+    }
+
+    /// Shows the profile `name` until the scenario changes.
+    fn show_keyboard_profile(&mut self, name: &str) -> fdo::Result<()> {
+        let klc = self.keyboard().ok_or_else(|| no_keyboard(""))?;
+        if !self
+            .keyboard_profiles
+            .iter()
+            .any(|(known, _)| known == name)
+        {
+            let names: Vec<&str> = self
+                .keyboard_profiles
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{name} is not one of the keyboard profiles: {}",
+                names.join(", ")
+            )));
+        }
+        self.poke.notify_one();
+        self.keyboard_profile = Some(name.to_owned());
+        info!("keyboard: {name}");
+        self.light(&klc)
     }
 
     /// NumLock went on or off, for a numpad that follows it: dark while
@@ -441,26 +449,27 @@ impl Service {
     }
 
     fn light(&self, klc: &Klc) -> fdo::Result<()> {
-        let keys = self.lighting();
-        if keys.is_empty() {
+        let lighting = self.keyboard_profile.as_ref().and_then(|name| {
+            self.keyboard_profiles
+                .iter()
+                .find(|(known, _)| known == name)
+                .map(|(_, lighting)| lighting)
+        });
+        let numpad_dark = self.numlock == Some(false);
+        if lighting.is_none() && !numpad_dark {
             return Ok(());
         }
-        klc.set(&keys)
+        klc.show(lighting, numpad_dark)
             .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
     }
 
-    /// Each key's colour, as far as it was set.
-    fn lighting(&self) -> Vec<(u8, Color)> {
-        let mut keys = keyboard::paint(self.keyboard_lit, &self.keyboard_keys);
-        if self.numlock == Some(false) {
-            for key in keyboard::numpad_but_numlock() {
-                match keys.iter_mut().find(|(lit, _)| *lit == key) {
-                    Some(entry) => entry.1 = Color::OFF,
-                    None => keys.push((key, Color::OFF)),
-                }
-            }
-        }
-        keys
+    fn keyboard_names(&self) -> Option<Vec<String>> {
+        (!self.keyboard_profiles.is_empty()).then(|| {
+            self.keyboard_profiles
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
     }
 
     /// Looked for each time: its hidraw node changes when it comes back.
@@ -671,6 +680,7 @@ impl Service {
     /// Reads the EC's state afresh on every call.
     fn status(&self) -> Status {
         let ec = &self.ec;
+        let keyboard = self.keyboard().map(|_| ());
         // Quiet: whether it can be read was settled at start.
         let rpm = |fan| {
             let fans = self.fans.as_ref()?;
@@ -756,10 +766,8 @@ impl Service {
             cooler_boost_gpu_c: boost.map(|boost| boost.gpu_c),
             webcam: field("webcam", ec.webcam()),
             fn_key: field("fn_key", ec.fn_key()),
-            keyboard_color: self.keyboard().map(|_| {
-                self.keyboard_lit
-                    .map_or_else(|| "default".to_owned(), |color| color.to_string())
-            }),
+            keyboard_profile: keyboard.and(self.keyboard_profile.clone()),
+            keyboard_profiles: keyboard.and(self.keyboard_names()),
             usb_share: self
                 .usb_share
                 .as_ref()
@@ -918,11 +926,30 @@ impl Service {
         )
     }
 
-    /// The keyboard's backlight, `#rrggbb` or `off` for every key, until
-    /// the daemon restarts.
-    pub fn set_keyboard_color(&mut self, color: &str) -> fdo::Result<()> {
-        let color = color.parse().map_err(fdo::Error::InvalidArgs)?;
-        self.set_keyboard(color)
+    /// One of the keyboard profiles in Status, until the scenario changes.
+    pub fn set_keyboard_profile(&mut self, name: &str) -> fdo::Result<()> {
+        self.show_keyboard_profile(name)
+    }
+
+    /// Shows the keyboard profile after the one shown (the first, if none)
+    /// and names it.
+    pub fn next_keyboard_profile(&mut self) -> fdo::Result<String> {
+        if self.keyboard().is_none() {
+            return Err(no_keyboard(""));
+        }
+        if self.keyboard_profiles.is_empty() {
+            return Err(fdo::Error::NotSupported(
+                "keyboard: no profiles; set some in the config".into(),
+            ));
+        }
+        let next = self
+            .keyboard_profiles
+            .iter()
+            .position(|(name, _)| Some(name) == self.keyboard_profile.as_ref())
+            .map_or(0, |i| (i + 1) % self.keyboard_profiles.len());
+        let name = self.keyboard_profiles[next].0.clone();
+        self.show_keyboard_profile(&name)?;
+        Ok(name)
     }
 
     /// USB ports powered while the laptop is off.
@@ -1100,6 +1127,12 @@ fn error(name: &str, err: io::Error) -> fdo::Error {
         }
         _ => fdo::Error::IOError(format!("{name}: {err}")),
     }
+}
+
+fn no_keyboard(yet: &str) -> fdo::Error {
+    fdo::Error::NotSupported(format!(
+        "keyboard: no backlight controller ryukaze knows{yet}"
+    ))
 }
 
 fn raw_error(name: &str, err: io::Error) -> fdo::Error {
@@ -1620,18 +1653,37 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_colour_where_the_controller_is() {
+    fn keyboard_profiles_where_the_controller_is() {
+        use ryukaze_core::keyboard::Effect;
+
         let sysfs = alpha17("17KKIMS1.115");
         let mut service = service(sysfs.path());
+        let still = |hex: &str| Lighting {
+            effect: Effect::Static,
+            color: Some(hex.parse().unwrap()),
+            keys: Vec::new(),
+        };
+        let wave = Lighting {
+            effect: Effect::Wave { period_ms: 3000 },
+            color: None,
+            keys: Vec::new(),
+        };
+        let profiles = vec![
+            ("orange".to_owned(), still("#ff6000")),
+            ("rainbow".to_owned(), wave),
+            ("white".to_owned(), still("#ffffff")),
+        ];
+        let silent = vec![("silent".to_owned(), "rainbow".to_owned())];
+        // No controller: said so, and nothing in Status.
         assert!(matches!(
-            service.set_keyboard_color("peach"),
-            Err(fdo::Error::InvalidArgs(_))
-        ));
-        assert!(matches!(
-            service.set_keyboard_color("#fab387"),
+            service.configure_keyboard(profiles.clone(), None, silent.clone(), Some("balanced")),
             Err(fdo::Error::NotSupported(_))
         ));
-        assert_eq!(service.status().keyboard_color, None);
+        assert!(matches!(
+            service.next_keyboard_profile(),
+            Err(fdo::Error::NotSupported(_))
+        ));
+        assert_eq!(service.status().keyboard_profile, None);
 
         // The controller's first interface, its node a plain file here.
         let usb = sysfs.path().join("devices/usb/5-1.2:1.0");
@@ -1646,54 +1698,36 @@ mod tests {
         fs::write(dev.path().join("hidraw3"), "").unwrap();
         service.dev = dev.path().to_owned();
 
-        // Found, and the colour kept; a file takes no HID reports.
-        assert_eq!(service.status().keyboard_color.as_deref(), Some("#fab387"));
+        // The usual profile, the first; a scenario's own while the EC is in
+        // it. A file takes no HID reports, hence the errors.
+        let shown = |service: &Service| service.status().keyboard_profile.unwrap();
+        let _ = service.configure_keyboard(profiles, None, silent, Some("balanced"));
+        assert_eq!(shown(&service), "orange");
+        assert_eq!(
+            service.status().keyboard_profiles.unwrap(),
+            ["orange", "rainbow", "white"]
+        );
+        let _ = service.keyboard_for(Some("silent"));
+        assert_eq!(shown(&service), "rainbow");
+        let _ = service.keyboard_for(Some("balanced"));
+        assert_eq!(shown(&service), "orange");
+
+        // Picked, stepped through, and announced; the next scenario's wins.
         assert!(matches!(
-            service.set_keyboard_color("off"),
+            service.set_keyboard_profile("blue"),
+            Err(fdo::Error::InvalidArgs(_))
+        ));
+        assert!(matches!(
+            service.set_keyboard_profile("white"),
             Err(fdo::Error::IOError(_))
         ));
-        assert_eq!(service.status().keyboard_color.as_deref(), Some("off"));
+        assert_eq!(shown(&service), "white");
+        let _ = service.next_keyboard_profile();
+        assert_eq!(shown(&service), "orange");
+        assert_eq!(service.modes().keyboard_profile.as_deref(), Some("orange"));
+        let _ = service.keyboard_for(Some("silent"));
+        assert_eq!(shown(&service), "rainbow");
         assert!(service.keyboard_back().is_err());
-
-        // A scenario's own colour while the EC is in it, the one set in
-        // the others; the last change wins.
-        let blue = Color([0, 0x40, 0xff]);
-        let silent = vec![("silent".into(), blue)];
-        let _ = service.configure_keyboard(Some(Color::OFF), Vec::new(), silent, Some("balanced"));
-        assert_eq!(service.status().keyboard_color.as_deref(), Some("off"));
-        let lit = |service: &mut Service, scenario: Option<&str>| {
-            let _ = service.keyboard_for(scenario);
-            service.status().keyboard_color.unwrap()
-        };
-        assert_eq!(lit(&mut service, Some("silent")), "#0040ff");
-        assert_eq!(lit(&mut service, Some("balanced")), "off");
-        assert_eq!(lit(&mut service, Some("silent")), "#0040ff");
-        let _ = service.set_keyboard_color("#ff6000");
-        assert_eq!(service.status().keyboard_color.as_deref(), Some("#ff6000"));
-        assert_eq!(lit(&mut service, None), "#ff6000");
-
-        // With NumLock off, the numpad dark but for NumLock, whatever its
-        // keys were given.
-        let red = Color([255, 0, 0]);
-        let _ = service.configure_keyboard(
-            Some(Color([0xff, 0x60, 0])),
-            vec![(keyboard::named("kp5").unwrap(), red)],
-            Vec::new(),
-            None,
-        );
-        let colour = |service: &Service, name: &str| {
-            let key = keyboard::named(name).unwrap()[0];
-            let lighting = service.lighting();
-            lighting.iter().find(|(lit, _)| *lit == key).unwrap().1
-        };
-        assert_eq!(colour(&service, "kp5"), red);
-        let _ = service.numlock(false);
-        assert_eq!(colour(&service, "kp5"), Color::OFF);
-        assert_eq!(colour(&service, "kpenter"), Color::OFF);
-        assert_eq!(colour(&service, "numlock"), Color([0xff, 0x60, 0]));
-        assert_eq!(colour(&service, "a"), Color([0xff, 0x60, 0]));
-        let _ = service.numlock(true);
-        assert_eq!(colour(&service, "kp5"), red);
     }
 
     #[test]

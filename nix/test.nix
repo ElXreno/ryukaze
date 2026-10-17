@@ -103,7 +103,7 @@ pkgs.testers.runNixOSTest {
         out = machine.fail(f"su alice -c '{call} SetCoolerBoost b true' 2>&1")
         assert "msi-ec doesn't expose it" in out, out
         # Nor a keyboard backlight it knows.
-        out = machine.fail(f"su alice -c '{call} SetKeyboardColor s off' 2>&1")
+        out = machine.fail(f"su alice -c '{call} NextKeyboardProfile' 2>&1")
         assert "no backlight controller" in out, out
 
     with subtest("the key binding's command reaches the daemon"):

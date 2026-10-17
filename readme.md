@@ -167,25 +167,43 @@ gpu_c = 85
 [power_profiles_daemon]
 sync = true
 
-# The keyboard's backlight (see below), every key alike: #rrggbb, or off.
-# Set at start, after sleep and when its controller comes back.
+# The keyboard's backlight (see below), in profiles, one shown at a time:
+# set at start, after sleep and when its controller comes back.
 [keyboard]
-color = "#ff6000"
+# The one shown outside the scenarios with their own; the first if unset.
+profile = "orange"
 # The numpad dark while NumLock is off, but for NumLock itself.
 numpad_follows_numlock = true
 
-# Keys and groups of keys in their own colours, over that one: a single key
-# over a group, a smaller group over a larger one. Without a colour for all,
-# the other keys keep theirs.
-[keyboard.keys]
-wasd = "#ff0000"
-arrows = "#ffffff"
-
-# The colour for all while the EC is in a scenario's modes, over the one
-# above: the keyboard shows the scenario, whatever picked it.
+# A profile by scenario, shown while the EC is in its modes.
 [keyboard.scenarios]
-quiet = "#0040ff"
-games = "#ff0000"
+games = "rainbow"
+
+# What NextKeyboardProfile steps through, in this order. The effect is
+# static (the default), breathe, cycle, wave or reactive; keys and groups of
+# keys can have colours of their own, still whatever the effect.
+[[keyboard.profiles]]
+name = "orange"
+color = "#ff6000"
+keys = { wasd = "#ff0000", arrows = "#ffffff" }
+
+[[keyboard.profiles]]
+name = "breathe"
+effect = "breathe"
+color = "#ff6000"
+period_ms = 4000
+
+[[keyboard.profiles]]
+name = "rainbow"
+effect = "wave"
+period_ms = 3000
+
+[[keyboard.profiles]]
+name = "typing"
+effect = "reactive"
+color = "#301000"
+flash = "#ffffff"
+flash_ms = 500
 
 # The advanced fan mode, below. These are the defaults.
 [fans]
@@ -260,15 +278,35 @@ the MUX.
 ## The keyboard's backlight
 
 On a controller checked, the SteelSeries KLC (1038:113a) of the Alpha 17
-C7VG, ryukazed colours the keys: all of them with `keyboard.color`, or
-with a scenario's colour from `keyboard.scenarios` while the EC is in its
-modes, and some by name with `keyboard.keys`. A colour set over D-Bus
-lasts until the scenario changes. With `numpad_follows_numlock`, the
-numpad goes dark while NumLock is off: ryukazed reads the laptop
-keyboard's events for it, with the kernel holding back all but its
-lights' changes (`EVIOCSMASK`), so no key press ever reaches the daemon. The colour goes to the LEDs as it is,
-and they show light shades nearly white and blue strong: a `#fab387`
-peach on screen is about `#ff6000` there.
+C7VG, ryukazed lights the keys in profiles: `keyboard.profile` most of
+the time, a scenario's own from `keyboard.scenarios` while the EC is in
+its modes, and the one `NextKeyboardProfile` or `SetKeyboardProfile`
+picked until the scenario changes. A profile's effect is one of:
+
+- `static`: the keys still in `color`;
+- `breathe`: `color` fading out and back, a breath every `period_ms`;
+- `cycle`: every key through the rainbow together, a round every
+  `period_ms`;
+- `wave`: the rainbow as a wave out of the middle of the board;
+- `reactive`: the keys still in `color`, each flashing `flash` for
+  `flash_ms` when pressed.
+
+The effects are the controller's own: ryukazed sends one, and the
+controller runs it by itself, flashes included, so the computer has no
+part in them and the daemon never sees a key press. `period_ms` goes from
+2000 to 60000, `flash_ms` from 100 to 5000. The keys a profile gives
+colours of their own stay still over any effect, and so does the power
+button, which the effects pass by, in `color`.
+
+With `numpad_follows_numlock` the numpad goes dark while NumLock is off,
+NumLock itself aside. ryukazed reads the laptop keyboard's events for it
+with the kernel holding back all but its lights' changes (`EVIOCSMASK`),
+so no key press reaches the daemon this way either. When NumLock comes
+back on, the effect starts over.
+
+The colours go to the LEDs as they are, and they show light shades nearly
+white and blue strong: a `#fab387` peach on screen is about `#ff6000`
+there.
 
 Keys: `a` to `z`, `0` to `9`, `f1` to `f12`, `esc`, `tab`, `capslock`,
 `enter`, `backspace`, `space`, `minus`, `equal`, `lbracket`, `rbracket`,
@@ -283,10 +321,16 @@ Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
 Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
 (Ctrl, Shift, Alt, Win, Copilot, Fn) and `wasd`.
 
-The controller takes the colours from a HID feature report on its first
+Still colours go in a HID feature report on the controller's first
 interface: `0c 00 66 00`, then (key, red, green, blue) for up to about a
 hundred keys, each key its HID usage. A report changes the keys it lists
-and leaves the others, so all of them take two.
+and leaves the others. The effects go in the older protocol msi-perkeyrgb
+found on earlier MSI laptops: a `0b` report sets out an effect as a start
+colour and up to sixteen steps (each channel's change per 10 ms tick, in
+sixteenths, and the step's length in ticks), and a wave if it has one;
+`0e` reports put each key of a region on it, still, following it or
+flashing when pressed; and an output report `09` starts it. A still
+report then stops the keys it lists.
 
 ## D-Bus API
 
@@ -309,7 +353,8 @@ and leaves the others, so all of them take two.
 | `SetWebcam` | `b` | the camera on or off |
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
-| `SetKeyboardColor` | `s` | the keyboard's backlight, `#rrggbb` or `off` for every key, until the daemon restarts |
+| `SetKeyboardProfile` | `s` | one of `keyboard_profiles`, until the scenario changes |
+| `NextKeyboardProfile` | | shows the keyboard profile after the one shown, and names it: for a key binding |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |
