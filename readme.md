@@ -273,7 +273,8 @@ lets everyone call `Status` and only root call the setters.
 ```
 
 The module doesn't install msi-ec: the driver has to be there and know
-your EC firmware. `nix flake check` runs the module in a VM.
+your EC firmware. `nix flake check` runs the module in a VM; CI runs it on
+every push, with rustfmt, nixfmt and clippy.
 
 ## Try it
 
