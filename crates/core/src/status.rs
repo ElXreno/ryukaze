@@ -55,7 +55,8 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub gpu_temp: Option<u8>,
 
-    /// Fan duty in percent.
+    /// Fan duty in percent. Outside advanced, where the EC layout is known,
+    /// the speed both fans share: the EC runs them together.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub cpu_fan: Option<u8>,
 

@@ -164,7 +164,9 @@ super battery and reloads its own curves.
 ## The advanced fan mode
 
 Auto and silent run the fans on the EC's own curves, capped by the shift
-mode (eco 43 %, comfort 60 %) and with the two fans running together.
+mode (eco 43 %, comfort 60 %) and with the two fans running together: each
+fan's register still holds what its own curve asks (0 % from a cool GPU),
+so ryukaze reports the higher of the two for both.
 Advanced lifts the caps, lets each fan go its own way, and runs them on
 your curves (or the EC's, where you set none), in one of two ways:
 

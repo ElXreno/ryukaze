@@ -481,6 +481,19 @@ impl Service {
         let scenario = self.scenario(&now);
         let scenarios = (!self.scenarios.is_empty())
             .then(|| self.scenarios.iter().map(|s| s.name.clone()).collect());
+        // Outside advanced the EC runs the two fans together (the same rpm),
+        // yet each register holds only what its own curve asks: a cool GPU
+        // reads 0 % while its fan turns with the CPU's. Where the layout is
+        // known, both get the higher of the two. Seen with the GPU's lower;
+        // with it higher, the same is assumed.
+        let together = self.fans.is_some() && now.fan_mode.as_deref() != Some("advanced");
+        let (cpu_fan, gpu_fan) = match (
+            field("cpu/realtime_fan_speed", ec.cpu_fan()),
+            field("gpu/realtime_fan_speed", ec.gpu_fan()),
+        ) {
+            (Some(cpu), Some(gpu)) if together => (Some(cpu.max(gpu)), Some(cpu.max(gpu))),
+            fans => fans,
+        };
         Status {
             firmware: field("fw_version", ec.firmware()),
             firmware_date: field("fw_release_date", ec.firmware_date()),
@@ -494,8 +507,8 @@ impl Service {
             scenarios,
             cpu_temp: field("cpu/realtime_temperature", ec.cpu_temp()),
             gpu_temp: field("gpu/realtime_temperature", ec.gpu_temp()),
-            cpu_fan: field("cpu/realtime_fan_speed", ec.cpu_fan()),
-            gpu_fan: field("gpu/realtime_fan_speed", ec.gpu_fan()),
+            cpu_fan,
+            gpu_fan,
             cpu_rpm: rpm(Fan::Cpu),
             gpu_rpm: rpm(Fan::Gpu),
             cpu_curve: curve(Fan::Cpu),
@@ -876,6 +889,8 @@ mod tests {
             ("super_battery", "off\n"),
             ("cpu/realtime_temperature", "62\n"),
             ("gpu/realtime_temperature", "0\n"),
+            ("cpu/realtime_fan_speed", "45\n"),
+            ("gpu/realtime_fan_speed", "0\n"),
             ("cooler_boost", "off\n"),
             ("webcam", "on\n"),
             ("fn_key", "right\n"),
@@ -1180,6 +1195,24 @@ mod tests {
         assert_eq!(service.status().scenario, None);
         assert_eq!(service.next_scenario().unwrap(), "silent");
         assert_eq!(service.status().super_battery, Some(false));
+    }
+
+    #[test]
+    fn the_fans_run_together_outside_advanced() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        // Auto: the GPU's register says 0 %, its fan turns with the CPU's.
+        let status = service.status();
+        assert_eq!((status.cpu_fan, status.gpu_fan), (Some(45), Some(45)));
+
+        service.set_fan_mode("advanced").unwrap();
+        let status = service.status();
+        assert_eq!((status.cpu_fan, status.gpu_fan), (Some(45), Some(0)));
+
+        // Elsewhere the registers as they are.
+        let other = alpha17("17KKIMS1.114");
+        let status = service_with(other.path(), false).status();
+        assert_eq!((status.cpu_fan, status.gpu_fan), (Some(45), Some(0)));
     }
 
     #[tokio::test]
