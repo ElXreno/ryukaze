@@ -32,6 +32,8 @@ pub trait Ryukaze {
     fn set_cooler_boost_marks(&self, cpu_c: u8, gpu_c: u8) -> zbus::Result<()>;
     fn next_scenario(&self) -> zbus::Result<String>;
     fn set_scenario(&self, name: &str) -> zbus::Result<()>;
+    fn set_keyboard_profile(&self, name: &str) -> zbus::Result<()>;
+    fn next_keyboard_profile(&self) -> zbus::Result<String>;
 
     #[zbus(signal)]
     fn modes_changed(&self, modes: Status) -> zbus::Result<()>;

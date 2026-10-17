@@ -36,8 +36,8 @@ the fans take it, straight between the dots when adaptive, in steps when
 the EC goes through it, and it's on the fan when you let go. Adaptive and
 the GPU fan's help are switches under it, and "Cooler boost when hot"
 sits under the cooler boost switch, with its marks while it's on. Devices
-has which side of Win the Fn key is on, USB Power Share, and the camera
-where its switch does something; Graphics has the GPU MUX, and on a
+has which side of Win the Fn key is on, USB Power Share, the camera where
+its switch does something, and the keyboard light's profiles; Graphics has the GPU MUX, and on a
 hybrid laptop whether the dGPU sleeps, how long, and which processes hold
 it open while it doesn't (ryukazed reads the kernel's runtime PM status,
 which doesn't wake it, and looks through /proc only while it's up).
@@ -46,10 +46,11 @@ What the window changes lasts until the daemon restarts. Copy as Nix, at
 the bottom, puts the settings on the clipboard in the shape of
 `services.ryukaze.settings`, to keep them.
 
-The tray icon has the scenarios, the modes, the switches and the GPU MUX
-in its menu, the scenario and the temperatures in its tooltip, and opens
-the window on a click. `ryukaze --hidden` starts with the tray only, as at
-login; starting `ryukaze` again while it runs brings its window up.
+The tray icon has the scenarios, the modes, the switches, the keyboard
+light's profiles and the GPU MUX in its menu, the scenario and the
+temperatures in its tooltip, and opens the window on a click. `ryukaze
+--hidden` starts with the tray only, as at login; starting `ryukaze` again
+while it runs brings its window up.
 
 `ryukaze --next-scenario` steps to the next scenario (see the config),
 prints its name and exits: for the key MSI Center had it on, Fn+F7, which
@@ -58,7 +59,19 @@ reaches the desktop as `XF86Tools`. In niri:
 ```kdl
 binds {
     XF86Tools { spawn "ryukaze" "--next-scenario"; }
+    XF86KbdLightOnOff { spawn "ryukaze" "--next-keyboard-profile"; }
 }
+```
+
+`ryukaze --next-keyboard-profile` does the same for the keyboard light's
+profiles, for the key MSI had lighting on, Fn+F9. On the Alpha 17 that one
+sends a scancode the kernel has no key for (`e016`, in the kernel log as
+an unknown key); this hwdb entry makes it the keyboard light key, which
+reaches the desktop as `XF86KbdLightOnOff`:
+
+```
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svnMicro-Star*:pnAlpha17C7V*:*
+ KEYBOARD_KEY_96=kbdillumtoggle
 ```
 
 Where power-profiles-daemon runs, its profile goes with the shift mode
@@ -67,7 +80,8 @@ picks scenarios too, and shows the one Fn+F7 picked.
 
 `ryukaze --osd` shows a card at the bottom of the screen for a moment
 whenever the modes change, whatever changed them: the scenario among the
-others, cooler boost on or off, or the mode itself. It needs a compositor
+others, cooler boost on or off, the mode itself, or the keyboard light's
+profile. It needs a compositor
 with the layer shell, and draws in the window's colours with iced's
 software renderer, off screen, onto a surface of its own: winit has no
 layer shell, and its software windows no alpha.

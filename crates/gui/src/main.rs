@@ -13,11 +13,11 @@ mod report;
 mod theme;
 mod tray;
 
-const USAGE: &str =
-    "usage: ryukaze [--hidden] [--session] [--next-scenario | --osd | --status [--json]]";
+const USAGE: &str = "usage: ryukaze [--hidden] [--session] [--next-scenario | --next-keyboard-profile | --osd | --status [--json]]";
 
 fn main() -> iced::Result {
     let (mut session, mut hidden, mut next_scenario, mut osd) = (false, false, false, false);
+    let mut next_keyboard_profile = false;
     let (mut status, mut json) = (false, false);
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
@@ -27,6 +27,8 @@ fn main() -> iced::Result {
             "--session" => session = true,
             // Step to the next scenario and exit, for a key binding.
             "--next-scenario" => next_scenario = true,
+            // Step to the next keyboard light profile and exit, for Fn+F9.
+            "--next-keyboard-profile" => next_keyboard_profile = true,
             // The on-screen card for mode changes, a process of its own.
             "--osd" => osd = true,
             // Print what the window shows and exit; as JSON for scripts.
@@ -50,6 +52,12 @@ fn main() -> iced::Result {
     if next_scenario {
         exit_with(client::once(session, |client| async move {
             client.next_scenario().await
+        }));
+    }
+
+    if next_keyboard_profile {
+        exit_with(client::once(session, |client| async move {
+            client.next_keyboard_profile().await
         }));
     }
 

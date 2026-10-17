@@ -99,6 +99,7 @@ pub enum Message {
     UsbShare(bool),
     GpuMode(String),
     Scenario(String),
+    KeyboardProfile(String),
 }
 
 impl App {
@@ -157,6 +158,8 @@ impl App {
                     status.cooler_boost = modes.cooler_boost;
                     status.scenario = modes.scenario;
                     status.scenarios = modes.scenarios;
+                    status.keyboard_profile = modes.keyboard_profile;
+                    status.keyboard_profiles = modes.keyboard_profiles;
                 }
                 self.show_in_tray()
             }
@@ -255,6 +258,9 @@ impl App {
             }
             Message::Scenario(name) => {
                 self.call(move |client| async move { client.set_scenario(&name).await })
+            }
+            Message::KeyboardProfile(name) => {
+                self.call(move |client| async move { client.set_keyboard_profile(&name).await })
             }
             Message::AutoCoolerBoost(on) => {
                 self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
@@ -507,7 +513,21 @@ impl App {
         if let Some(on) = status.usb_share {
             devices = devices.push(switch("Charge USB when off", on, Message::UsbShare));
         }
-        if status.webcam.is_some() || status.fn_key.is_some() || status.usb_share.is_some() {
+        if let Some(profiles) = &status.keyboard_profiles {
+            let current = status.keyboard_profile.as_deref().unwrap_or_default();
+            devices = devices.push(
+                column![
+                    text("Keyboard light"),
+                    modes_row(current, profiles, &[], Message::KeyboardProfile),
+                ]
+                .spacing(8),
+            );
+        }
+        if status.webcam.is_some()
+            || status.fn_key.is_some()
+            || status.usb_share.is_some()
+            || status.keyboard_profiles.is_some()
+        {
             put([2, 1], section("Devices", devices));
         }
 
@@ -955,6 +975,21 @@ mod tests {
             Message::ShiftMode(shift),
             Message::FanMode(fan),
         ] if shift == "eco" && fan == "silent"));
+    }
+
+    #[test]
+    fn picks_a_keyboard_profile() {
+        let mut status = alpha17();
+        status.keyboard_profiles = Some(["orange", "rainbow", "typing"].map(Into::into).into());
+        status.keyboard_profile = Some("orange".into());
+        let messages = clicks(&app(status), &["Orange", "Rainbow"]);
+        assert!(matches!(&messages[..], [
+            Message::KeyboardProfile(name)
+        ] if name == "rainbow"));
+        // Without a controller, no picker, and no Devices just for it.
+        let without = app(alpha17());
+        let mut ui = simulator(without.view(window::Id::unique()));
+        assert!(ui.find("Keyboard light").is_err());
     }
 
     #[test]

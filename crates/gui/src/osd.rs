@@ -416,8 +416,13 @@ fn render(
 /// What a change shows.
 #[derive(Debug, Clone, PartialEq)]
 enum Card {
-    /// A scenario, among all of them.
-    Scenario { name: String, all: Vec<String> },
+    /// One of a few under its heading, among the others: a scenario, or the
+    /// keyboard light's profile.
+    Choice {
+        heading: &'static str,
+        name: String,
+        all: Vec<String>,
+    },
     /// A switch, on or off.
     Switch(&'static str, bool),
     /// A mode under its heading.
@@ -425,14 +430,24 @@ enum Card {
 }
 
 /// What to show for a change: the scenario when the modes now make one,
-/// else the one thing that changed.
+/// else the one thing that changed, the keyboard light among them.
 fn card(before: &Status, after: &Status) -> Option<Card> {
     if after.scenario != before.scenario
         && let Some(name) = &after.scenario
     {
-        return Some(Card::Scenario {
+        return Some(Card::Choice {
+            heading: "Scenario",
             name: name.clone(),
             all: after.scenarios.clone().unwrap_or_default(),
+        });
+    }
+    if after.keyboard_profile != before.keyboard_profile
+        && let Some(name) = &after.keyboard_profile
+    {
+        return Some(Card::Choice {
+            heading: "Keyboard light",
+            name: name.clone(),
+            all: after.keyboard_profiles.clone().unwrap_or_default(),
         });
     }
     if after.cooler_boost != before.cooler_boost
@@ -518,8 +533,8 @@ impl Faded {
 
     fn card<'a>(&self, card: &Card) -> Element<'a, ()> {
         match card {
-            Card::Scenario { name, all } if all.contains(name) => column![
-                self.heading("Scenario"),
+            Card::Choice { heading, name, all } if all.contains(name) => column![
+                self.heading(heading),
                 row(all
                     .iter()
                     .map(|each| self.pill(capitalize(each), each == name)))
@@ -528,8 +543,8 @@ impl Faded {
             .spacing(8)
             .align_x(Alignment::Center)
             .into(),
-            Card::Scenario { name, .. } => {
-                column![self.heading("Scenario"), text(capitalize(name)).size(20),]
+            Card::Choice { heading, name, .. } => {
+                column![self.heading(heading), text(capitalize(name)).size(20),]
                     .spacing(4)
                     .align_x(Alignment::Center)
                     .into()
@@ -678,7 +693,18 @@ mod tests {
         let after = modes("eco", "silent", false, Some("silent"));
         assert!(matches!(
             card(&before, &after),
-            Some(Card::Scenario { name, all }) if name == "silent" && all.len() == 3
+            Some(Card::Choice { heading: "Scenario", name, all }) if name == "silent" && all.len() == 3
+        ));
+
+        // The keyboard light's profile, the same way.
+        let rainbow = Status {
+            keyboard_profile: Some("rainbow".into()),
+            keyboard_profiles: Some(vec!["orange".into(), "rainbow".into()]),
+            ..before.clone()
+        };
+        assert!(matches!(
+            card(&before, &rainbow),
+            Some(Card::Choice { heading: "Keyboard light", name, all }) if name == "rainbow" && all.len() == 2
         ));
     }
 
