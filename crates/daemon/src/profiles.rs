@@ -165,6 +165,11 @@ impl Profiles {
         self.power_changed().await;
     }
 
+    /// NumLock went on or off.
+    pub async fn numlock(&self, on: bool) {
+        report(self.service().await.get_mut().await.numlock(on));
+    }
+
     /// The keyboard's colour again, where the controller may have lost it.
     pub async fn keyboard_back(&self) {
         report(self.service().await.get().await.keyboard_back());

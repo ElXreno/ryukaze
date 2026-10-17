@@ -171,6 +171,8 @@ sync = true
 # Set at start, after sleep and when its controller comes back.
 [keyboard]
 color = "#ff6000"
+# The numpad dark while NumLock is off, but for NumLock itself.
+numpad_follows_numlock = true
 
 # Keys and groups of keys in their own colours, over that one: a single key
 # over a group, a smaller group over a larger one. Without a colour for all,
@@ -261,7 +263,10 @@ On a controller checked, the SteelSeries KLC (1038:113a) of the Alpha 17
 C7VG, ryukazed colours the keys: all of them with `keyboard.color`, or
 with a scenario's colour from `keyboard.scenarios` while the EC is in its
 modes, and some by name with `keyboard.keys`. A colour set over D-Bus
-lasts until the scenario changes. The colour goes to the LEDs as it is,
+lasts until the scenario changes. With `numpad_follows_numlock`, the
+numpad goes dark while NumLock is off: ryukazed reads the laptop
+keyboard's events for it, with the kernel holding back all but its
+lights' changes (`EVIOCSMASK`), so no key press ever reaches the daemon. The colour goes to the LEDs as it is,
 and they show light shades nearly white and blue strong: a `#fab387`
 peach on screen is about `#ff6000` there.
 

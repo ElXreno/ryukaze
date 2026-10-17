@@ -5,6 +5,7 @@
 mod adaptive;
 mod boost;
 mod config;
+mod numlock;
 mod power_profiles;
 mod profiles;
 mod service;
@@ -95,7 +96,21 @@ async fn main() -> Result<()> {
     } else {
         zbus::connection::Builder::system()?
     };
-    let service = Service::new(ec, fans, boost, scenarios);
+    // Before the first colours go on, so the numpad starts as NumLock has it.
+    let (numlock_events, mut numlock) = mpsc::unbounded_channel();
+    let numlock_now = if config.keyboard.numpad_follows_numlock {
+        numlock::watch(&args.sysfs, numlock_events)
+            .inspect_err(|err| warn!("the numpad doesn't follow NumLock: {err}"))
+            .ok()
+    } else {
+        None
+    };
+    let mut service = Service::new(ec, fans, boost, scenarios);
+    if let Some(on) = numlock_now
+        && let Err(err) = service.numlock(on)
+    {
+        warn!("{err}");
+    }
     let poke = service.poke();
     let connection = builder
         .name(BUS_NAME)?
@@ -149,6 +164,7 @@ async fn main() -> Result<()> {
                 sleep::Event::Woke => profiles.woke().await,
             },
             Some(event) = ppd.recv() => profiles.power_profile(event).await,
+            Some(on) = numlock.recv() => profiles.numlock(on).await,
             _ = poke.notified() => profiles.look().await,
             _ = tick.tick() => {
                 profiles.tick().await;

@@ -202,6 +202,12 @@ fn groups() -> [(&'static str, Vec<u8>); 8] {
     ]
 }
 
+/// The numpad's keys but NumLock, which stays lit to be found while the
+/// others are dark.
+pub fn numpad_but_numlock() -> std::ops::RangeInclusive<u8> {
+    0x54..=0x63
+}
+
 /// The keys a key's or a group's name stands for.
 pub fn named(name: &str) -> Option<Vec<u8>> {
     let key = names()

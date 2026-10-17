@@ -56,6 +56,8 @@ pub struct Service {
     keyboard_lit: Option<Color>,
     /// Keys with their own colours, over that one.
     keyboard_keys: Vec<(Vec<u8>, Color)>,
+    /// NumLock, where the numpad follows it.
+    numlock: Option<bool>,
     /// Where the controller's hidraw node is.
     dev: PathBuf,
 }
@@ -228,6 +230,7 @@ impl Service {
             keyboard_scenarios: Vec::new(),
             keyboard_lit: None,
             keyboard_keys: Vec::new(),
+            numlock: None,
             dev: PathBuf::from("/dev"),
         }
     }
@@ -427,13 +430,37 @@ impl Service {
         own.or(self.keyboard_color)
     }
 
+    /// NumLock went on or off, for a numpad that follows it: dark while
+    /// it's off, but for NumLock itself.
+    pub fn numlock(&mut self, on: bool) -> fdo::Result<()> {
+        if self.numlock == Some(on) {
+            return Ok(());
+        }
+        self.numlock = Some(on);
+        self.keyboard_back()
+    }
+
     fn light(&self, klc: &Klc) -> fdo::Result<()> {
-        let keys = keyboard::paint(self.keyboard_lit, &self.keyboard_keys);
+        let keys = self.lighting();
         if keys.is_empty() {
             return Ok(());
         }
         klc.set(&keys)
             .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
+    }
+
+    /// Each key's colour, as far as it was set.
+    fn lighting(&self) -> Vec<(u8, Color)> {
+        let mut keys = keyboard::paint(self.keyboard_lit, &self.keyboard_keys);
+        if self.numlock == Some(false) {
+            for key in keyboard::numpad_but_numlock() {
+                match keys.iter_mut().find(|(lit, _)| *lit == key) {
+                    Some(entry) => entry.1 = Color::OFF,
+                    None => keys.push((key, Color::OFF)),
+                }
+            }
+        }
+        keys
     }
 
     /// Looked for each time: its hidraw node changes when it comes back.
@@ -1644,6 +1671,29 @@ mod tests {
         let _ = service.set_keyboard_color("#ff6000");
         assert_eq!(service.status().keyboard_color.as_deref(), Some("#ff6000"));
         assert_eq!(lit(&mut service, None), "#ff6000");
+
+        // With NumLock off, the numpad dark but for NumLock, whatever its
+        // keys were given.
+        let red = Color([255, 0, 0]);
+        let _ = service.configure_keyboard(
+            Some(Color([0xff, 0x60, 0])),
+            vec![(keyboard::named("kp5").unwrap(), red)],
+            Vec::new(),
+            None,
+        );
+        let colour = |service: &Service, name: &str| {
+            let key = keyboard::named(name).unwrap()[0];
+            let lighting = service.lighting();
+            lighting.iter().find(|(lit, _)| *lit == key).unwrap().1
+        };
+        assert_eq!(colour(&service, "kp5"), red);
+        let _ = service.numlock(false);
+        assert_eq!(colour(&service, "kp5"), Color::OFF);
+        assert_eq!(colour(&service, "kpenter"), Color::OFF);
+        assert_eq!(colour(&service, "numlock"), Color([0xff, 0x60, 0]));
+        assert_eq!(colour(&service, "a"), Color([0xff, 0x60, 0]));
+        let _ = service.numlock(true);
+        assert_eq!(colour(&service, "kp5"), red);
     }
 
     #[test]

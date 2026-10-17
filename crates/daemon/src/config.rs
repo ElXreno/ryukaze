@@ -62,6 +62,9 @@ pub struct Keyboard {
     /// The colour for all while the EC is in a scenario's modes, by the
     /// scenario's name, over `color`.
     pub scenarios: BTreeMap<String, KeyboardColor>,
+
+    /// The numpad dark while NumLock is off, but for NumLock itself.
+    pub numpad_follows_numlock: bool,
 }
 
 impl Keyboard {
@@ -483,6 +486,7 @@ mod tests {
         let ac = config.profiles.get(Source::Ac).unwrap();
         assert_eq!(ac.scenario.as_deref(), Some("games"));
         assert!(config.power_profiles_daemon.sync);
+        assert!(config.keyboard.numpad_follows_numlock);
         let KeyboardColor(color) = config.keyboard.color.unwrap();
         assert_eq!(color.to_string(), "#ff6000");
     }
