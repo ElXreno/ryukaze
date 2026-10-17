@@ -44,7 +44,8 @@ impl Profiles {
 
     /// Announces the modes when they differ from the last look: after a
     /// setter, and every tick for what the EC changes by itself. A new
-    /// shift mode goes to power-profiles-daemon, the first one too.
+    /// scenario takes its colour to the keyboard, and a new shift mode goes
+    /// to power-profiles-daemon, the first one too.
     pub async fn look(&mut self) {
         let service = self.service().await;
         let modes = service.get().await.modes();
@@ -53,6 +54,19 @@ impl Profiles {
             && let Err(err) = Service::modes_changed(service.signal_emitter(), modes.clone()).await
         {
             warn!("announcing the modes: {err}");
+        }
+        // The first look too: the profile applied at start may have
+        // changed the scenario since the colours went on.
+        if before
+            .as_ref()
+            .is_none_or(|before| before.scenario != modes.scenario)
+        {
+            report(
+                service
+                    .get_mut()
+                    .await
+                    .keyboard_for(modes.scenario.as_deref()),
+            );
         }
         if let (Some(link), Some(shift_mode)) = (&mut self.link, &modes.shift_mode)
             && before.is_none_or(|before| before.shift_mode != modes.shift_mode)
@@ -113,11 +127,14 @@ impl Profiles {
         if let Some(side) = &self.config.fn_key {
             report(service.set_fn_key(side));
         }
-        service.set_keyboard_keys(self.config.keyboard.own());
-        match self.config.keyboard.color {
-            Some(KeyboardColor(color)) => report(service.set_keyboard(color)),
-            None => report(service.keyboard_back()),
-        }
+        let keyboard = &self.config.keyboard;
+        let scenario = service.modes().scenario;
+        report(service.configure_keyboard(
+            keyboard.color.map(|KeyboardColor(color)| color),
+            keyboard.own(),
+            keyboard.scenario_colors(),
+            scenario.as_deref(),
+        ));
         report(service.sync_curves());
         drop(service);
         self.applied = None;

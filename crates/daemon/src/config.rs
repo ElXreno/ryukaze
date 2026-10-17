@@ -58,9 +58,20 @@ pub struct Keyboard {
     /// Keys and groups of keys in their own, by name: a single key over a
     /// group, a smaller group over a larger one.
     pub keys: BTreeMap<String, KeyboardColor>,
+
+    /// The colour for all while the EC is in a scenario's modes, by the
+    /// scenario's name, over `color`.
+    pub scenarios: BTreeMap<String, KeyboardColor>,
 }
 
 impl Keyboard {
+    pub fn scenario_colors(&self) -> Vec<(String, Color)> {
+        self.scenarios
+            .iter()
+            .map(|(name, &KeyboardColor(color))| (name.clone(), color))
+            .collect()
+    }
+
     /// The keys with their own colours; their names were checked at load.
     pub fn own(&self) -> Vec<(Vec<u8>, Color)> {
         self.keys
@@ -273,6 +284,15 @@ impl Config {
                 );
             }
         }
+        for name in config.keyboard.scenarios.keys() {
+            if !names.contains(&name.as_str()) {
+                bail!(
+                    "{}: keyboard.scenarios.{name} is not one of: {}",
+                    path.display(),
+                    names.join(", ")
+                );
+            }
+        }
         for name in config.keyboard.keys.keys() {
             if keyboard::named(name).is_none() {
                 bail!(
@@ -362,6 +382,13 @@ mod tests {
             Some(Color::OFF)
         );
         assert!(load("[keyboard.keys]\nhome = \"off\"\n").is_err());
+        // Scenarios there are: the built-in ones, without any configured.
+        let silent = load("[keyboard.scenarios]\nsilent = \"#0040ff\"\n").unwrap();
+        assert_eq!(
+            silent.keyboard.scenario_colors(),
+            [("silent".to_owned(), Color([0, 0x40, 0xff]))]
+        );
+        assert!(load("[keyboard.scenarios]\nloud = \"#ff0000\"\n").is_err());
         let wasd = load("[keyboard.keys]\nwasd = \"#ff0000\"\nf7 = \"off\"\n").unwrap();
         assert_eq!(
             wasd.keyboard.own(),

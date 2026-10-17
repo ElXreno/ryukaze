@@ -47,9 +47,13 @@ pub struct Service {
     dgpu_seen: Option<(bool, Instant)>,
     /// Where its users are looked for.
     proc: PathBuf,
-    /// The keyboard's backlight as last set, to set again when the
-    /// controller loses it.
+    /// The colour for all the keys as set, by the config or over D-Bus.
     keyboard_color: Option<Color>,
+    /// The colours for all while the EC is in a scenario's modes.
+    keyboard_scenarios: Vec<(String, Color)>,
+    /// The colour for all as last lit, the one set or a scenario's, to
+    /// light again when the controller loses it.
+    keyboard_lit: Option<Color>,
     /// Keys with their own colours, over that one.
     keyboard_keys: Vec<(Vec<u8>, Color)>,
     /// Where the controller's hidraw node is.
@@ -221,6 +225,8 @@ impl Service {
             dgpu_seen: None,
             proc: PathBuf::from("/proc"),
             keyboard_color: None,
+            keyboard_scenarios: Vec::new(),
+            keyboard_lit: None,
             keyboard_keys: Vec::new(),
             dev: PathBuf::from("/dev"),
         }
@@ -341,16 +347,41 @@ impl Service {
         Ok(Some(format!("shift mode {mode}")))
     }
 
-    /// Keys with their own colours, from the config: lit with the next
-    /// colour for all, or by `keyboard_back`.
-    pub fn set_keyboard_keys(&mut self, keys: Vec<(Vec<u8>, Color)>) {
+    /// From the config: the colour for all, keys with their own, and the
+    /// colours for all in scenarios; lit at once for `scenario`, the one
+    /// the EC is in.
+    pub fn configure_keyboard(
+        &mut self,
+        color: Option<Color>,
+        keys: Vec<(Vec<u8>, Color)>,
+        scenarios: Vec<(String, Color)>,
+        scenario: Option<&str>,
+    ) -> fdo::Result<()> {
+        self.keyboard_color = color;
         self.keyboard_keys = keys;
+        self.keyboard_scenarios = scenarios;
+        self.keyboard_lit = self.keyboard_color_for(scenario);
+        let configured = self.keyboard_lit.is_some() || !self.keyboard_keys.is_empty();
+        if configured && self.keyboard().is_none() {
+            return Err(fdo::Error::NotSupported(
+                "keyboard: no backlight controller ryukaze knows, yet".into(),
+            ));
+        }
+        if let Some(color) = self.keyboard_lit {
+            info!(
+                "keyboard: {color}, for {}",
+                scenario.unwrap_or("no scenario")
+            );
+        }
+        self.keyboard_back()
     }
 
-    /// Every key in `color` but those with their own; kept, so it goes
-    /// back on when the controller appears, should it not be there yet.
+    /// Every key in `color` but those with their own, until the scenario
+    /// changes; kept, so it goes back on when the controller appears,
+    /// should it not be there yet.
     pub fn set_keyboard(&mut self, color: Color) -> fdo::Result<()> {
         self.keyboard_color = Some(color);
+        self.keyboard_lit = Some(color);
         let klc = self.keyboard().ok_or_else(|| {
             fdo::Error::NotSupported("keyboard: no backlight controller ryukaze knows".into())
         })?;
@@ -369,8 +400,35 @@ impl Service {
         }
     }
 
+    /// The colour for all of `scenario`, the one the EC's modes make, if it
+    /// has one, or else the one set; lit when it isn't already.
+    pub fn keyboard_for(&mut self, scenario: Option<&str>) -> fdo::Result<()> {
+        let Some(color) = self.keyboard_color_for(scenario) else {
+            return Ok(());
+        };
+        if self.keyboard_lit == Some(color) {
+            return Ok(());
+        }
+        self.keyboard_lit = Some(color);
+        info!(
+            "keyboard: {color}, for {}",
+            scenario.unwrap_or("no scenario")
+        );
+        self.keyboard_back()
+    }
+
+    fn keyboard_color_for(&self, scenario: Option<&str>) -> Option<Color> {
+        let own = scenario.and_then(|name| {
+            self.keyboard_scenarios
+                .iter()
+                .find(|(known, _)| known == name)
+                .map(|&(_, color)| color)
+        });
+        own.or(self.keyboard_color)
+    }
+
     fn light(&self, klc: &Klc) -> fdo::Result<()> {
-        let keys = keyboard::paint(self.keyboard_color, &self.keyboard_keys);
+        let keys = keyboard::paint(self.keyboard_lit, &self.keyboard_keys);
         if keys.is_empty() {
             return Ok(());
         }
@@ -672,7 +730,7 @@ impl Service {
             webcam: field("webcam", ec.webcam()),
             fn_key: field("fn_key", ec.fn_key()),
             keyboard_color: self.keyboard().map(|_| {
-                self.keyboard_color
+                self.keyboard_lit
                     .map_or_else(|| "default".to_owned(), |color| color.to_string())
             }),
             usb_share: self
@@ -1569,6 +1627,23 @@ mod tests {
         ));
         assert_eq!(service.status().keyboard_color.as_deref(), Some("off"));
         assert!(service.keyboard_back().is_err());
+
+        // A scenario's own colour while the EC is in it, the one set in
+        // the others; the last change wins.
+        let blue = Color([0, 0x40, 0xff]);
+        let silent = vec![("silent".into(), blue)];
+        let _ = service.configure_keyboard(Some(Color::OFF), Vec::new(), silent, Some("balanced"));
+        assert_eq!(service.status().keyboard_color.as_deref(), Some("off"));
+        let lit = |service: &mut Service, scenario: Option<&str>| {
+            let _ = service.keyboard_for(scenario);
+            service.status().keyboard_color.unwrap()
+        };
+        assert_eq!(lit(&mut service, Some("silent")), "#0040ff");
+        assert_eq!(lit(&mut service, Some("balanced")), "off");
+        assert_eq!(lit(&mut service, Some("silent")), "#0040ff");
+        let _ = service.set_keyboard_color("#ff6000");
+        assert_eq!(service.status().keyboard_color.as_deref(), Some("#ff6000"));
+        assert_eq!(lit(&mut service, None), "#ff6000");
     }
 
     #[test]

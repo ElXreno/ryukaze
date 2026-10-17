@@ -179,6 +179,12 @@ color = "#ff6000"
 wasd = "#ff0000"
 arrows = "#ffffff"
 
+# The colour for all while the EC is in a scenario's modes, over the one
+# above: the keyboard shows the scenario, whatever picked it.
+[keyboard.scenarios]
+quiet = "#0040ff"
+games = "#ff0000"
+
 # The advanced fan mode, below. These are the defaults.
 [fans]
 adaptive = true
@@ -252,8 +258,10 @@ the MUX.
 ## The keyboard's backlight
 
 On a controller checked, the SteelSeries KLC (1038:113a) of the Alpha 17
-C7VG, ryukazed colours the keys: all of them with `keyboard.color`, and
-some by name with `keyboard.keys`. The colour goes to the LEDs as it is,
+C7VG, ryukazed colours the keys: all of them with `keyboard.color`, or
+with a scenario's colour from `keyboard.scenarios` while the EC is in its
+modes, and some by name with `keyboard.keys`. A colour set over D-Bus
+lasts until the scenario changes. The colour goes to the LEDs as it is,
 and they show light shades nearly white and blue strong: a `#fab387`
 peach on screen is about `#ff6000` there.
 
