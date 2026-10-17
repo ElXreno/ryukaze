@@ -8,13 +8,14 @@ mod history;
 mod icon;
 mod instance;
 mod nix;
+mod osd;
 mod theme;
 mod tray;
 
-const USAGE: &str = "usage: ryukaze [--hidden] [--session] [--next-scenario]";
+const USAGE: &str = "usage: ryukaze [--hidden] [--session] [--next-scenario | --osd]";
 
 fn main() -> iced::Result {
-    let (mut session, mut hidden, mut next_scenario) = (false, false, false);
+    let (mut session, mut hidden, mut next_scenario, mut osd) = (false, false, false, false);
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             // Start in the tray only, as at login.
@@ -23,11 +24,21 @@ fn main() -> iced::Result {
             "--session" => session = true,
             // Step to the next scenario and exit, for a key binding.
             "--next-scenario" => next_scenario = true,
+            // The on-screen card for mode changes, a process of its own.
+            "--osd" => osd = true,
             _ => {
                 eprintln!("unknown argument {arg:?}\n{USAGE}");
                 std::process::exit(2);
             }
         }
+    }
+
+    if osd {
+        if let Err(err) = osd::run(session) {
+            eprintln!("ryukaze: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
     }
 
     if next_scenario {

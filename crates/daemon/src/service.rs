@@ -242,19 +242,27 @@ impl Service {
         self.poke.clone()
     }
 
-    /// What `ModesChanged` carries: the four modes and the scenario they
-    /// make.
+    /// What `ModesChanged` carries; see `Status::modes`.
     pub fn modes(&self) -> Status {
         let now = self.snapshot();
-        let scenario = self.scenario(&now);
         Status {
+            scenario: self.scenario(&now),
+            scenarios: self.scenario_names(),
             shift_mode: now.shift_mode,
             fan_mode: now.fan_mode,
             super_battery: now.super_battery,
             cooler_boost: now.cooler_boost,
-            scenario,
             ..Status::default()
         }
+    }
+
+    fn scenario_names(&self) -> Option<Vec<String>> {
+        (!self.scenarios.is_empty()).then(|| {
+            self.scenarios
+                .iter()
+                .map(|scenario| scenario.name.clone())
+                .collect()
+        })
     }
 
     fn scenario(&self, now: &Snapshot) -> Option<String> {
@@ -479,8 +487,7 @@ impl Service {
             cooler_boost: field("cooler_boost", ec.cooler_boost()),
         };
         let scenario = self.scenario(&now);
-        let scenarios = (!self.scenarios.is_empty())
-            .then(|| self.scenarios.iter().map(|s| s.name.clone()).collect());
+        let scenarios = self.scenario_names();
         // Outside advanced the EC runs the two fans together (the same rpm),
         // yet each register holds only what its own curve asks: a cool GPU
         // reads 0 % while its fan turns with the CPU's. Where the layout is

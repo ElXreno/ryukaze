@@ -146,6 +146,22 @@ pub struct Status {
     pub charge_limit: Option<u8>,
 }
 
+impl Status {
+    /// What `ModesChanged` carries: the four modes, the scenario they make
+    /// and the scenarios there are.
+    pub fn modes(&self) -> Status {
+        Status {
+            shift_mode: self.shift_mode.clone(),
+            fan_mode: self.fan_mode.clone(),
+            super_battery: self.super_battery,
+            cooler_boost: self.cooler_boost,
+            scenario: self.scenario.clone(),
+            scenarios: self.scenarios.clone(),
+            ..Status::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

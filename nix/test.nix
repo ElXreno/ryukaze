@@ -16,6 +16,9 @@ pkgs.testers.runNixOSTest {
           tray = {
             enable = true;
           };
+          osd = {
+            enable = true;
+          };
           theme = {
             mode = "dark";
             dark = {
@@ -88,8 +91,9 @@ pkgs.testers.runNixOSTest {
         out = machine.fail("su alice -c 'ryukaze --next-scenario' 2>&1")
         assert "lacks the built-in ones' modes" in out, out
 
-    with subtest("graphical sessions get the tray, in its colours"):
+    with subtest("graphical sessions get the tray and the OSD, in its colours"):
         machine.succeed("grep -q 'ryukaze --hidden' /etc/systemd/user/ryukaze.service")
+        machine.succeed("grep -q 'ryukaze --osd' /etc/systemd/user/ryukaze-osd.service")
         machine.succeed("test -e /run/current-system/sw/share/applications/ryukaze.desktop")
         machine.succeed("grep -q 'strong = \"#fab387\"' /etc/xdg/ryukaze/theme.toml")
 

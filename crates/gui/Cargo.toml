@@ -7,9 +7,11 @@ license.workspace = true
 [dependencies]
 ryukaze-core.workspace = true
 iced.workspace = true
+iced_runtime.workspace = true
 ksni.workspace = true
 resvg.workspace = true
 serde.workspace = true
+smithay-client-toolkit.workspace = true
 tokio.workspace = true
 toml.workspace = true
 zbus.workspace = true

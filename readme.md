@@ -56,6 +56,13 @@ binds {
 }
 ```
 
+`ryukaze --osd` shows a card at the bottom of the screen for a moment
+whenever the modes change, whatever changed them: the scenario among the
+others, cooler boost on or off, or the mode itself. It needs a compositor
+with the layer shell, and draws in the window's colours with iced's
+software renderer, off screen, onto a surface of its own: winit has no
+layer shell, and its software windows no alpha.
+
 ### Colours
 
 `ryukaze/theme.toml`, the first found in the XDG config dirs
@@ -253,6 +260,7 @@ lets everyone call `Status` and only root call the setters.
     enable = true;
     users = [ "alice" ]; # may change the EC; everyone may read it
     tray.enable = true; # the icon in graphical sessions
+    osd.enable = true; # a card on screen when the modes change
     settings = {
       charge_limit = 80;
       profiles.ac.shift_mode = "turbo";

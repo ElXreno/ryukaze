@@ -52,6 +52,15 @@ in
           '';
         };
 
+        osd = {
+          enable = lib.mkEnableOption ''
+            a card at the bottom of the screen in graphical sessions for a
+            moment whenever the modes change, whatever changed them (Fn+F7,
+            Fn+F8, a power profile, the automatic boost). Needs a compositor
+            with the layer shell
+          '';
+        };
+
         theme = lib.mkOption {
           type = lib.types.nullOr toml.type;
           default = null;
@@ -169,6 +178,18 @@ in
             # StatusNotifierWatcher shows up.
             serviceConfig = {
               ExecStart = "${cfg.package}/bin/ryukaze --hidden";
+              Restart = "on-failure";
+            };
+          };
+
+          ryukaze-osd = lib.mkIf cfg.osd.enable {
+            description = "ryukaze on-screen display";
+            partOf = [ "graphical-session.target" ];
+            after = [ "graphical-session.target" ];
+            wantedBy = [ "graphical-session.target" ];
+
+            serviceConfig = {
+              ExecStart = "${cfg.package}/bin/ryukaze --osd";
               Restart = "on-failure";
             };
           };

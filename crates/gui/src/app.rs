@@ -148,6 +148,7 @@ impl App {
                     status.super_battery = modes.super_battery;
                     status.cooler_boost = modes.cooler_boost;
                     status.scenario = modes.scenario;
+                    status.scenarios = modes.scenarios;
                 }
                 self.show_in_tray()
             }

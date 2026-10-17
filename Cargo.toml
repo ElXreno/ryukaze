@@ -18,12 +18,16 @@ anyhow = "1"
 futures-util = { version = "0.3", default-features = false }
 # Software rendering only: a GPU renderer opens Vulkan/GL, and on a hybrid
 # laptop that can wake the discrete GPU for a small settings window.
-iced = { version = "0.14", default-features = false, features = ["tiny-skia", "wayland", "x11", "tokio", "crisp", "canvas"] }
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "wayland", "x11", "tokio", "crisp", "canvas", "advanced"] }
+# The OSD draws iced off screen, for a layer-shell surface of its own.
+iced_runtime = "0.14"
 ksni = { version = "0.3.6", default-features = false, features = ["tokio"] }
 # 0.45 draws with the same tiny-skia as iced.
 resvg = { version = "0.45", default-features = false }
 rustix = { version = "1.1", features = ["net"] }
 serde = { version = "1", features = ["derive"] }
+# The OSD's layer shell, as winit has it: no xkbcommon.
+smithay-client-toolkit = { version = "0.19.2", default-features = false, features = ["calloop"] }
 tempfile = "3"
 toml = "1.1"
 tokio = { version = "1.53", features = ["macros", "rt", "signal", "sync", "time"] }
