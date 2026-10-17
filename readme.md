@@ -68,6 +68,12 @@ with the layer shell, and draws in the window's colours with iced's
 software renderer, off screen, onto a surface of its own: winit has no
 layer shell, and its software windows no alpha.
 
+`ryukaze --status` prints what the window shows and exits, the current
+one of each choice in brackets as sysfs has it (`eco [comfort] turbo`).
+With `--json` it prints one JSON object instead, the dictionary `Status`
+returns over D-Bus (crates/core/src/status.rs says what each key is), for
+scripts and bars: `ryukaze --status --json | jq .cpu_temp`.
+
 ### Colours
 
 `ryukaze/theme.toml`, the first found in the XDG config dirs

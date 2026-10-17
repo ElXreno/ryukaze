@@ -65,15 +65,19 @@ pub fn describe(err: zbus::Error) -> String {
     }
 }
 
-/// `NextScenario` without the app, for a key binding: the scenario's name.
-pub fn next_scenario(session: bool) -> Result<String, String> {
+/// One call without the app, for the command line.
+pub fn once<T, F, Fut>(session: bool, call: F) -> Result<T, String>
+where
+    F: FnOnce(Client) -> Fut,
+    Fut: Future<Output = zbus::Result<T>>,
+{
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|err| err.to_string())?;
     runtime.block_on(async {
         let client = connect(session).await?;
-        client.next_scenario().await.map_err(describe)
+        call(client).await.map_err(describe)
     })
 }
 

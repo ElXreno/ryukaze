@@ -70,12 +70,18 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    import json
+
     call = "busctl call io.github.kontonkara.ryukaze /io/github/kontonkara/ryukaze io.github.kontonkara.ryukaze1"
 
     machine.wait_for_unit("ryukazed.service")
 
     with subtest("everyone reads the status"):
         machine.succeed(f"su bob -c '{call} Status'")
+        machine.succeed("su bob -c 'ryukaze --status'")
+        status = json.loads(machine.succeed("su bob -c 'ryukaze --status --json'"))
+        # No msi-ec, so no modes.
+        assert "shift_mode" not in status, status
 
     with subtest("the bus turns away users not listed"):
         out = machine.fail(f"su bob -c '{call} SetCoolerBoost b true' 2>&1")

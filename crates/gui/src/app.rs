@@ -20,7 +20,7 @@ use crate::{
     appearance,
     client::{self, Client},
     history::{self, History, Series},
-    icon, instance, theme, tray,
+    icon, instance, report, theme, tray,
 };
 
 /// Picks the EC makes on its own (Fn keys, the daemon's power profiles)
@@ -687,24 +687,9 @@ fn modes_row<'a>(
 /// The charge, what the battery is doing, and how worn it is.
 fn battery_summary<'a>(status: &Status) -> Option<Element<'a, Message>> {
     let level = status.battery_level?;
-    let watts = status
-        .battery_watts
-        .filter(|&watts| watts >= 0.5)
-        .map(|watts| format!(" · {watts:.0} W"))
+    let doing = report::battery_doing(status)
+        .map(|doing| capitalize(&doing))
         .unwrap_or_default();
-    // Not charging on AC at or over the limit's lower edge: the EC holds it.
-    let held = status.on_ac == Some(true)
-        && status
-            .charge_limit
-            .is_some_and(|limit| limit < 100 && level + 10 >= limit);
-    let doing = match status.battery_state.as_deref() {
-        Some("Charging") => format!("Charging{watts}"),
-        Some("Discharging") => format!("On battery{watts}"),
-        Some("Not charging") if held => "Held at the charge limit".to_owned(),
-        Some("Full") => "Full".to_owned(),
-        Some(other) => other.to_owned(),
-        None => String::new(),
-    };
     let health = status
         .battery_health
         .map(|health| format!("Health {health}%"))
@@ -762,17 +747,7 @@ fn gpu_mode<'a>(now: &str, next: &str) -> Element<'a, Message> {
 /// Whether the dGPU sleeps, for how long, and who keeps it up.
 fn dgpu<'a>(status: &Status) -> Option<Element<'a, Message>> {
     let awake = status.dgpu_awake?;
-    let since = status
-        .dgpu_for_secs
-        .map(|secs| format!(" for {}", duration(secs)))
-        .unwrap_or_default();
-    let users = status.dgpu_users.as_deref().unwrap_or_default();
-    let line = match (awake, users) {
-        (false, _) => format!("dGPU asleep{since}"),
-        (true, []) => format!("dGPU awake{since}"),
-        (true, users) => format!("dGPU awake{since}, held by {}", users.join(", ")),
-    };
-    let line = text(line).size(13);
+    let line = text(format!("dGPU {}", report::dgpu_state(status)?)).size(13);
     Some(
         if awake {
             line
@@ -781,15 +756,6 @@ fn dgpu<'a>(status: &Status) -> Option<Element<'a, Message>> {
         }
         .into(),
     )
-}
-
-/// 40 s, 12 min, 2 h 5 min.
-fn duration(secs: u64) -> String {
-    match secs {
-        0..60 => format!("{secs} s"),
-        60..3600 => format!("{} min", secs / 60),
-        _ => format!("{} h {} min", secs / 3600, secs % 3600 / 60),
-    }
 }
 
 fn small_button<'a>(label: &'a str, press: Message) -> Element<'a, Message> {
@@ -861,11 +827,7 @@ fn gauge<'a>(
 }
 
 fn charge_limit<'a>(percent: u8) -> Element<'a, Message> {
-    let resumes = if percent >= 100 {
-        "Charges to full".to_owned()
-    } else {
-        format!("Charging resumes below {}%", percent.saturating_sub(10))
-    };
+    let resumes = capitalize(&report::resumes(percent));
     column![
         row![
             text("Charge limit"),
