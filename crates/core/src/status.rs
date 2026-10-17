@@ -111,6 +111,11 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub usb_share: Option<bool>,
 
+    /// The keyboard's backlight, where ryukaze knows its controller:
+    /// `#rrggbb`, `off`, or `default` until one is set, the controller's own.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub keyboard_color: Option<String>,
+
     /// Where the panel hangs: `hybrid` (off the iGPU) or `discrete` (off
     /// the dGPU).
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]

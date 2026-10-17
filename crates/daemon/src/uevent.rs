@@ -1,4 +1,6 @@
-//! Kernel uevents: the AC adapter coming and going, and msi-ec binding.
+//! Kernel uevents: the AC adapter coming and going, msi-ec binding, and
+//! hidraw devices appearing (the keyboard's backlight controller among
+//! them).
 //! The same events udev rules would match, read straight from netlink.
 
 use std::{io, thread};
@@ -16,6 +18,8 @@ pub enum Event {
     Mains,
     /// msi-ec bound to its device: the driver was (re)loaded.
     MsiEcBound,
+    /// A hidraw device appeared.
+    Hidraw,
 }
 
 /// Starts a thread that reads the kernel's uevents and sends the ones
@@ -74,6 +78,7 @@ fn parse(message: &[u8]) -> Option<Event> {
     match (subsystem, action) {
         ("power_supply", "add" | "change") if supply_type == "Mains" => Some(Event::Mains),
         ("platform", "bind") if driver == "msi-ec" => Some(Event::MsiEcBound),
+        ("hidraw", "add") => Some(Event::Hidraw),
         _ => None,
     }
 }
@@ -113,6 +118,17 @@ mod tests {
             "SEQNUM=4243",
         ]);
         assert_eq!(parse(&bind), Some(Event::MsiEcBound));
+
+        let keyboard = message(&[
+            "add@/devices/pci0000:00/0000:00:08.1/0000:07:00.0/usb5/5-1/5-1.2/5-1.2:1.0/0003:1038:113A.0004/hidraw/hidraw3",
+            "ACTION=add",
+            "SUBSYSTEM=hidraw",
+            "MAJOR=242",
+            "MINOR=3",
+            "DEVNAME=hidraw3",
+            "SEQNUM=5150",
+        ]);
+        assert_eq!(parse(&keyboard), Some(Event::Hidraw));
     }
 
     #[test]

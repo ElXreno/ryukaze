@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use ryukaze_core::{
     COOLER_BOOST_MARKS,
     fans::{Curve, Fan},
+    keyboard::Color,
     power_supply::Source,
 };
 use serde::Deserialize;
@@ -42,6 +43,30 @@ pub struct Config {
     pub cooler_boost: boost::Config,
 
     pub power_profiles_daemon: PowerProfilesDaemon,
+
+    pub keyboard: Keyboard,
+}
+
+/// The keyboard's backlight, set at start, after sleep and whenever the
+/// controller comes back.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Keyboard {
+    /// Every key alike: `#rrggbb`, or `off`.
+    pub color: Option<KeyboardColor>,
+}
+
+/// A [`Color`] checked as it's parsed.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(try_from = "String")]
+pub struct KeyboardColor(pub Color);
+
+impl TryFrom<String> for KeyboardColor {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        text.parse().map(KeyboardColor)
+    }
 }
 
 /// power-profiles-daemon's profile and the shift mode kept in step; see
@@ -308,6 +333,12 @@ mod tests {
         assert!(load("[cooler_boost]\ncpu_c = 40\n").is_err());
         assert!(load("[cooler_boost]\ngpu_c = 80\n").is_ok());
         assert!(load("").unwrap().power_profiles_daemon.sync);
+        assert!(load("[keyboard]\ncolor = \"peach\"\n").is_err());
+        let off = load("[keyboard]\ncolor = \"off\"\n").unwrap();
+        assert_eq!(
+            off.keyboard.color.map(|KeyboardColor(color)| color),
+            Some(Color::OFF)
+        );
         assert!(
             !load("[power_profiles_daemon]\nsync = false\n")
                 .unwrap()
@@ -394,6 +425,8 @@ mod tests {
         let ac = config.profiles.get(Source::Ac).unwrap();
         assert_eq!(ac.scenario.as_deref(), Some("games"));
         assert!(config.power_profiles_daemon.sync);
+        let KeyboardColor(color) = config.keyboard.color.unwrap();
+        assert_eq!(color.to_string(), "#ff6000");
     }
 
     #[test]

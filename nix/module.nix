@@ -211,7 +211,8 @@ in
             ExecStart = "${cfg.package}/bin/ryukazed";
             Restart = "on-failure";
 
-            # Writes go to /sys only; uevents come over netlink.
+            # Writes go to /sys, and to the keyboard backlight's hidraw node in
+            # /dev; uevents come over netlink.
             ProtectSystem = "strict";
             ProtectHome = true;
             PrivateTmp = true;

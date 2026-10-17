@@ -139,6 +139,7 @@ async fn main() -> Result<()> {
                     info!("msi-ec bound again");
                     profiles.apply_all().await;
                 }
+                uevent::Event::Hidraw => profiles.keyboard_back().await,
             },
             Some(event) = sleep.recv() => match event {
                 sleep::Event::Sleeping(lock) => {

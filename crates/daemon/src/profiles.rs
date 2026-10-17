@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use zbus::{Connection, fdo};
 
 use crate::{
-    config::Config,
+    config::{Config, KeyboardColor},
     power_profiles::{self, Link},
     service::{Service, Snapshot},
 };
@@ -113,6 +113,9 @@ impl Profiles {
         if let Some(side) = &self.config.fn_key {
             report(service.set_fn_key(side));
         }
+        if let Some(KeyboardColor(color)) = self.config.keyboard.color {
+            report(service.set_keyboard(color));
+        }
         report(service.sync_curves());
         drop(service);
         self.applied = None;
@@ -139,7 +142,13 @@ impl Profiles {
         if let Some(snapshot) = self.before_sleep.take() {
             self.service().await.get_mut().await.restore(&snapshot);
         }
+        self.keyboard_back().await;
         self.power_changed().await;
+    }
+
+    /// The keyboard's colour again, where the controller may have lost it.
+    pub async fn keyboard_back(&self) {
+        report(self.service().await.get().await.keyboard_back());
     }
 
     /// Applies the profile only when the source differs from the last one,

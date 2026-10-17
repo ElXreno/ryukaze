@@ -167,6 +167,14 @@ gpu_c = 85
 [power_profiles_daemon]
 sync = true
 
+# The keyboard's backlight, every key alike: #rrggbb, or off. Set at start,
+# after sleep and when its controller comes back, on a controller checked:
+# the SteelSeries KLC (1038:113a) of the Alpha 17 C7VG. The colour goes to
+# the LEDs as it is, and they show light shades nearly white, blue strong:
+# a #fab387 peach on screen is about #ff6000 there.
+[keyboard]
+color = "#ff6000"
+
 # The advanced fan mode, below. These are the defaults.
 [fans]
 adaptive = true
@@ -258,6 +266,7 @@ the MUX.
 | `SetWebcam` | `b` | the camera on or off |
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
+| `SetKeyboardColor` | `s` | the keyboard's backlight, `#rrggbb` or `off` for every key, until the daemon restarts |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |
@@ -317,3 +326,8 @@ sysfs tree.
   the wrong side on it, which ryukaze turns round, and its camera bits
   (`webcam`, `webcam_block`) leave the camera working, so ryukaze doesn't
   offer them there.
+  Its keyboard's backlight controller, a SteelSeries KLC (1038:113a),
+  takes the colours from a HID feature report: `0c 00 66 00`, then
+  (key, red, green, blue) for up to about a hundred keys, each key its
+  HID usage. A report changes the keys it lists and leaves the others, so
+  ryukazed sends two.

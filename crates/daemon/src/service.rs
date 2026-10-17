@@ -11,6 +11,7 @@ use ryukaze_core::{
     dgpu::{self, Dgpu},
     fans::{self, Curve, Fan, Layout},
     gpu_mux::{self, GpuMode, GpuMux},
+    keyboard::{self, Color, Klc},
     msi_ec::MsiEc,
     power_supply::{self, Source},
     raw_ec::RawEc,
@@ -46,6 +47,11 @@ pub struct Service {
     dgpu_seen: Option<(bool, Instant)>,
     /// Where its users are looked for.
     proc: PathBuf,
+    /// The keyboard's backlight as last set, to set again when the
+    /// controller loses it.
+    keyboard_color: Option<Color>,
+    /// Where the controller's hidraw node is.
+    dev: PathBuf,
 }
 
 /// Fan curves and tachometers, where the EC's layout is known and its RAM
@@ -212,6 +218,8 @@ impl Service {
             dgpu,
             dgpu_seen: None,
             proc: PathBuf::from("/proc"),
+            keyboard_color: None,
+            dev: PathBuf::from("/dev"),
         }
     }
 
@@ -328,6 +336,34 @@ impl Service {
         };
         self.set_shift_mode(mode)?;
         Ok(Some(format!("shift mode {mode}")))
+    }
+
+    /// Every key in `color`; kept, so it goes back on when the controller
+    /// appears, should it not be there yet.
+    pub fn set_keyboard(&mut self, color: Color) -> fdo::Result<()> {
+        self.keyboard_color = Some(color);
+        let klc = self.keyboard().ok_or_else(|| {
+            fdo::Error::NotSupported("keyboard: no backlight controller ryukaze knows".into())
+        })?;
+        klc.set(color)
+            .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))?;
+        info!("keyboard: {color}");
+        Ok(())
+    }
+
+    /// The keyboard's colour again, if one was set: after sleep, and when
+    /// a hidraw device appears, which may be the controller coming back.
+    pub fn keyboard_back(&self) -> fdo::Result<()> {
+        let (Some(color), Some(klc)) = (self.keyboard_color, self.keyboard()) else {
+            return Ok(());
+        };
+        klc.set(color)
+            .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
+    }
+
+    /// Looked for each time: its hidraw node changes when it comes back.
+    fn keyboard(&self) -> Option<Klc> {
+        keyboard::find(self.ec.sysfs(), &self.dev)
     }
 
     fn scenario(&self, now: &Snapshot) -> Option<String> {
@@ -618,6 +654,10 @@ impl Service {
             cooler_boost_gpu_c: boost.map(|boost| boost.gpu_c),
             webcam: field("webcam", ec.webcam()),
             fn_key: field("fn_key", ec.fn_key()),
+            keyboard_color: self.keyboard().map(|_| {
+                self.keyboard_color
+                    .map_or_else(|| "default".to_owned(), |color| color.to_string())
+            }),
             usb_share: self
                 .usb_share
                 .as_ref()
@@ -774,6 +814,13 @@ impl Service {
             || self.ec.fn_key(),
             |_| self.ec.set_fn_key(side),
         )
+    }
+
+    /// The keyboard's backlight, `#rrggbb` or `off` for every key, until
+    /// the daemon restarts.
+    pub fn set_keyboard_color(&mut self, color: &str) -> fdo::Result<()> {
+        let color = color.parse().map_err(fdo::Error::InvalidArgs)?;
+        self.set_keyboard(color)
     }
 
     /// USB ports powered while the laptop is off.
@@ -1468,6 +1515,43 @@ mod tests {
         let status = service.status();
         assert_eq!(status.shift_mode.as_deref(), Some("eco"));
         assert_eq!(status.fan_mode.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn keyboard_colour_where_the_controller_is() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        assert!(matches!(
+            service.set_keyboard_color("peach"),
+            Err(fdo::Error::InvalidArgs(_))
+        ));
+        assert!(matches!(
+            service.set_keyboard_color("#fab387"),
+            Err(fdo::Error::NotSupported(_))
+        ));
+        assert_eq!(service.status().keyboard_color, None);
+
+        // The controller's first interface, its node a plain file here.
+        let usb = sysfs.path().join("devices/usb/5-1.2:1.0");
+        let hid = usb.join("0003:1038:113A.0004");
+        fs::create_dir_all(&hid).unwrap();
+        fs::write(usb.join("bInterfaceNumber"), "00\n").unwrap();
+        fs::write(hid.join("uevent"), "HID_ID=0003:00001038:0000113A\n").unwrap();
+        let class = sysfs.path().join("class/hidraw/hidraw3");
+        fs::create_dir_all(&class).unwrap();
+        std::os::unix::fs::symlink(&hid, class.join("device")).unwrap();
+        let dev = tempfile::tempdir().unwrap();
+        fs::write(dev.path().join("hidraw3"), "").unwrap();
+        service.dev = dev.path().to_owned();
+
+        // Found, and the colour kept; a file takes no HID reports.
+        assert_eq!(service.status().keyboard_color.as_deref(), Some("#fab387"));
+        assert!(matches!(
+            service.set_keyboard_color("off"),
+            Err(fdo::Error::IOError(_))
+        ));
+        assert_eq!(service.status().keyboard_color.as_deref(), Some("off"));
+        assert!(service.keyboard_back().is_err());
     }
 
     #[test]
