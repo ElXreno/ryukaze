@@ -33,6 +33,10 @@ pub struct Config {
 
     pub profiles: Profiles,
 
+    /// Sets of modes to step through in this order (`NextScenario`, which
+    /// MSI's Fn+F7 is for). None: silent, balanced and performance.
+    pub scenarios: Vec<Scenario>,
+
     pub fans: Fans,
 
     pub cooler_boost: boost::Config,
@@ -112,12 +116,33 @@ pub struct Profiles {
     pub battery: Option<Profile>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
     pub shift_mode: Option<String>,
     pub fan_mode: Option<String>,
     pub super_battery: Option<bool>,
+}
+
+/// A [`Profile`] with a name, written out in full in the config: serde
+/// can't flatten one into a struct that denies unknown fields.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scenario {
+    pub name: String,
+    pub shift_mode: Option<String>,
+    pub fan_mode: Option<String>,
+    pub super_battery: Option<bool>,
+}
+
+impl Scenario {
+    pub fn modes(&self) -> Profile {
+        Profile {
+            shift_mode: self.shift_mode.clone(),
+            fan_mode: self.fan_mode.clone(),
+            super_battery: self.super_battery,
+        }
+    }
 }
 
 impl Config {
@@ -146,6 +171,21 @@ impl Config {
                 "{}: fn_key {side:?} is neither left nor right",
                 path.display()
             );
+        }
+        for (i, scenario) in config.scenarios.iter().enumerate() {
+            let name = &scenario.name;
+            if name.trim().is_empty() {
+                bail!("{}: scenario {} has no name", path.display(), i + 1);
+            }
+            if config.scenarios[..i]
+                .iter()
+                .any(|other| &other.name == name)
+            {
+                bail!("{}: two scenarios are called {name:?}", path.display());
+            }
+            if scenario.modes() == Profile::default() {
+                bail!("{}: scenario {name:?} sets nothing", path.display());
+            }
         }
         let boost = &config.cooler_boost;
         for (key, mark) in [("cpu_c", boost.cpu_c), ("gpu_c", boost.gpu_c)] {
@@ -223,6 +263,34 @@ mod tests {
     }
 
     #[test]
+    fn reads_scenarios_in_order() {
+        let config = load(
+            r#"
+            [[scenarios]]
+            name = "quiet"
+            shift_mode = "eco"
+            fan_mode = "silent"
+
+            [[scenarios]]
+            name = "games"
+            shift_mode = "turbo"
+            "#,
+        )
+        .unwrap();
+        let names: Vec<_> = config.scenarios.iter().map(|s| &s.name[..]).collect();
+        assert_eq!(names, ["quiet", "games"]);
+        assert_eq!(config.scenarios[1].modes().fan_mode, None);
+        assert!(load("").unwrap().scenarios.is_empty());
+
+        assert!(load("[[scenarios]]\nname = \"a\"\n").is_err());
+        assert!(load("[[scenarios]]\nname = \" \"\nshift_mode = \"eco\"\n").is_err());
+        assert!(
+            load("[[scenarios]]\nname = \"a\"\nshift_mode = \"eco\"\n[[scenarios]]\nname = \"a\"\nshift_mode = \"turbo\"\n")
+                .is_err()
+        );
+    }
+
+    #[test]
     fn reads_fan_curves() {
         let config = load(
             r#"
@@ -252,6 +320,7 @@ mod tests {
         assert_eq!(config.fn_key.as_deref(), Some("left"));
         assert!(config.profiles.get(Source::Battery).is_some());
         assert!(config.fans.get(Fan::Cpu).is_some());
+        assert_eq!(config.scenarios.len(), 2);
     }
 
     #[test]

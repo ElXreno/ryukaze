@@ -39,6 +39,14 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub cooler_boost: Option<bool>,
 
+    /// The scenario whose modes the EC is in, if any.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub scenario: Option<String>,
+
+    /// The scenarios `NextScenario` steps through, in order.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub scenarios: Option<Vec<String>>,
+
     /// What the EC reads off the CPU, in °C.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub cpu_temp: Option<u8>,

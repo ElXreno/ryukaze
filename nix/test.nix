@@ -83,6 +83,11 @@ pkgs.testers.runNixOSTest {
         out = machine.fail(f"su alice -c '{call} SetCoolerBoost b true' 2>&1")
         assert "msi-ec doesn't expose it" in out, out
 
+    with subtest("the key binding's command reaches the daemon"):
+        # Without msi-ec there are no modes, so no built-in scenarios.
+        out = machine.fail("su alice -c 'ryukaze --next-scenario' 2>&1")
+        assert "lacks the built-in ones' modes" in out, out
+
     with subtest("graphical sessions get the tray, in its colours"):
         machine.succeed("grep -q 'ryukaze --hidden' /etc/systemd/user/ryukaze.service")
         machine.succeed("test -e /run/current-system/sw/share/applications/ryukaze.desktop")

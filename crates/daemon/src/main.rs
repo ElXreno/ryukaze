@@ -86,6 +86,7 @@ async fn main() -> Result<()> {
         std::mem::take(&mut config.fans),
     );
     let boost = AutoBoost::new(config.cooler_boost);
+    let scenarios = std::mem::take(&mut config.scenarios);
 
     let builder = if args.session {
         zbus::connection::Builder::session()?
@@ -94,7 +95,7 @@ async fn main() -> Result<()> {
     };
     let connection = builder
         .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, Service::new(ec, fans, boost))?
+        .serve_at(OBJECT_PATH, Service::new(ec, fans, boost, scenarios))?
         .build()
         .await
         .with_context(|| format!("cannot take {BUS_NAME} on the bus"))?;

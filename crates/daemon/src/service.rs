@@ -20,7 +20,7 @@ use zbus::fdo;
 use crate::{
     adaptive::{self, Smoothed, Smoothing},
     boost::AutoBoost,
-    config,
+    config::{self, Profile, Scenario},
 };
 
 pub struct Service {
@@ -31,6 +31,8 @@ pub struct Service {
     usb_share: Option<(RawEc, UsbShare)>,
     /// The GPU MUX, where the EC's map has it.
     gpu_mux: Option<(RawEc, GpuMux)>,
+    /// The configured scenarios, or the built-in ones.
+    scenarios: Vec<Scenario>,
 }
 
 /// Fan curves and tachometers, where the EC's layout is known and its RAM
@@ -141,19 +143,92 @@ pub struct Snapshot {
     cooler_boost: Option<bool>,
 }
 
+impl Snapshot {
+    /// In `profile`'s modes, as far as it sets them.
+    fn has(&self, profile: &Profile) -> bool {
+        fn same<T: PartialEq>(want: &Option<T>, now: &Option<T>) -> bool {
+            want.is_none() || want == now
+        }
+        same(&profile.shift_mode, &self.shift_mode)
+            && same(&profile.fan_mode, &self.fan_mode)
+            && same(&profile.super_battery, &self.super_battery)
+    }
+}
+
+/// MSI Center's, as far as this EC has their modes: one with a mode it
+/// lacks is left out, and super battery is turned off only where there is
+/// one.
+fn built_in_scenarios(ec: &MsiEc) -> Vec<Scenario> {
+    let shift_modes = ec.shift_modes().unwrap_or_default();
+    let fan_modes = ec.fan_modes().unwrap_or_default();
+    let super_battery = ec.super_battery().ok().map(|_| false);
+    [
+        ("silent", "eco", "silent"),
+        ("balanced", "comfort", "auto"),
+        ("performance", "turbo", "auto"),
+    ]
+    .into_iter()
+    .filter(|(_, shift, fan)| {
+        shift_modes.iter().any(|mode| mode == shift) && fan_modes.iter().any(|mode| mode == fan)
+    })
+    .map(|(name, shift, fan)| Scenario {
+        name: name.into(),
+        shift_mode: Some(shift.into()),
+        fan_mode: Some(fan.into()),
+        super_battery,
+    })
+    .collect()
+}
+
 impl Service {
-    pub fn new(ec: MsiEc, fans: Option<Fans>, boost: AutoBoost) -> Self {
+    pub fn new(ec: MsiEc, fans: Option<Fans>, boost: AutoBoost, scenarios: Vec<Scenario>) -> Self {
         let firmware = ec.firmware().unwrap_or_default();
         let usb_share =
             usb_share::usb_share(&firmware).map(|share| (RawEc::new(ec.sysfs()), share));
         let gpu_mux = gpu_mux::gpu_mux(&firmware).map(|mux| (RawEc::new(ec.sysfs()), mux));
+        let scenarios = if scenarios.is_empty() {
+            built_in_scenarios(&ec)
+        } else {
+            scenarios
+        };
         Self {
             ec,
             fans,
             boost,
             usb_share,
             gpu_mux,
+            scenarios,
         }
+    }
+
+    /// The modes `profile` sets: super battery left before the shift mode
+    /// goes up, and entered after it comes down. All are tried; the first
+    /// failure is returned and the others logged.
+    pub fn apply_profile(&mut self, profile: &Profile) -> fdo::Result<()> {
+        let super_battery = |service: &mut Self| {
+            profile
+                .super_battery
+                .map(|on| service.set_super_battery(on))
+        };
+        let fan_mode = |service: &mut Self| {
+            let mode = profile.fan_mode.as_deref()?;
+            Some(service.set_fan_mode(mode))
+        };
+        let shift_mode = |service: &mut Self| {
+            let mode = profile.shift_mode.as_deref()?;
+            Some(service.set_shift_mode(mode))
+        };
+        let results = if profile.super_battery == Some(true) {
+            [shift_mode(self), fan_mode(self), super_battery(self)]
+        } else {
+            [super_battery(self), fan_mode(self), shift_mode(self)]
+        };
+        let mut errors = results.into_iter().flatten().filter_map(Result::err);
+        let first = errors.next();
+        for err in errors {
+            warn!("{err}");
+        }
+        first.map_or(Ok(()), Err)
     }
 
     /// Every couple of seconds: the adaptive fans and the automatic boost.
@@ -364,15 +439,30 @@ impl Service {
             .ok()
             .flatten()
             .map(|source| source == Source::Ac);
+        let now = Snapshot {
+            shift_mode: field("shift_mode", ec.shift_mode()),
+            fan_mode: field("fan_mode", ec.fan_mode()),
+            super_battery: field("super_battery", ec.super_battery()),
+            cooler_boost: field("cooler_boost", ec.cooler_boost()),
+        };
+        let scenario = self
+            .scenarios
+            .iter()
+            .find(|scenario| now.has(&scenario.modes()))
+            .map(|scenario| scenario.name.clone());
+        let scenarios = (!self.scenarios.is_empty())
+            .then(|| self.scenarios.iter().map(|s| s.name.clone()).collect());
         Status {
             firmware: field("fw_version", ec.firmware()),
             firmware_date: field("fw_release_date", ec.firmware_date()),
-            shift_mode: field("shift_mode", ec.shift_mode()),
+            shift_mode: now.shift_mode,
             shift_modes: field("available_shift_modes", ec.shift_modes()),
-            fan_mode: field("fan_mode", ec.fan_mode()),
+            fan_mode: now.fan_mode,
             fan_modes: field("available_fan_modes", ec.fan_modes()),
-            super_battery: field("super_battery", ec.super_battery()),
-            cooler_boost: field("cooler_boost", ec.cooler_boost()),
+            super_battery: now.super_battery,
+            cooler_boost: now.cooler_boost,
+            scenario,
+            scenarios,
             cpu_temp: field("cpu/realtime_temperature", ec.cpu_temp()),
             gpu_temp: field("gpu/realtime_temperature", ec.gpu_temp()),
             cpu_fan: field("cpu/realtime_fan_speed", ec.cpu_fan()),
@@ -401,6 +491,26 @@ impl Service {
             battery_health: battery.as_ref().and_then(|battery| battery.health),
             charge_limit: field("charge_limit", ec.charge_limit()),
         }
+    }
+
+    /// Applies the scenario after the one the EC is in (the first, if it's
+    /// in none) and names it.
+    pub fn next_scenario(&mut self) -> fdo::Result<String> {
+        if self.scenarios.is_empty() {
+            return Err(fdo::Error::NotSupported(
+                "scenarios: this EC lacks the built-in ones' modes; set some in the config".into(),
+            ));
+        }
+        let now = self.snapshot();
+        let next = self
+            .scenarios
+            .iter()
+            .position(|scenario| now.has(&scenario.modes()))
+            .map_or(0, |i| (i + 1) % self.scenarios.len());
+        let scenario = self.scenarios[next].clone();
+        info!("scenario: {}", scenario.name);
+        self.apply_profile(&scenario.modes())?;
+        Ok(scenario.name)
     }
 
     /// One of the shift modes in Status.
@@ -723,6 +833,9 @@ mod tests {
             ("fw_version", firmware),
             ("fan_mode", "auto\n"),
             ("available_fan_modes", "auto\nsilent\nadvanced\n"),
+            ("shift_mode", "comfort\n"),
+            ("available_shift_modes", "eco\ncomfort\nturbo\n"),
+            ("super_battery", "off\n"),
             ("cpu/realtime_temperature", "62\n"),
             ("gpu/realtime_temperature", "0\n"),
             ("cooler_boost", "off\n"),
@@ -762,7 +875,7 @@ mod tests {
         let ec = MsiEc::new(sysfs);
         let firmware = ec.firmware().ok();
         let fans = Fans::open(sysfs, firmware.as_deref(), curves);
-        Service::new(ec, fans, AutoBoost::default())
+        Service::new(ec, fans, AutoBoost::default(), Vec::new())
     }
 
     fn ram(sysfs: &Path) -> Vec<u8> {
@@ -966,7 +1079,7 @@ mod tests {
             auto: true,
             ..Default::default()
         });
-        let mut service = Service::new(ec, None, boost);
+        let mut service = Service::new(ec, None, boost, Vec::new());
         assert_eq!(service.status().auto_cooler_boost, Some(true));
 
         set_temp(sysfs.path(), Fan::Cpu, 97);
@@ -987,7 +1100,7 @@ mod tests {
             auto: true,
             ..Default::default()
         });
-        let mut service = Service::new(ec, None, boost);
+        let mut service = Service::new(ec, None, boost, Vec::new());
         let marks = |service: &Service| {
             let status = service.status();
             (status.cooler_boost_cpu_c, status.cooler_boost_gpu_c)
@@ -1003,6 +1116,50 @@ mod tests {
             service.tick().unwrap();
         }
         assert!(service.ec.cooler_boost().unwrap());
+    }
+
+    #[test]
+    fn steps_through_the_scenarios() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        // The Alpha has all three built-in ones; comfort and auto is balanced.
+        let status = service.status();
+        assert_eq!(
+            status.scenarios.unwrap(),
+            ["silent", "balanced", "performance"]
+        );
+        assert_eq!(status.scenario.as_deref(), Some("balanced"));
+
+        assert_eq!(service.next_scenario().unwrap(), "performance");
+        let status = service.status();
+        assert_eq!(status.shift_mode.as_deref(), Some("turbo"));
+        assert_eq!(status.fan_mode.as_deref(), Some("auto"));
+        assert_eq!(service.next_scenario().unwrap(), "silent");
+        assert_eq!(service.status().fan_mode.as_deref(), Some("silent"));
+
+        // In none of them: the first, super battery off again.
+        service.set_super_battery(true).unwrap();
+        assert_eq!(service.status().scenario, None);
+        assert_eq!(service.next_scenario().unwrap(), "silent");
+        assert_eq!(service.status().super_battery, Some(false));
+    }
+
+    #[test]
+    fn configured_scenarios_replace_the_built_in_ones() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let games = Scenario {
+            name: "games".into(),
+            shift_mode: Some("turbo".into()),
+            fan_mode: None,
+            super_battery: None,
+        };
+        let ec = MsiEc::new(sysfs.path());
+        let mut service = Service::new(ec, None, AutoBoost::default(), vec![games]);
+        assert_eq!(service.status().scenarios.unwrap(), ["games"]);
+        assert_eq!(service.next_scenario().unwrap(), "games");
+        assert_eq!(service.status().scenario.as_deref(), Some("games"));
+        // A lone one stays put.
+        assert_eq!(service.next_scenario().unwrap(), "games");
     }
 
     #[test]

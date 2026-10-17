@@ -104,37 +104,7 @@ impl Profiles {
             return;
         };
         info!("on {source}, applying its profile");
-        let service = self.service().await;
-        let mut service = service.get_mut().await;
-        let shift_mode = |service: &mut Service| {
-            if let Some(mode) = &profile.shift_mode {
-                report(service.set_shift_mode(mode));
-            }
-        };
-        let fan_mode = |service: &mut Service| {
-            if let Some(mode) = &profile.fan_mode {
-                report(service.set_fan_mode(mode));
-            }
-        };
-        let super_battery = |service: &mut Service| {
-            if let Some(on) = profile.super_battery {
-                report(service.set_super_battery(on));
-            }
-        };
-        // Leave super battery before raising the shift mode, and lower the
-        // shift mode before entering super battery.
-        match source {
-            Source::Ac => {
-                super_battery(&mut service);
-                fan_mode(&mut service);
-                shift_mode(&mut service);
-            }
-            Source::Battery => {
-                shift_mode(&mut service);
-                fan_mode(&mut service);
-                super_battery(&mut service);
-            }
-        }
+        report(self.service().await.get_mut().await.apply_profile(profile));
     }
 
     /// Goes through the object server, so it waits for D-Bus calls in

@@ -46,6 +46,16 @@ The tray icon has the modes and switches in its menu and opens the window
 on a click. `ryukaze --hidden` starts with the tray only, as at login;
 starting `ryukaze` again while it runs brings its window up.
 
+`ryukaze --next-scenario` steps to the next scenario (see the config),
+prints its name and exits: for the key MSI Center had it on, Fn+F7, which
+reaches the desktop as `XF86Tools`. In niri:
+
+```kdl
+binds {
+    XF86Tools { spawn "ryukaze" "--next-scenario"; }
+}
+```
+
 ### Colours
 
 `ryukaze/theme.toml`, the first found in the XDG config dirs
@@ -102,6 +112,21 @@ super_battery = false
 [profiles.battery]
 shift_mode = "eco"
 super_battery = true
+
+# What NextScenario steps through, in this order: from the one whose modes
+# the EC is in, to the first if it's in none. Each sets any of the three
+# above. Without any: silent (eco, silent fans), balanced (comfort, auto)
+# and performance (turbo, auto), super battery off, those this EC has.
+[[scenarios]]
+name = "quiet"
+shift_mode = "eco"
+fan_mode = "silent"
+
+[[scenarios]]
+name = "games"
+shift_mode = "turbo"
+fan_mode = "advanced"
+super_battery = false
 
 # Cooler boost by itself, in any fan mode: on once the CPU or GPU has
 # stayed at its mark for 6 s, off once both have been 10 °C below for
@@ -203,6 +228,7 @@ firmware reads that one for the Win/Fn swap, not for the MUX.
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
+| `NextScenario` | | applies the next scenario; returns its name (`s`) |
 
 Every setter reads the value back and fails if the EC didn't take it.
 [data/io.github.kontonkara.ryukaze.conf](data/io.github.kontonkara.ryukaze.conf)

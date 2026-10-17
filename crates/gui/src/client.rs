@@ -26,6 +26,7 @@ pub trait Ryukaze {
     fn set_usb_share(&self, on: bool) -> zbus::Result<()>;
     fn set_gpu_mode(&self, mode: &str) -> zbus::Result<()>;
     fn set_cooler_boost_marks(&self, cpu_c: u8, gpu_c: u8) -> zbus::Result<()>;
+    fn next_scenario(&self) -> zbus::Result<String>;
 }
 
 pub type Client = RyukazeProxy<'static>;
@@ -54,4 +55,16 @@ pub fn describe(err: zbus::Error) -> String {
         },
         other => other.to_string(),
     }
+}
+
+/// `NextScenario` without the app, for a key binding: the scenario's name.
+pub fn next_scenario(session: bool) -> Result<String, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| err.to_string())?;
+    runtime.block_on(async {
+        let client = connect(session).await?;
+        client.next_scenario().await.map_err(describe)
+    })
 }
