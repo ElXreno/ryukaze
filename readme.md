@@ -1,8 +1,8 @@
 # ryukaze
 
-竜風, "dragon wind": control for MSI laptops on Linux, a from-scratch
-rewrite of [MControlCenter](https://github.com/dmitry-s93/MControlCenter)
-in Rust.
+竜風, "dragon wind": control for MSI laptops on Linux, an alternative to
+[MControlCenter](https://github.com/dmitry-s93/MControlCenter) written
+from scratch in Rust.
 
 `ryukazed` is a small root daemon and the only process that touches the
 embedded controller. It works through the upstream
