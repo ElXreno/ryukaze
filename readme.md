@@ -233,9 +233,9 @@ answer to 0x2E bit 6, which it sets the MUX from at power-on, and at the
 next boot the BIOS brings its Setup in line and restarts once more by
 itself. The BIOS flips rather than sets, so ryukazed asks only when the
 mode after a restart isn't already the one wanted, and waits for the
-answer. It doesn't write the `MsiDCVarData` EFI variable that
-[msi-gpu-switcher](https://github.com/ElXreno/msi-gpu-switcher) does: the
-firmware reads that one for the Win/Fn swap, not for the MUX.
+answer. It doesn't write the `MsiDCVarData` EFI variable, as other MUX
+switchers do: the firmware reads that one for the Win/Fn swap, not for
+the MUX.
 
 ## D-Bus API
 
