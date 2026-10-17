@@ -1,7 +1,7 @@
-//! The sensors over the last minutes, a graph under each gauge: the
-//! temperature, and the fan's duty fainter, both from 0 to 100. The
-//! readings are the window's polls, or the tray's, sparser, while it's
-//! closed.
+//! The last minutes as graphs: under each gauge the temperature, and the
+//! fan's duty fainter, both from 0 to 100; under the battery the watts out
+//! of it, and into it fainter. The readings are the window's polls, or the
+//! tray's, sparser, while it's closed.
 
 use std::{
     collections::VecDeque,
@@ -32,42 +32,70 @@ const BAND: f32 = 16.0;
 
 const PAD: f32 = 2.0;
 
+/// What a graph follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Series {
+    /// The temperature, and the fan's duty.
+    Sensor(Fan),
+    /// The watts out of the battery, and into it.
+    Power,
+}
+
+impl Series {
+    fn index(self) -> usize {
+        match self {
+            Self::Sensor(Fan::Cpu) => 0,
+            Self::Sensor(Fan::Gpu) => 1,
+            Self::Power => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Reading {
     at: Instant,
-    /// °C; none off a sleeping GPU.
-    temp: Option<u8>,
-    /// Percent.
-    fan: Option<u8>,
+    /// The strong line and the faint one: °C (none off a sleeping GPU) and
+    /// fan percent, or watts out and watts in.
+    lines: [Option<f32>; 2],
 }
 
 #[derive(Debug, Default)]
 pub struct History {
-    cpu: VecDeque<Reading>,
-    gpu: VecDeque<Reading>,
+    series: [VecDeque<Reading>; 3],
 }
 
 /// A stretch of readings to draw as one line: (seconds before the newest
 /// reading, value), oldest first.
-type Run = Vec<(f32, u8)>;
-
-/// Which of a reading a line follows.
-type Pick = fn(&Reading) -> Option<u8>;
+type Run = Vec<(f32, f32)>;
 
 impl History {
     pub fn push(&mut self, at: Instant, status: &Status) {
-        for (readings, temp, fan) in [
-            (&mut self.cpu, status.cpu_temp, status.cpu_fan),
-            (&mut self.gpu, status.gpu_temp, status.gpu_fan),
-        ] {
-            if temp.is_none() && fan.is_none() {
+        let sensor = |temp: Option<u8>, fan: Option<u8>| {
+            (temp.is_some() || fan.is_some()).then(|| {
+                [
+                    temp.filter(|&temp| temp > 0).map(f32::from),
+                    fan.map(f32::from),
+                ]
+            })
+        };
+        // Out while it discharges, in otherwise: none at all while it's held
+        // at the limit. Nothing where the battery doesn't say.
+        let power = status.battery_state.as_deref().and_then(|state| {
+            let watts = status.battery_watts? as f32;
+            Some(match state {
+                "Discharging" => [Some(watts), None],
+                _ => [None, Some(watts)],
+            })
+        });
+        for (readings, lines) in self.series.iter_mut().zip([
+            sensor(status.cpu_temp, status.cpu_fan),
+            sensor(status.gpu_temp, status.gpu_fan),
+            power,
+        ]) {
+            let Some(lines) = lines else {
                 continue;
-            }
-            readings.push_back(Reading {
-                at,
-                temp: temp.filter(|&temp| temp > 0),
-                fan,
-            });
+            };
+            readings.push_back(Reading { at, lines });
             while readings
                 .front()
                 .is_some_and(|first| at.duration_since(first.at) > SPAN)
@@ -77,17 +105,14 @@ impl History {
         }
     }
 
-    fn readings(&self, fan: Fan) -> &VecDeque<Reading> {
-        match fan {
-            Fan::Cpu => &self.cpu,
-            Fan::Gpu => &self.gpu,
-        }
+    fn readings(&self, series: Series) -> &VecDeque<Reading> {
+        &self.series[series.index()]
     }
 
-    /// `fan`'s temperatures or duties, by `value`, broken where one is
-    /// missing or comes too late after the last.
-    fn runs(&self, fan: Fan, value: Pick) -> Vec<Run> {
-        let readings = self.readings(fan);
+    /// Line `line` of `series`, broken where a value is missing or comes too
+    /// late after the last.
+    fn runs(&self, series: Series, line: usize) -> Vec<Run> {
+        let readings = self.readings(series);
         let Some(newest) = readings.back() else {
             return Vec::new();
         };
@@ -100,7 +125,7 @@ impl History {
             if late && !run.is_empty() {
                 runs.push(std::mem::take(&mut run));
             }
-            match value(reading) {
+            match reading.lines[line] {
                 Some(value) => {
                     let ago = newest.at.duration_since(reading.at).as_secs_f32();
                     run.push((ago, value));
@@ -115,10 +140,13 @@ impl History {
         runs
     }
 
-    /// Where `fan`'s sensor read nothing (a sleeping GPU), as (from, to)
-    /// seconds before the newest reading, out to the readings either side.
-    fn asleep(&self, fan: Fan) -> Vec<(f32, f32)> {
-        let readings = self.readings(fan);
+    /// Where a sensor read nothing (a sleeping GPU), as (from, to) seconds
+    /// before the newest reading, out to the readings either side.
+    fn asleep(&self, series: Series) -> Vec<(f32, f32)> {
+        if series == Series::Power {
+            return Vec::new();
+        }
+        let readings = self.readings(series);
         let Some(newest) = readings.back() else {
             return Vec::new();
         };
@@ -127,12 +155,12 @@ impl History {
         let mut stretches = Vec::new();
         let mut start = None;
         for (i, reading) in readings.iter().enumerate() {
-            if reading.temp.is_some() {
+            if reading.lines[0].is_some() {
                 continue;
             }
             let first = *start.get_or_insert(i);
             let last = i + 1 == readings.len();
-            if last || readings[i + 1].temp.is_some() || !joined(i) {
+            if last || readings[i + 1].lines[0].is_some() || !joined(i) {
                 start = None;
                 let from = if first > 0 && joined(first - 1) {
                     ago(first - 1)
@@ -150,10 +178,27 @@ impl History {
         stretches
     }
 
+    /// The value at the top of the graph: 100 for the sensors; for the
+    /// battery the most it drew or took in the span, up to the next 10 W,
+    /// and no less than 20 W.
+    pub fn top(&self, series: Series) -> f32 {
+        match series {
+            Series::Sensor(_) => 100.0,
+            Series::Power => {
+                let most = self
+                    .readings(series)
+                    .iter()
+                    .flat_map(|reading| reading.lines.into_iter().flatten())
+                    .fold(0.0, f32::max);
+                ((most / 10.0).ceil() * 10.0).max(20.0)
+            }
+        }
+    }
+
     /// The reading nearest `ago` seconds before the newest, and how long
     /// before it was.
-    fn near(&self, fan: Fan, ago: f32) -> Option<(f32, Reading)> {
-        let readings = self.readings(fan);
+    fn near(&self, series: Series, ago: f32) -> Option<(f32, Reading)> {
+        let readings = self.readings(series);
         let newest = readings.back()?.at;
         readings
             .iter()
@@ -164,7 +209,7 @@ impl History {
 
 pub struct Graph<'a> {
     pub history: &'a History,
-    pub fan: Fan,
+    pub series: Series,
 }
 
 /// The pointer was over the graph at the last move.
@@ -172,15 +217,34 @@ pub struct Graph<'a> {
 pub struct Hovered(bool);
 
 impl Graph<'_> {
-    fn to_screen(bounds: Rectangle, ago: f32, value: u8) -> Point {
+    fn to_screen(&self, bounds: Rectangle, ago: f32, value: f32) -> Point {
         let x = 1.0 - (ago / SPAN.as_secs_f32()).clamp(0.0, 1.0);
-        let y = 1.0 - (f32::from(value) / 100.0).clamp(0.0, 1.0);
+        let y = 1.0 - (value / self.history.top(self.series)).clamp(0.0, 1.0);
         let height = (bounds.height - BAND - 2.0 * PAD).max(1.0);
         Point::new(x * bounds.width, BAND + PAD + y * height)
     }
 
     fn ago_at(bounds: Rectangle, x: f32) -> f32 {
         (1.0 - (x / bounds.width).clamp(0.0, 1.0)) * SPAN.as_secs_f32()
+    }
+
+    /// What the reading under the pointer says.
+    fn readout(&self, reading: &Reading) -> String {
+        match (self.series, reading.lines) {
+            (Series::Sensor(_), [temp, fan]) => {
+                let mut readout = match temp {
+                    Some(temp) => format!("{temp:.0}°C"),
+                    None => "Asleep".to_owned(),
+                };
+                if let Some(fan) = fan {
+                    readout += &format!(" · fan {fan:.0}%");
+                }
+                readout
+            }
+            (Series::Power, [Some(out), _]) => format!("{out:.0} W out"),
+            (Series::Power, [None, Some(into)]) if into >= 0.5 => format!("{into:.0} W in"),
+            (Series::Power, _) => "0 W".to_owned(),
+        }
     }
 }
 
@@ -213,6 +277,7 @@ impl canvas::Program<Message> for Graph<'_> {
     ) -> Vec<Geometry> {
         let colors = theme::colors(theme);
         let mut frame = Frame::new(renderer, bounds.size());
+        let top = self.history.top(self.series);
         let label = |frame: &mut Frame, content: String, color, left: bool| {
             frame.fill_text(Text {
                 content,
@@ -230,18 +295,18 @@ impl canvas::Program<Message> for Graph<'_> {
         };
 
         // Shaded, so a sleeping GPU isn't a line along the bottom.
-        for (from, to) in self.history.asleep(self.fan) {
-            let top = Self::to_screen(bounds, from, 100);
-            let bottom = Self::to_screen(bounds, to, 0);
-            let size = Size::new(bottom.x - top.x, bottom.y - top.y);
+        for (from, to) in self.history.asleep(self.series) {
+            let corner = self.to_screen(bounds, from, top);
+            let bottom = self.to_screen(bounds, to, 0.0);
+            let size = Size::new(bottom.x - corner.x, bottom.y - corner.y);
             if size.width < 1.0 {
                 continue;
             }
-            frame.fill(&Path::rectangle(top, size), colors.idle);
+            frame.fill(&Path::rectangle(corner, size), colors.idle);
             if size.width >= 48.0 {
                 frame.fill_text(Text {
                     content: "Asleep".to_owned(),
-                    position: Point::new(top.x + size.width / 2.0, top.y + size.height / 2.0),
+                    position: Point::new(corner.x + size.width / 2.0, corner.y + size.height / 2.0),
                     color: colors.muted,
                     size: 11.0.into(),
                     font: theme::font(),
@@ -252,41 +317,38 @@ impl canvas::Program<Message> for Graph<'_> {
             }
         }
 
-        for value in [0, 50, 100] {
-            let from = Self::to_screen(bounds, SPAN.as_secs_f32(), value);
+        for value in [0.0, top / 2.0, top] {
+            let from = self.to_screen(bounds, SPAN.as_secs_f32(), value);
             frame.stroke(
                 &Path::line(from, Point::new(bounds.width, from.y)),
                 Stroke::default().with_color(colors.border).with_width(1.0),
             );
         }
 
-        let lines: [(Pick, _, _); 2] = [
-            (|reading| reading.fan, colors.muted, 1.5),
-            (|reading| reading.temp, colors.strong, 2.0),
-        ];
-        for (value, color, width) in lines {
-            for run in self.history.runs(self.fan, value) {
+        // The faint line first, the strong one over it.
+        for (line, color, width) in [(1, colors.muted, 1.5), (0, colors.strong, 2.0)] {
+            for run in self.history.runs(self.series, line) {
                 let points: Vec<Point> = run
                     .iter()
-                    .map(|&(ago, value)| Self::to_screen(bounds, ago, value))
+                    .map(|&(ago, value)| self.to_screen(bounds, ago, value))
                     .collect();
                 if let [point] = points[..] {
                     frame.fill(&Path::circle(point, width), color);
                     continue;
                 }
-                let line = Path::new(|path| {
+                let path = Path::new(|path| {
                     path.move_to(points[0]);
                     for &point in &points[1..] {
                         path.line_to(point);
                     }
                 });
-                frame.stroke(&line, Stroke::default().with_color(color).with_width(width));
+                frame.stroke(&path, Stroke::default().with_color(color).with_width(width));
             }
         }
 
         let hovered = cursor
             .position_in(bounds)
-            .and_then(|at| self.history.near(self.fan, Self::ago_at(bounds, at.x)));
+            .and_then(|at| self.history.near(self.series, Self::ago_at(bounds, at.x)));
         let Some((ago, reading)) = hovered else {
             let minutes = SPAN.as_secs() / 60;
             label(&mut frame, format!("{minutes} min ago"), colors.muted, true);
@@ -296,28 +358,27 @@ impl canvas::Program<Message> for Graph<'_> {
 
         // A filled sliver: tiny-skia leaves a stroked vertical line behind
         // when it moves.
-        let top = Self::to_screen(bounds, ago, 100);
-        let bottom = Self::to_screen(bounds, ago, 0);
+        let high = self.to_screen(bounds, ago, top);
+        let low = self.to_screen(bounds, ago, 0.0);
         frame.fill(
             &Path::rectangle(
-                Point::new(top.x - 0.5, top.y),
-                Size::new(1.0, bottom.y - top.y),
+                Point::new(high.x - 0.5, high.y),
+                Size::new(1.0, low.y - high.y),
             ),
             colors.muted,
         );
-        let mut readout = match reading.temp {
-            Some(temp) => format!("{temp}°C"),
-            None => "Asleep".to_owned(),
-        };
-        if let Some(fan) = reading.fan {
-            readout += &format!(" · fan {fan}%");
-        }
+        let mut readout = self.readout(&reading);
         let secs = ago.round() as u32;
         if secs > 0 {
             readout += &format!(" · {}:{:02} ago", secs / 60, secs % 60);
         }
         // On the side away from the pointer, clear of it.
-        label(&mut frame, readout, colors.text, top.x > bounds.width / 2.0);
+        label(
+            &mut frame,
+            readout,
+            colors.text,
+            high.x > bounds.width / 2.0,
+        );
 
         vec![frame.into_geometry()]
     }
@@ -326,6 +387,9 @@ impl canvas::Program<Message> for Graph<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CPU: Series = Series::Sensor(Fan::Cpu);
+    const GPU: Series = Series::Sensor(Fan::Gpu);
 
     fn status(cpu: (u8, u8), gpu: (u8, u8)) -> Status {
         Status {
@@ -347,10 +411,12 @@ mod tests {
                 &status((temp, 40), (0, 0)),
             );
         }
-        let runs = history.runs(Fan::Cpu, |reading| reading.temp);
         // The first is over ten minutes before the last; the second is
         // too far before the last to join it.
-        assert_eq!(runs, [vec![(360.0, 60)], vec![(0.0, 70)]]);
+        assert_eq!(
+            history.runs(CPU, 0),
+            [vec![(360.0, 60.0)], vec![(0.0, 70.0)]]
+        );
     }
 
     #[test]
@@ -360,19 +426,16 @@ mod tests {
         for (secs, gpu) in [(0, (55, 30)), (2, (0, 0)), (4, (0, 0)), (6, (58, 35))] {
             history.push(start + Duration::from_secs(secs), &status((60, 40), gpu));
         }
-        assert_eq!(
-            history.runs(Fan::Gpu, |reading| reading.temp),
-            [vec![(6.0, 55)], vec![(0.0, 58)]]
-        );
+        assert_eq!(history.runs(GPU, 0), [vec![(6.0, 55.0)], vec![(0.0, 58.0)]]);
         // The fan reads 0, not nothing, while it sleeps.
-        assert_eq!(history.runs(Fan::Gpu, |reading| reading.fan).len(), 1);
+        assert_eq!(history.runs(GPU, 1).len(), 1);
 
-        let (ago, reading) = history.near(Fan::Gpu, 3.5).unwrap();
-        assert_eq!((ago, reading.temp, reading.fan), (4.0, None, Some(0)));
+        let (ago, reading) = history.near(GPU, 3.5).unwrap();
+        assert_eq!((ago, reading.lines), (4.0, [None, Some(0.0)]));
 
         // Shaded from where the line stops to where it starts again.
-        assert_eq!(history.asleep(Fan::Gpu), [(6.0, 0.0)]);
-        assert!(history.asleep(Fan::Cpu).is_empty());
+        assert_eq!(history.asleep(GPU), [(6.0, 0.0)]);
+        assert!(history.asleep(CPU).is_empty());
     }
 
     #[test]
@@ -387,7 +450,7 @@ mod tests {
         }
         // The daemon was away between 10 s and 100 s: no shade there.
         assert_eq!(
-            history.asleep(Fan::Gpu),
+            history.asleep(GPU),
             [(120.0, 110.0), (20.0, 10.0), (10.0, 0.0)]
         );
     }
@@ -402,8 +465,46 @@ mod tests {
                 ..Status::default()
             },
         );
-        assert_eq!(history.runs(Fan::Cpu, |reading| reading.temp).len(), 1);
-        assert!(history.runs(Fan::Cpu, |reading| reading.fan).is_empty());
-        assert!(history.near(Fan::Gpu, 0.0).is_none());
+        assert_eq!(history.runs(CPU, 0).len(), 1);
+        assert!(history.runs(CPU, 1).is_empty());
+        assert!(history.near(GPU, 0.0).is_none());
+        assert!(history.near(Series::Power, 0.0).is_none());
+    }
+
+    #[test]
+    fn watts_out_and_in() {
+        let start = Instant::now();
+        let mut history = History::default();
+        for (secs, state, watts) in [
+            (0, "Discharging", Some(18.4)),
+            (2, "Discharging", Some(33.0)),
+            (4, "Charging", Some(45.0)),
+            (6, "Not charging", Some(0.0)),
+            (8, "Discharging", None),
+        ] {
+            let status = Status {
+                battery_state: Some(state.into()),
+                battery_watts: watts,
+                ..Status::default()
+            };
+            history.push(start + Duration::from_secs(secs), &status);
+        }
+        let power = Series::Power;
+        assert_eq!(history.runs(power, 0), [vec![(6.0, 18.4), (4.0, 33.0)]]);
+        assert_eq!(history.runs(power, 1), [vec![(2.0, 45.0), (0.0, 0.0)]]);
+        // No watts, no reading: the last is the one at 6 s.
+        assert_eq!(history.readings(power).len(), 4);
+        // Up to the next 10 W over the most.
+        assert_eq!(history.top(power), 50.0);
+        assert!(history.asleep(power).is_empty());
+
+        let graph = Graph {
+            history: &history,
+            series: power,
+        };
+        let readout = |ago| graph.readout(&history.near(power, ago).unwrap().1);
+        assert_eq!(readout(4.0), "33 W out");
+        assert_eq!(readout(2.0), "45 W in");
+        assert_eq!(readout(0.0), "0 W");
     }
 }

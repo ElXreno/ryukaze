@@ -19,7 +19,7 @@ use ryukaze_core::{
 use crate::{
     appearance,
     client::{self, Client},
-    history::{self, History},
+    history::{self, History, Series},
     icon, instance, theme, tray,
 };
 
@@ -397,7 +397,7 @@ impl App {
         .filter_map(|(fan, temp, duty, rpm)| {
             let graph = canvas(history::Graph {
                 history: &self.history,
-                fan,
+                series: Series::Sensor(fan),
             })
             .width(Length::Fill)
             .height(64);
@@ -469,6 +469,25 @@ impl App {
         let mut battery = column![].spacing(12);
         if let Some(summary) = battery_summary(status) {
             battery = battery.push(summary);
+        }
+        if status.battery_watts.is_some() {
+            let top = self.history.top(Series::Power);
+            battery = battery.push(
+                column![
+                    canvas(history::Graph {
+                        history: &self.history,
+                        series: Series::Power,
+                    })
+                    .width(Length::Fill)
+                    .height(64),
+                    text(format!(
+                        "Watts out, and in fainter; the top line is {top:.0} W"
+                    ))
+                    .size(13)
+                    .style(theme::muted),
+                ]
+                .spacing(10),
+            );
         }
         if let Some(on) = status.super_battery {
             battery = battery.push(switch("Super battery", on, Message::SuperBattery));
