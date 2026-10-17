@@ -1,13 +1,14 @@
 use std::{
     fmt::Display,
     io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use ryukaze_core::{
     COOLER_BOOST_MARKS, Status,
+    dgpu::{self, Dgpu},
     fans::{self, Curve, Fan, Layout},
     gpu_mux::{self, GpuMode, GpuMux},
     msi_ec::MsiEc,
@@ -38,6 +39,12 @@ pub struct Service {
     /// Told by the setters that may change the modes, so a change is
     /// announced at once rather than at the next tick.
     poke: Arc<Notify>,
+    /// The discrete GPU, on a hybrid laptop.
+    dgpu: Option<Dgpu>,
+    /// Whether it was awake at the last tick, and since when.
+    dgpu_seen: Option<(bool, Instant)>,
+    /// Where its users are looked for.
+    proc: PathBuf,
 }
 
 /// Fan curves and tachometers, where the EC's layout is known and its RAM
@@ -191,6 +198,7 @@ impl Service {
         let usb_share =
             usb_share::usb_share(&firmware).map(|share| (RawEc::new(ec.sysfs()), share));
         let gpu_mux = gpu_mux::gpu_mux(&firmware).map(|mux| (RawEc::new(ec.sysfs()), mux));
+        let dgpu = dgpu::find(ec.sysfs());
         let scenarios = if scenarios.is_empty() {
             built_in_scenarios(&ec)
         } else {
@@ -204,6 +212,9 @@ impl Service {
             gpu_mux,
             scenarios,
             poke: Arc::new(Notify::new()),
+            dgpu,
+            dgpu_seen: None,
+            proc: PathBuf::from("/proc"),
         }
     }
 
@@ -272,11 +283,22 @@ impl Service {
             .map(|scenario| scenario.name.clone())
     }
 
-    /// Every couple of seconds: the adaptive fans and the automatic boost.
+    /// Every couple of seconds: the adaptive fans, the automatic boost, and
+    /// when the dGPU went to sleep or woke.
     pub fn tick(&mut self) -> fdo::Result<()> {
         let adapted = self.adapt();
         self.auto_boost();
+        self.watch_dgpu();
         adapted
+    }
+
+    fn watch_dgpu(&mut self) {
+        let Some(Ok(awake)) = self.dgpu.as_ref().map(Dgpu::awake) else {
+            return;
+        };
+        if self.dgpu_seen.is_none_or(|(was, _)| was != awake) {
+            self.dgpu_seen = Some((awake, Instant::now()));
+        }
     }
 
     fn auto_boost(&mut self) {
@@ -480,6 +502,21 @@ impl Service {
             .ok()
             .flatten()
             .map(|source| source == Source::Ac);
+        let dgpu_awake = self.dgpu.as_ref().and_then(|dgpu| dgpu.awake().ok());
+        // Changed since the last tick: just now.
+        let dgpu_for_secs = dgpu_awake.zip(self.dgpu_seen).map(|(awake, (was, since))| {
+            if awake == was {
+                since.elapsed().as_secs()
+            } else {
+                0
+            }
+        });
+        // Only while it's awake: a scan of /proc isn't free.
+        let dgpu_users = self
+            .dgpu
+            .as_ref()
+            .filter(|_| dgpu_awake == Some(true))
+            .map(|dgpu| dgpu.users(&self.proc));
         let now = Snapshot {
             shift_mode: field("shift_mode", ec.shift_mode()),
             fan_mode: field("fan_mode", ec.fan_mode()),
@@ -533,6 +570,9 @@ impl Service {
                 .and_then(|(raw, share)| share.get(raw).ok()),
             gpu_mode: mux(GpuMux::now),
             gpu_mode_next: mux(GpuMux::next),
+            dgpu_awake,
+            dgpu_for_secs,
+            dgpu_users,
             on_ac,
             battery_level: battery.as_ref().map(|battery| battery.level),
             battery_state: battery.as_ref().map(|battery| battery.state.clone()),
@@ -1278,6 +1318,47 @@ mod tests {
         assert_eq!(service.status().scenario.as_deref(), Some("games"));
         // A lone one stays put.
         assert_eq!(service.next_scenario().unwrap(), "games");
+    }
+
+    #[test]
+    fn tells_how_long_the_dgpu_slept_and_who_woke_it() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let runtime = sysfs
+            .path()
+            .join("bus/pci/devices/0000:01:00.0/power/runtime_status");
+        for (address, boot, node) in [
+            ("0000:06:00.0", "1", "card0"),
+            ("0000:01:00.0", "0", "card1"),
+        ] {
+            let device = sysfs.path().join("bus/pci/devices").join(address);
+            fs::create_dir_all(device.join("power")).unwrap();
+            fs::create_dir_all(device.join("drm").join(node)).unwrap();
+            fs::write(device.join("class"), "0x030000\n").unwrap();
+            fs::write(device.join("boot_vga"), boot).unwrap();
+            fs::write(device.join("power/runtime_status"), "suspended\n").unwrap();
+        }
+        let proc = tempfile::tempdir().unwrap();
+        let game = proc.path().join("42");
+        fs::create_dir_all(game.join("fd")).unwrap();
+        fs::write(game.join("comm"), "game\n").unwrap();
+        std::os::unix::fs::symlink("/dev/dri/card1", game.join("fd/7")).unwrap();
+
+        let mut service = service(sysfs.path());
+        service.proc = proc.path().to_owned();
+        let status = service.status();
+        assert_eq!(status.dgpu_awake, Some(false));
+        // Not seen by a tick yet: no telling how long.
+        assert_eq!(status.dgpu_for_secs, None);
+        assert_eq!(status.dgpu_users, None);
+
+        service.tick().unwrap();
+        assert_eq!(service.status().dgpu_for_secs, Some(0));
+
+        fs::write(&runtime, "active\n").unwrap();
+        let status = service.status();
+        assert_eq!(status.dgpu_awake, Some(true));
+        assert_eq!(status.dgpu_for_secs, Some(0));
+        assert_eq!(status.dgpu_users.unwrap(), ["game"]);
     }
 
     #[test]

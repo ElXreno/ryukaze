@@ -456,8 +456,15 @@ impl App {
             sections = sections.push(section("Devices", devices));
         }
 
+        let mut graphics = column![].spacing(12);
         if let (Some(now), Some(next)) = (&status.gpu_mode, &status.gpu_mode_next) {
-            sections = sections.push(section("Graphics", gpu_mode(now, next)));
+            graphics = graphics.push(gpu_mode(now, next));
+        }
+        if let Some(dgpu) = dgpu(status) {
+            graphics = graphics.push(dgpu);
+        }
+        if status.gpu_mode.is_some() || status.dgpu_awake.is_some() {
+            sections = sections.push(section("Graphics", graphics));
         }
 
         let hint = if self.copied {
@@ -692,6 +699,39 @@ fn gpu_mode<'a>(now: &str, next: &str) -> Element<'a, Message> {
     ]
     .spacing(8)
     .into()
+}
+
+/// Whether the dGPU sleeps, for how long, and who keeps it up.
+fn dgpu<'a>(status: &Status) -> Option<Element<'a, Message>> {
+    let awake = status.dgpu_awake?;
+    let since = status
+        .dgpu_for_secs
+        .map(|secs| format!(" for {}", duration(secs)))
+        .unwrap_or_default();
+    let users = status.dgpu_users.as_deref().unwrap_or_default();
+    let line = match (awake, users) {
+        (false, _) => format!("dGPU asleep{since}"),
+        (true, []) => format!("dGPU awake{since}"),
+        (true, users) => format!("dGPU awake{since}, held by {}", users.join(", ")),
+    };
+    let line = text(line).size(13);
+    Some(
+        if awake {
+            line
+        } else {
+            line.style(theme::muted)
+        }
+        .into(),
+    )
+}
+
+/// 40 s, 12 min, 2 h 5 min.
+fn duration(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs} s"),
+        60..3600 => format!("{} min", secs / 60),
+        _ => format!("{} h {} min", secs / 3600, secs % 3600 / 60),
+    }
 }
 
 fn small_button<'a>(label: &'a str, press: Message) -> Element<'a, Message> {
@@ -1033,6 +1073,29 @@ mod tests {
                 .find("Discrete")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn says_who_keeps_the_dgpu_up() {
+        let dgpu = |awake: bool, secs: u64, users: &[&str]| Status {
+            dgpu_awake: Some(awake),
+            dgpu_for_secs: Some(secs),
+            dgpu_users: awake.then(|| users.iter().map(|&user| user.to_owned()).collect()),
+            ..alpha17()
+        };
+        let shown = |status: Status, line: &str| {
+            simulator(app(status).view(window::Id::unique()))
+                .find(line)
+                .is_ok()
+        };
+        assert!(shown(dgpu(false, 7500, &[]), "dGPU asleep for 2 h 5 min"));
+        assert!(shown(
+            dgpu(true, 200, &["firefox", "steam"]),
+            "dGPU awake for 3 min, held by firefox, steam"
+        ));
+        assert!(shown(dgpu(true, 4, &[]), "dGPU awake for 4 s"));
+        // No dGPU: no Graphics either, without a MUX.
+        assert!(!shown(alpha17(), "GRAPHICS"));
     }
 
     #[test]

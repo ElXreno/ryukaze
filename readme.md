@@ -36,7 +36,10 @@ the EC goes through it, and it's on the fan when you let go. Adaptive and
 the GPU fan's help are switches under it, and "Cooler boost when hot"
 sits under the cooler boost switch, with its marks while it's on. Devices
 has which side of Win the Fn key is on, USB Power Share, and the camera
-where its switch does something; Graphics has the GPU MUX.
+where its switch does something; Graphics has the GPU MUX, and on a
+hybrid laptop whether the dGPU sleeps, how long, and which processes hold
+it open while it doesn't (ryukazed reads the kernel's runtime PM status,
+which doesn't wake it, and looks through /proc only while it's up).
 
 What the window changes lasts until the daemon restarts. Copy as Nix, at
 the bottom, puts the settings on the clipboard in the shape of

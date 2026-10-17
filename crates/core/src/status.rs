@@ -120,6 +120,19 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub gpu_mode_next: Option<String>,
 
+    /// The discrete GPU of a hybrid laptop is awake, not runtime-suspended.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub dgpu_awake: Option<bool>,
+
+    /// How long it has been asleep or awake, in seconds, as far as ryukazed
+    /// has seen it.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub dgpu_for_secs: Option<u64>,
+
+    /// While it's awake: the processes holding it open.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub dgpu_users: Option<Vec<String>>,
+
     /// A Mains supply is online.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub on_ac: Option<bool>,
