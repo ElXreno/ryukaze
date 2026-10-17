@@ -174,22 +174,18 @@ fn built_in_scenarios(ec: &MsiEc) -> Vec<Scenario> {
     let shift_modes = ec.shift_modes().unwrap_or_default();
     let fan_modes = ec.fan_modes().unwrap_or_default();
     let super_battery = ec.super_battery().ok().map(|_| false);
-    [
-        ("silent", "eco", "silent"),
-        ("balanced", "comfort", "auto"),
-        ("performance", "turbo", "auto"),
-    ]
-    .into_iter()
-    .filter(|(_, shift, fan)| {
-        shift_modes.iter().any(|mode| mode == shift) && fan_modes.iter().any(|mode| mode == fan)
-    })
-    .map(|(name, shift, fan)| Scenario {
-        name: name.into(),
-        shift_mode: Some(shift.into()),
-        fan_mode: Some(fan.into()),
-        super_battery,
-    })
-    .collect()
+    config::BUILT_IN_SCENARIOS
+        .into_iter()
+        .filter(|(_, shift, fan)| {
+            shift_modes.iter().any(|mode| mode == shift) && fan_modes.iter().any(|mode| mode == fan)
+        })
+        .map(|(name, shift, fan)| Scenario {
+            name: name.into(),
+            shift_mode: Some(shift.into()),
+            fan_mode: Some(fan.into()),
+            super_battery,
+        })
+        .collect()
 }
 
 impl Service {
@@ -222,6 +218,7 @@ impl Service {
     /// goes up, and entered after it comes down. All are tried; the first
     /// failure is returned and the others logged.
     pub fn apply_profile(&mut self, profile: &Profile) -> fdo::Result<()> {
+        let profile = &self.resolve(profile)?;
         let super_battery = |service: &mut Self| {
             profile
                 .super_battery
@@ -273,6 +270,31 @@ impl Service {
                 .iter()
                 .map(|scenario| scenario.name.clone())
                 .collect()
+        })
+    }
+
+    fn scenario_named(&self, name: &str) -> fdo::Result<Scenario> {
+        self.scenarios
+            .iter()
+            .find(|scenario| scenario.name == name)
+            .cloned()
+            .ok_or_else(|| {
+                let names = self.scenario_names().unwrap_or_default();
+                fdo::Error::InvalidArgs(format!("{name} is not one of: {}", names.join(", ")))
+            })
+    }
+
+    /// `profile` with its scenario's modes under its own.
+    fn resolve(&self, profile: &Profile) -> fdo::Result<Profile> {
+        let Some(name) = &profile.scenario else {
+            return Ok(profile.clone());
+        };
+        let modes = self.scenario_named(name)?.modes();
+        Ok(Profile {
+            scenario: None,
+            shift_mode: profile.shift_mode.clone().or(modes.shift_mode),
+            fan_mode: profile.fan_mode.clone().or(modes.fan_mode),
+            super_battery: profile.super_battery.or(modes.super_battery),
         })
     }
 
@@ -609,13 +631,7 @@ impl Service {
 
     /// One of the scenarios in Status.
     pub fn set_scenario(&mut self, name: &str) -> fdo::Result<()> {
-        let Some(scenario) = self.scenarios.iter().find(|s| s.name == name).cloned() else {
-            let names = self.scenario_names().unwrap_or_default();
-            return Err(fdo::Error::InvalidArgs(format!(
-                "{name} is not one of: {}",
-                names.join(", ")
-            )));
-        };
+        let scenario = self.scenario_named(name)?;
         info!("scenario: {name}");
         self.apply_profile(&scenario.modes())
     }
@@ -1374,6 +1390,24 @@ mod tests {
             err.to_string().contains("silent, balanced, performance"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_profile_takes_a_scenario_under_its_own_modes() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        let battery = Profile {
+            scenario: Some("silent".into()),
+            super_battery: Some(true),
+            ..Profile::default()
+        };
+        service.apply_profile(&battery).unwrap();
+        let status = service.status();
+        assert_eq!(status.shift_mode.as_deref(), Some("eco"));
+        assert_eq!(status.fan_mode.as_deref(), Some("silent"));
+        assert_eq!(status.super_battery, Some(true));
+        // Super battery over silent's: no longer silent.
+        assert_eq!(status.scenario, None);
     }
 
     #[test]

@@ -119,6 +119,8 @@ pub struct Profiles {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
+    /// A scenario by name: its modes, under any set here.
+    pub scenario: Option<String>,
     pub shift_mode: Option<String>,
     pub fan_mode: Option<String>,
     pub super_battery: Option<bool>,
@@ -135,9 +137,19 @@ pub struct Scenario {
     pub super_battery: Option<bool>,
 }
 
+/// MSI Center's scenarios, for an EC without configured ones: (name, shift
+/// mode, fan mode), super battery off. Those whose modes the EC lacks are
+/// left out when the daemon starts.
+pub const BUILT_IN_SCENARIOS: [(&str, &str, &str); 3] = [
+    ("silent", "eco", "silent"),
+    ("balanced", "comfort", "auto"),
+    ("performance", "turbo", "auto"),
+];
+
 impl Scenario {
     pub fn modes(&self) -> Profile {
         Profile {
+            scenario: None,
             shift_mode: self.shift_mode.clone(),
             fan_mode: self.fan_mode.clone(),
             super_battery: self.super_battery,
@@ -185,6 +197,25 @@ impl Config {
             }
             if scenario.modes() == Profile::default() {
                 bail!("{}: scenario {name:?} sets nothing", path.display());
+            }
+        }
+        let names: Vec<&str> = if config.scenarios.is_empty() {
+            BUILT_IN_SCENARIOS.iter().map(|(name, ..)| *name).collect()
+        } else {
+            config.scenarios.iter().map(|s| s.name.as_str()).collect()
+        };
+        for (source, profile) in [
+            ("ac", &config.profiles.ac),
+            ("battery", &config.profiles.battery),
+        ] {
+            if let Some(name) = profile.as_ref().and_then(|p| p.scenario.as_deref())
+                && !names.contains(&name)
+            {
+                bail!(
+                    "{}: profiles.{source}.scenario {name:?} is not one of: {}",
+                    path.display(),
+                    names.join(", ")
+                );
             }
         }
         let boost = &config.cooler_boost;
@@ -291,6 +322,22 @@ mod tests {
     }
 
     #[test]
+    fn profiles_name_scenarios_there_are() {
+        // The built-in ones, without any configured.
+        let config =
+            load("[profiles.battery]\nscenario = \"silent\"\nsuper_battery = true\n").unwrap();
+        let battery = config.profiles.get(Source::Battery).unwrap();
+        assert_eq!(battery.scenario.as_deref(), Some("silent"));
+        assert!(load("[profiles.ac]\nscenario = \"games\"\n").is_err());
+
+        // The configured ones then, not the built-in.
+        let games = "[[scenarios]]\nname = \"games\"\nshift_mode = \"turbo\"\n";
+        assert!(load(&format!("{games}[profiles.ac]\nscenario = \"games\"\n")).is_ok());
+        let err = load(&format!("{games}[profiles.ac]\nscenario = \"silent\"\n")).unwrap_err();
+        assert!(format!("{err:#}").contains("not one of: games"), "{err:#}");
+    }
+
+    #[test]
     fn reads_fan_curves() {
         let config = load(
             r#"
@@ -321,6 +368,8 @@ mod tests {
         assert!(config.profiles.get(Source::Battery).is_some());
         assert!(config.fans.get(Fan::Cpu).is_some());
         assert_eq!(config.scenarios.len(), 2);
+        let ac = config.profiles.get(Source::Ac).unwrap();
+        assert_eq!(ac.scenario.as_deref(), Some("games"));
     }
 
     #[test]

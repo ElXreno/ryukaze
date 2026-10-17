@@ -113,12 +113,11 @@ fn_key = "left"
 # USB ports powered while the laptop is off (USB Power Share), set at start.
 usb_share = false
 
-# Applied when the laptop goes on AC or on battery. A mode switched over
-# D-Bus in between stays until the next plug or unplug.
+# Applied when the laptop goes on AC or on battery: a scenario by name
+# (below), the modes themselves, or both, the modes over the scenario's. A
+# mode switched over D-Bus in between stays until the next plug or unplug.
 [profiles.ac]
-shift_mode = "turbo"
-fan_mode = "auto"
-super_battery = false
+scenario = "games"
 
 [profiles.battery]
 shift_mode = "eco"
@@ -268,8 +267,8 @@ lets everyone call `Status` and only root call the setters.
     osd.enable = true; # a card on screen when the modes change
     settings = {
       charge_limit = 80;
-      profiles.ac.shift_mode = "turbo";
-      profiles.battery.shift_mode = "eco";
+      profiles.ac.scenario = "performance";
+      profiles.battery.scenario = "silent";
     };
   };
 }

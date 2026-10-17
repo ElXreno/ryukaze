@@ -122,7 +122,10 @@ impl Profiles {
             info!("on {source}, no profile for it");
             return;
         };
-        info!("on {source}, applying its profile");
+        match &profile.scenario {
+            Some(scenario) => info!("on {source}, applying its profile ({scenario})"),
+            None => info!("on {source}, applying its profile"),
+        }
         report(self.service().await.get_mut().await.apply_profile(profile));
     }
 
