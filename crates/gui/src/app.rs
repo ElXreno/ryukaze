@@ -6,8 +6,8 @@ use std::{
 use iced::{
     Alignment, Element, Length, Subscription, Task, Theme, mouse,
     widget::{
-        button, canvas, column, container, mouse_area, progress_bar, row, scrollable, slider,
-        space, text, toggler,
+        button, canvas, column, container, mouse_area, progress_bar, responsive, row, scrollable,
+        slider, space, text, toggler,
     },
     window,
 };
@@ -29,6 +29,13 @@ const REFRESH: Duration = Duration::from_secs(2);
 
 /// With only the tray up, its menu and tooltip can lag a little.
 const REFRESH_HIDDEN: Duration = Duration::from_secs(10);
+
+/// A column of panels is at least this wide, and at most that; a window
+/// wider than one takes up to three side by side, this far apart.
+const COLUMN_MIN: f32 = 400.0;
+const COLUMN_MAX: f32 = 560.0;
+const GAP: f32 = 12.0;
+const PAGE_PADDING: f32 = 20.0;
 
 pub struct App {
     session: bool,
@@ -328,6 +335,15 @@ impl App {
     }
 
     pub fn view(&self, _window: window::Id) -> Element<'_, Message> {
+        responsive(move |size| self.page(size.width)).into()
+    }
+
+    /// The panels in as many columns as `width` takes, up to three: a
+    /// window tiled full width shows it all, a narrow one scrolls.
+    fn page(&self, width: f32) -> Element<'_, Message> {
+        let columns = ((width - 2.0 * PAGE_PADDING + GAP) / (COLUMN_MIN + GAP))
+            .floor()
+            .clamp(1.0, 3.0) as usize;
         let firmware = match &self.status {
             Some(Ok(status)) => status.firmware.clone().unwrap_or_default(),
             _ => String::new(),
@@ -342,25 +358,36 @@ impl App {
         let body: Element<'_, Message> = match &self.status {
             None => text("Connecting…").style(theme::muted).into(),
             Some(Err(err)) => banner(err),
-            Some(Ok(status)) => self.sections(status),
+            Some(Ok(status)) => self.sections(status, columns),
         };
 
         let mut page = column![header, body].spacing(16);
         if let Some(err) = &self.error {
             page = page.push(banner(err));
         }
-        // Tiled wide, the panel keeps its shape in the middle; tiled short,
-        // it scrolls.
+        let max_width = columns as f32 * (COLUMN_MAX + GAP) - GAP;
         scrollable(
-            container(container(page).max_width(560))
-                .padding(20)
+            container(container(page).max_width(max_width))
+                .padding(PAGE_PADDING)
                 .center_x(Length::Fill),
         )
         .into()
     }
 
-    fn sections<'a>(&'a self, status: &'a Status) -> Element<'a, Message> {
-        let mut sections = column![].spacing(12);
+    /// The sections in `columns` columns: the readings and the modes first,
+    /// the fans next, the battery and the rest last; in one column, in that
+    /// order.
+    fn sections<'a>(&'a self, status: &'a Status, columns: usize) -> Element<'a, Message> {
+        let mut placed: Vec<Vec<Element<'a, Message>>> = (0..columns).map(|_| Vec::new()).collect();
+        // Which column a section goes to with three columns, and with two.
+        let mut put = |at: [usize; 2], section: Element<'a, Message>| {
+            let column = match columns {
+                3 => at[0],
+                2 => at[1],
+                _ => 0,
+            };
+            placed[column].push(section);
+        };
 
         let gauges: Vec<Element<'a, Message>> = [
             (Fan::Cpu, status.cpu_temp, status.cpu_fan, status.cpu_rpm),
@@ -378,32 +405,41 @@ impl App {
         })
         .collect();
         if !gauges.is_empty() {
-            sections = sections.push(section(
-                "Sensors",
-                column![
-                    row(gauges).spacing(24),
-                    text("The temperature, and the fan fainter, both from 0 to 100")
-                        .size(13)
-                        .style(theme::muted),
-                ]
-                .spacing(10),
-            ));
+            put(
+                [0, 0],
+                section(
+                    "Sensors",
+                    column![
+                        row(gauges).spacing(24),
+                        text("The temperature, and the fan fainter, both from 0 to 100")
+                            .size(13)
+                            .style(theme::muted),
+                    ]
+                    .spacing(10),
+                ),
+            );
         }
 
         // In the config's order; none picked while the modes make none.
         if let Some(scenarios) = &status.scenarios {
             let current = status.scenario.as_deref().unwrap_or_default();
-            sections = sections.push(section(
-                "Scenario",
-                modes_row(current, scenarios, &[], Message::Scenario),
-            ));
+            put(
+                [0, 0],
+                section(
+                    "Scenario",
+                    modes_row(current, scenarios, &[], Message::Scenario),
+                ),
+            );
         }
 
         if let (Some(current), Some(modes)) = (&status.shift_mode, &status.shift_modes) {
-            sections = sections.push(section(
-                "Performance",
-                column![modes_row(current, modes, SHIFT_ORDER, Message::ShiftMode)],
-            ));
+            put(
+                [0, 0],
+                section(
+                    "Performance",
+                    modes_row(current, modes, SHIFT_ORDER, Message::ShiftMode),
+                ),
+            );
         }
 
         let mut fans = column![].spacing(12);
@@ -428,7 +464,7 @@ impl App {
         {
             fans = fans.push(editor);
         }
-        sections = sections.push(section("Fans", fans));
+        put([1, 1], section("Fans", fans));
 
         let mut battery = column![].spacing(12);
         if let Some(summary) = battery_summary(status) {
@@ -440,7 +476,7 @@ impl App {
         if let Some(limit) = self.charge_limit.or(status.charge_limit) {
             battery = battery.push(charge_limit(limit));
         }
-        sections = sections.push(section("Battery", battery));
+        put([2, 0], section("Battery", battery));
 
         let mut devices = column![].spacing(12);
         if let Some(on) = status.webcam {
@@ -453,7 +489,7 @@ impl App {
             devices = devices.push(switch("Charge USB when off", on, Message::UsbShare));
         }
         if status.webcam.is_some() || status.fn_key.is_some() || status.usb_share.is_some() {
-            sections = sections.push(section("Devices", devices));
+            put([2, 1], section("Devices", devices));
         }
 
         let mut graphics = column![].spacing(12);
@@ -464,7 +500,7 @@ impl App {
             graphics = graphics.push(dgpu);
         }
         if status.gpu_mode.is_some() || status.dgpu_awake.is_some() {
-            sections = sections.push(section("Graphics", graphics));
+            put([2, 1], section("Graphics", graphics));
         }
 
         let hint = if self.copied {
@@ -472,17 +508,20 @@ impl App {
         } else {
             "Changes here last until ryukazed restarts"
         };
-        sections = sections.push(
-            row![
-                text(hint).size(12).style(theme::muted).width(Length::Fill),
-                small_button("Copy as Nix", Message::CopyAsNix),
-            ]
-            .spacing(6)
-            .padding([0, 4])
-            .align_y(Alignment::Center),
-        );
+        let footer = row![
+            text(hint).size(12).style(theme::muted).width(Length::Fill),
+            small_button("Copy as Nix", Message::CopyAsNix),
+        ]
+        .spacing(6)
+        .padding([0, 4])
+        .align_y(Alignment::Center);
 
-        sections.into()
+        let columns = placed
+            .into_iter()
+            .map(|sections| column(sections).spacing(GAP).width(Length::Fill).into());
+        column![row(columns).spacing(GAP), footer]
+            .spacing(GAP)
+            .into()
     }
 
     fn open(&mut self) -> Task<Message> {
