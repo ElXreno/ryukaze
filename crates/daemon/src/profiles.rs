@@ -11,6 +11,7 @@ use zbus::{Connection, fdo};
 
 use crate::{
     config::Config,
+    power_profiles::{self, Link},
     service::{Service, Snapshot},
 };
 
@@ -24,10 +25,12 @@ pub struct Profiles {
     before_sleep: Option<Snapshot>,
     /// The modes as last seen; none before the first look.
     announced: Option<Status>,
+    /// power-profiles-daemon, kept in step with the shift mode.
+    link: Option<Link>,
 }
 
 impl Profiles {
-    pub fn new(config: Config, sysfs: PathBuf, connection: Connection) -> Self {
+    pub fn new(config: Config, sysfs: PathBuf, connection: Connection, link: Option<Link>) -> Self {
         Self {
             config,
             sysfs,
@@ -35,23 +38,63 @@ impl Profiles {
             applied: None,
             before_sleep: None,
             announced: None,
+            link,
         }
     }
 
     /// Announces the modes when they differ from the last look: after a
-    /// setter, and every tick for what the EC changes by itself.
+    /// setter, and every tick for what the EC changes by itself. A new
+    /// shift mode goes to power-profiles-daemon, the first one too.
     pub async fn look(&mut self) {
         let service = self.service().await;
         let modes = service.get().await.modes();
-        if self
-            .announced
-            .as_ref()
-            .is_some_and(|before| *before != modes)
+        let before = self.announced.replace(modes.clone());
+        if before.as_ref().is_some_and(|before| *before != modes)
             && let Err(err) = Service::modes_changed(service.signal_emitter(), modes.clone()).await
         {
             warn!("announcing the modes: {err}");
         }
-        self.announced = Some(modes);
+        if let (Some(link), Some(shift_mode)) = (&mut self.link, &modes.shift_mode)
+            && before.is_none_or(|before| before.shift_mode != modes.shift_mode)
+        {
+            link.push(shift_mode).await;
+        }
+    }
+
+    /// power-profiles-daemon changed its profile, or started again.
+    pub async fn power_profile(&mut self, event: power_profiles::Event) {
+        let Some(link) = &mut self.link else {
+            return;
+        };
+        match event {
+            power_profiles::Event::Profile(profile) => {
+                if !link.heard(&profile) {
+                    return;
+                }
+                let followed = self
+                    .service()
+                    .await
+                    .get_mut()
+                    .await
+                    .follow_power_profile(&profile);
+                match followed {
+                    Ok(Some(applied)) => info!("power-profiles-daemon: {profile}, so {applied}"),
+                    Ok(None) => {}
+                    Err(err) => warn!("power-profiles-daemon: {profile}: {err}"),
+                }
+            }
+            // It starts from the profile it saved: tell it this one.
+            power_profiles::Event::Started => {
+                link.restarted().await;
+                if let Some(shift_mode) = self
+                    .announced
+                    .as_ref()
+                    .and_then(|modes| modes.shift_mode.as_deref())
+                {
+                    link.push(shift_mode).await;
+                }
+            }
+        }
     }
 
     /// At start and when msi-ec binds: everything, as if just booted.

@@ -10,6 +10,10 @@ pkgs.testers.runNixOSTest {
       imports = [ self.nixosModules.default ];
 
       services = {
+        # Kept in step with the shift mode; without msi-ec there is none.
+        power-profiles-daemon = {
+          enable = true;
+        };
         ryukaze = {
           enable = true;
           users = [ "alice" ];
@@ -53,6 +57,13 @@ pkgs.testers.runNixOSTest {
               };
             };
           };
+        };
+      };
+
+      # ppd asks polkit before it switches profiles, root included.
+      security = {
+        polkit = {
+          enable = true;
         };
       };
 
@@ -110,5 +121,13 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the daemon logs what it couldn't do"):
         machine.succeed("journalctl -u ryukazed.service | grep -q 'msi-ec is not bound'")
+
+    with subtest("a power profile picked in ppd reaches the daemon"):
+        machine.wait_until_succeeds("journalctl -u ryukazed.service | grep -q 'in step with power-profiles-daemon'")
+        machine.succeed("powerprofilesctl set power-saver")
+        # It tries the shift mode for it; there is no msi-ec to take it.
+        machine.wait_until_succeeds("journalctl -u ryukazed.service | grep -q 'power-profiles-daemon: power-saver: '")
+        # ppd says what it starts at to the daemon that woke it: no news.
+        machine.fail("journalctl -u ryukazed.service | grep -q 'power-profiles-daemon: balanced'")
   '';
 }

@@ -5,6 +5,7 @@
 mod adaptive;
 mod boost;
 mod config;
+mod power_profiles;
 mod profiles;
 mod service;
 mod sleep;
@@ -113,7 +114,16 @@ async fn main() -> Result<()> {
     if let Err(err) = sleep::watch(sleep_events).await {
         warn!("no word from logind ({err}): nothing is put back after sleep");
     }
-    let mut profiles = Profiles::new(config, args.sysfs, connection);
+    let (ppd_events, mut ppd) = mpsc::unbounded_channel();
+    let link = if config.power_profiles_daemon.sync {
+        power_profiles::Link::new(&connection, ppd_events)
+            .await
+            .inspect_err(|err| warn!("not in step with power-profiles-daemon: {err}"))
+            .ok()
+    } else {
+        None
+    };
+    let mut profiles = Profiles::new(config, args.sysfs, connection, link);
     profiles.apply_all().await;
 
     // zbus answers calls on its own tasks.
@@ -137,6 +147,7 @@ async fn main() -> Result<()> {
                 }
                 sleep::Event::Woke => profiles.woke().await,
             },
+            Some(event) = ppd.recv() => profiles.power_profile(event).await,
             _ = poke.notified() => profiles.look().await,
             _ = tick.tick() => {
                 profiles.tick().await;

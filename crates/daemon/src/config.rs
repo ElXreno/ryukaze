@@ -40,6 +40,22 @@ pub struct Config {
     pub fans: Fans,
 
     pub cooler_boost: boost::Config,
+
+    pub power_profiles_daemon: PowerProfilesDaemon,
+}
+
+/// power-profiles-daemon's profile and the shift mode kept in step; see
+/// `power_profiles`.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PowerProfilesDaemon {
+    pub sync: bool,
+}
+
+impl Default for PowerProfilesDaemon {
+    fn default() -> Self {
+        Self { sync: true }
+    }
 }
 
 /// The advanced fan mode: the curves the fans follow (a fan without one
@@ -291,6 +307,13 @@ mod tests {
         assert!(load("fn_key = \"left\"\nwebcam = false\n").is_ok());
         assert!(load("[cooler_boost]\ncpu_c = 40\n").is_err());
         assert!(load("[cooler_boost]\ngpu_c = 80\n").is_ok());
+        assert!(load("").unwrap().power_profiles_daemon.sync);
+        assert!(
+            !load("[power_profiles_daemon]\nsync = false\n")
+                .unwrap()
+                .power_profiles_daemon
+                .sync
+        );
     }
 
     #[test]
@@ -370,6 +393,7 @@ mod tests {
         assert_eq!(config.scenarios.len(), 2);
         let ac = config.profiles.get(Source::Ac).unwrap();
         assert_eq!(ac.scenario.as_deref(), Some("games"));
+        assert!(config.power_profiles_daemon.sync);
     }
 
     #[test]

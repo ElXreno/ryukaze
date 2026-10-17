@@ -61,6 +61,10 @@ binds {
 }
 ```
 
+Where power-profiles-daemon runs, its profile goes with the shift mode
+(see the config), so a desktop's power menu (GNOME's, KDE's, Noctalia's)
+picks scenarios too, and shows the one Fn+F7 picked.
+
 `ryukaze --osd` shows a card at the bottom of the screen for a moment
 whenever the modes change, whatever changed them: the scenario among the
 others, cooler boost on or off, or the mode itself. It needs a compositor
@@ -154,6 +158,14 @@ super_battery = false
 auto = false
 cpu_c = 95
 gpu_c = 85
+
+# power-profiles-daemon's profile and the shift mode in step, both ways:
+# eco is power-saver, comfort balanced, sport and turbo performance. A
+# profile picked there (a desktop's power menu) applies the first scenario
+# with a shift mode for it, or the mode alone. On by default; without ppd
+# on the bus it does nothing.
+[power_profiles_daemon]
+sync = true
 
 # The advanced fan mode, below. These are the defaults.
 [fans]

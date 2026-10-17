@@ -24,6 +24,7 @@ use crate::{
     adaptive::{self, Smoothed, Smoothing},
     boost::AutoBoost,
     config::{self, Profile, Scenario},
+    power_profiles,
 };
 
 pub struct Service {
@@ -296,6 +297,37 @@ impl Service {
             fan_mode: profile.fan_mode.clone().or(modes.fan_mode),
             super_battery: profile.super_battery.or(modes.super_battery),
         })
+    }
+
+    /// Follows power-profiles-daemon to `profile`, unless the shift mode
+    /// is one for it already: the first scenario with a shift mode for it,
+    /// or the mode alone. Names what it applied.
+    pub fn follow_power_profile(&mut self, profile: &str) -> fdo::Result<Option<String>> {
+        let now = self.ec.shift_mode().map_err(|e| error("shift_mode", e))?;
+        if power_profiles::profile_for(&now) == Some(profile) {
+            return Ok(None);
+        }
+        let wanted = power_profiles::shift_modes_for(profile);
+        if let Some(scenario) = self
+            .scenarios
+            .iter()
+            .find(|scenario| {
+                scenario
+                    .shift_mode
+                    .as_deref()
+                    .is_some_and(|mode| wanted.contains(&mode))
+            })
+            .cloned()
+        {
+            self.apply_profile(&scenario.modes())?;
+            return Ok(Some(format!("scenario {}", scenario.name)));
+        }
+        let modes = self.ec.shift_modes().map_err(|e| error("shift_mode", e))?;
+        let Some(mode) = wanted.iter().find(|mode| modes.iter().any(|m| m == *mode)) else {
+            return Ok(None);
+        };
+        self.set_shift_mode(mode)?;
+        Ok(Some(format!("shift mode {mode}")))
     }
 
     fn scenario(&self, now: &Snapshot) -> Option<String> {
@@ -1390,6 +1422,52 @@ mod tests {
             err.to_string().contains("silent, balanced, performance"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn follows_power_profiles_daemon() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        // Comfort is balanced already.
+        assert_eq!(service.follow_power_profile("balanced").unwrap(), None);
+        assert_eq!(
+            service
+                .follow_power_profile("power-saver")
+                .unwrap()
+                .as_deref(),
+            Some("scenario silent")
+        );
+        assert_eq!(service.status().fan_mode.as_deref(), Some("silent"));
+        assert_eq!(
+            service
+                .follow_power_profile("performance")
+                .unwrap()
+                .as_deref(),
+            Some("scenario performance")
+        );
+        assert_eq!(service.status().shift_mode.as_deref(), Some("turbo"));
+        // A profile this daemon doesn't know.
+        assert_eq!(service.follow_power_profile("quiet").unwrap(), None);
+
+        // Without a scenario for it, the shift mode alone.
+        let games = Scenario {
+            name: "games".into(),
+            shift_mode: Some("turbo".into()),
+            fan_mode: None,
+            super_battery: None,
+        };
+        let ec = MsiEc::new(sysfs.path());
+        let mut service = Service::new(ec, None, AutoBoost::default(), vec![games]);
+        assert_eq!(
+            service
+                .follow_power_profile("power-saver")
+                .unwrap()
+                .as_deref(),
+            Some("shift mode eco")
+        );
+        let status = service.status();
+        assert_eq!(status.shift_mode.as_deref(), Some("eco"));
+        assert_eq!(status.fan_mode.as_deref(), Some("auto"));
     }
 
     #[test]
