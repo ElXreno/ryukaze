@@ -1,6 +1,7 @@
 {
   lib,
   rustPlatform,
+  libGL,
   wayland,
   libxkbcommon,
   libX11,
@@ -12,8 +13,10 @@
 let
   cargo = lib.importTOML ../Cargo.toml;
 
-  # winit opens these at run time rather than linking them.
+  # winit and wgpu open these at run time rather than linking them: the
+  # window system's, and glvnd's libEGL.
   windowLibs = [
+    libGL
     wayland
     libxkbcommon
     libX11

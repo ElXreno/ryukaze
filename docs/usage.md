@@ -6,11 +6,15 @@
 scenarios, the shift and fan modes, cooler boost, the battery (its charge,
 what it's doing, how worn it is), super battery and the charge limit,
 whichever this EC has, and polls the daemon every two seconds, so picks
-made elsewhere (Fn keys, the power profiles) show up. It renders in
-software: a GPU renderer would open Vulkan or GL, which on a hybrid laptop
-can wake the discrete GPU for a settings window. It's plain black on white
-or white on black, as the desktop prefers (the XDG settings portal's
-`color-scheme`), or in your [colours](#colours).
+made elsewhere (Fn keys, the power profiles) show up. It draws on the GPU
+the desktop is on, with OpenGL through Mesa alone: any other vendor's
+library, NVIDIA's, would open its GPU and wake a sleeping discrete one for
+a settings window. Without Mesa it draws in software, as it does when
+`ICED_BACKEND=tiny-skia` asks it to; `WGPU_BACKEND`, `WGPU_POWER_PREF` or
+`__EGL_VENDOR_LIBRARY_FILENAMES` in the environment leave the choice to
+them. It's plain black on white or white on black, as the desktop prefers
+(the XDG settings portal's `color-scheme`), or in your
+[colours](#colours).
 
 Under each temperature, a graph has it and the fan's duty over the last
 ten minutes, and under the battery one has the watts out of it and into

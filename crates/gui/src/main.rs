@@ -10,6 +10,7 @@ mod instance;
 mod lights;
 mod nix;
 mod osd;
+mod renderer;
 mod report;
 mod theme;
 mod tray;
@@ -17,6 +18,10 @@ mod tray;
 const USAGE: &str = "usage: ryukaze [--hidden] [--session] [--next-scenario | --next-keyboard-profile | --osd | --status [--json]]";
 
 fn main() -> iced::Result {
+    for (var, value) in renderer::choose() {
+        // SAFETY: nothing else runs yet that could read the environment.
+        unsafe { std::env::set_var(var, value) };
+    }
     let (mut session, mut hidden, mut next_scenario, mut osd) = (false, false, false, false);
     let mut next_keyboard_profile = false;
     let (mut status, mut json) = (false, false);

@@ -159,12 +159,14 @@ fn listen(session: bool, heard: channel::Sender<Heard>) {
     });
 }
 
-/// iced's software renderer, off screen. Making it awaits nothing.
+/// iced's software renderer, off screen, asked for by name: wgpu's would
+/// take the fastest GPU it finds, a discrete one too. Making it awaits
+/// nothing.
 fn software_renderer() -> Result<iced::Renderer, String> {
     let new = pin!(<iced::Renderer as Headless>::new(
         theme::font(),
         Pixels(16.0),
-        None
+        Some("tiny-skia")
     ));
     match new.poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(Some(renderer)) => Ok(renderer),
