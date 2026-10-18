@@ -518,8 +518,7 @@ impl Service {
             return Ok(());
         };
         if on {
-            klc.darken_numpad()
-                .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
+            self.overlay(&klc)
         } else {
             self.light(&klc)
         }
@@ -953,8 +952,7 @@ impl Service {
         if on {
             self.light(&klc)
         } else {
-            klc.darken_numpad()
-                .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
+            self.overlay(&klc)
         }
     }
 
@@ -974,15 +972,34 @@ impl Service {
         }
     }
 
+    /// What goes still over the profile: the numpad dark while NumLock is
+    /// off, the power button in a colour of its own.
+    fn over(&self) -> keyboard::Over {
+        keyboard::Over {
+            numpad_dark: self.numpad_follows && self.numlock == Some(false),
+            power: self.power_color(),
+        }
+    }
+
     fn light(&self, klc: &Klc) -> fdo::Result<()> {
         let lighting = self.lighting()?;
-        let numpad_dark = self.numpad_follows && self.numlock == Some(false);
-        if lighting.is_some() || numpad_dark {
-            klc.show(lighting.as_ref(), numpad_dark)
+        let over = self.over();
+        if lighting.is_some() || over != keyboard::Over::default() {
+            klc.show(lighting.as_ref(), over)
                 .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))?;
-            self.power_shown(lighting.as_ref().and_then(power_still));
         }
-        self.show_power(klc)
+        self.power_shown(over.power);
+        Ok(())
+    }
+
+    /// Only what goes over changed: drawn at once, and kept in the
+    /// controller's tables, with what runs going on.
+    fn overlay(&self, klc: &Klc) -> fdo::Result<()> {
+        let lighting = self.lighting()?;
+        let over = self.over();
+        self.power_shown(over.power);
+        klc.overlay(lighting.as_ref(), over)
+            .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
     }
 
     /// The dGPU woke in the last five seconds, for a power button that
@@ -1009,16 +1026,24 @@ impl Service {
         if self.power_follows == config::PowerFollows::Profile {
             return Ok(());
         }
+        let color = self.power_color();
+        // Once, even if it fails: tried again at the next change.
+        if color.is_none() || self.power_shown(color) == color {
+            return Ok(());
+        }
         match self.keyboard() {
-            Some(klc) => self.show_power(&klc),
+            Some(klc) => self.overlay(&klc),
             None => Ok(()),
         }
     }
 
-    fn show_power(&self, klc: &Klc) -> fdo::Result<()> {
+    /// The power button's colour of its own, following the shift mode or
+    /// the dGPU, the profile's where they have none; none following the
+    /// profile.
+    fn power_color(&self) -> Option<Color> {
         let profile = || self.lighting().ok().flatten().as_ref().and_then(power_in);
-        let color = match self.power_follows {
-            config::PowerFollows::Profile => return Ok(()),
+        match self.power_follows {
+            config::PowerFollows::Profile => None,
             // The dGPU's for a moment as it wakes, if asked.
             config::PowerFollows::ShiftMode if self.dgpu_woke() => {
                 self.power_colors.get("dgpu").copied()
@@ -1038,16 +1063,7 @@ impl Service {
                 };
                 color.or_else(profile)
             }
-        };
-        let Some(color) = color else {
-            return Ok(());
-        };
-        // Once, even if it fails: tried again at the next change.
-        if self.power_shown(Some(color)) == Some(color) {
-            return Ok(());
         }
-        klc.light_keys(&[(keyboard::POWER, color)])
-            .map_err(|err| fdo::Error::IOError(format!("keyboard: power button: {err}")))
     }
 
     fn keyboard_names(&self) -> Option<Vec<String>> {
@@ -1849,7 +1865,7 @@ impl Service {
             if follows == config::PowerFollows::Profile {
                 self.light(&klc)?;
             } else {
-                self.show_power(&klc)?;
+                self.overlay(&klc)?;
             }
         }
         self.remember(|changes| changes.keyboard.power = Some(follows))
@@ -1971,23 +1987,6 @@ fn power_in(lighting: &Lighting) -> Option<Color> {
         .rev()
         .find(|&(key, _)| key == keyboard::POWER)
         .map(|(_, color)| color)
-}
-
-/// The colour the power button stays still in under `lighting`; none while
-/// it's on an effect.
-fn power_still(lighting: &Lighting) -> Option<Color> {
-    let own = keyboard::paint(None, &lighting.keys)
-        .into_iter()
-        .rev()
-        .find(|&(key, _)| key == keyboard::POWER)
-        .map(|(_, color)| color);
-    let zoned = lighting
-        .zones
-        .iter()
-        .any(|zone| zone.keys.contains(&keyboard::POWER));
-    own.or(lighting
-        .color
-        .filter(|_| lighting.effect == keyboard::Effect::Static && !zoned))
 }
 
 /// Where a state file is, for a warning.

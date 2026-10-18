@@ -54,6 +54,14 @@ report then stops the keys it lists. While it sets up an effect the
 controller may turn the next report down (EPIPE); ryukazed waits a little
 and sends it again.
 
+On a brightness key the controller draws every key again from the
+regions' tables, and what a still report alone painted goes: a still
+profile over a reactive one, say, comes back reactive. So ryukazed keeps
+still keys in the tables too, mode 1 with their colour: a still profile's,
+a key's own, the numpad dark for NumLock and the power button's own. A
+still profile goes there without the refresh, which would blink, and its
+still reports show it at once.
+
 The regions' lists of keys came from msi-perkeyrgb, which leaves the power
 button out; it takes the effects in region `0x24`, with the F keys from F7,
 the navigation keys and the numpad (found by trying every region number
