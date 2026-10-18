@@ -753,9 +753,9 @@ impl App {
         }
 
         let hint = if self.copied {
-            "Copied, for services.ryukaze.settings"
+            "Copied, for services.ryukaze.settings".to_owned()
         } else {
-            "Changes here are kept, but for what the config sets, which it sets again at the next start"
+            kept_hint(status)
         };
         let footer = row![
             text(hint).size(12).style(theme::muted).width(Length::Fill),
@@ -1068,6 +1068,41 @@ fn scenario_lights<'a>(
     column![text("In the scenarios").size(13), lists,]
         .spacing(6)
         .into()
+}
+
+/// What a change here lasts: until the next start for what the config
+/// sets, which it sets again then, for good for the rest.
+fn kept_hint(status: &Status) -> String {
+    let mut set: Vec<&str> = Vec::new();
+    for key in status.config_keys.iter().flatten() {
+        let name = match key.as_str() {
+            "charge_limit" => "the charge limit",
+            "webcam" => "the camera",
+            "fn_key" => "the Fn key",
+            "usb_share" => "USB Power Share",
+            "fans.cpu" | "fans.gpu" => "fan curves",
+            "fans.adaptive" => "adaptive fans",
+            "fans.gpu_follows_cpu" => "the GPU fan's help",
+            "cooler_boost.auto" => "cooler boost when hot",
+            "cooler_boost.cpu_c" | "cooler_boost.gpu_c" => "its marks",
+            "power_profiles_daemon.sync" => "power-profiles-daemon in step",
+            "keyboard.numpad_follows_numlock" => "the numpad with NumLock",
+            "profiles.ac" | "profiles.battery" => "what AC and battery apply",
+            _ if key.starts_with("keyboard.scenarios.") => "the scenarios' keyboard light",
+            _ => continue,
+        };
+        if !set.contains(&name) {
+            set.push(name);
+        }
+    }
+    match set.as_slice() {
+        [] => "Changes here are kept".to_owned(),
+        [one] => format!("Changes here are kept; the config sets {one} again at every start"),
+        [rest @ .., last] => format!(
+            "Changes here are kept; the config sets {} and {last} again at every start",
+            rest.join(", ")
+        ),
+    }
 }
 
 /// Whether the config sets `key`, as it writes it: then it sets it again
@@ -1635,10 +1670,17 @@ mod tests {
         assert!(shown(&app, "Copied, for services.ryukaze.settings"));
         // A change after the copy isn't in it.
         let _ = app.update(Message::Applied(Ok(())));
-        assert!(shown(
-            &app,
-            "Changes here are kept, but for what the config sets, which it sets again at the next start"
-        ));
+        assert!(shown(&app, "Changes here are kept"));
+        let mut status = alpha17();
+        status.config_keys = Some(
+            ["cooler_boost.auto", "charge_limit", "cooler_boost.cpu_c"]
+                .map(Into::into)
+                .into(),
+        );
+        assert_eq!(
+            kept_hint(&status),
+            "Changes here are kept; the config sets cooler boost when hot, the charge limit and its marks again at every start"
+        );
     }
 
     #[test]
