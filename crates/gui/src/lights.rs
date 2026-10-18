@@ -293,7 +293,10 @@ pub enum Msg {
     Origin(Origin),
     Inward(bool),
     Name(String),
+    /// A profile of its own, from scratch.
+    New,
     Save,
+    Delete,
     Copy,
     Done,
 }
@@ -304,8 +307,12 @@ pub enum Outcome {
     Nothing,
     /// Show this profile, TOML, on the keyboard.
     Preview(String),
+    /// Start a new profile instead.
+    New,
     /// Keep this profile, TOML, with the daemon's.
     Save(String),
+    /// Forget the saved profile of this name.
+    Delete(String),
     /// Put this on the clipboard.
     Copy(String),
     Done,
@@ -313,9 +320,14 @@ pub enum Outcome {
 
 impl Editor {
     pub fn new() -> Self {
+        Self::named("custom")
+    }
+
+    /// All white and still, under `name`.
+    pub fn named(name: &str) -> Self {
         let white = Color([255; 3]);
         Self {
-            name: "custom".into(),
+            name: name.into(),
             effect: Effect::Static,
             color: white,
             fade_to: Color::OFF,
@@ -555,11 +567,17 @@ impl Editor {
                     Outcome::Save(self.toml())
                 };
             }
+            Msg::New => return Outcome::New,
+            Msg::Delete => return Outcome::Delete(self.name.trim().to_owned()),
             Msg::Copy => return Outcome::Copy(self.nix()),
             Msg::Done => return Outcome::Done,
         }
         self.unsaved = true;
         Outcome::Preview(self.toml())
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.trim()
     }
 
     /// What the keyboard should show as the editor opens.
@@ -575,6 +593,11 @@ impl Editor {
     /// The daemon took it.
     pub fn saved(&mut self) {
         self.unsaved = false;
+    }
+
+    /// The daemon forgot the saved one: what's here is all there is.
+    pub fn deleted(&mut self) {
+        self.unsaved = true;
     }
 
     /// Picked keys are what the colour paints; none, the effect's colour.
@@ -827,8 +850,9 @@ impl Editor {
     }
 
     /// In `width`: the picture with the panels at its side, or under it in
-    /// a narrow window.
-    pub fn view(&self, width: f32) -> Element<'_, Msg> {
+    /// a narrow window. `saved`: whether the daemon keeps a profile of this
+    /// name saved, to delete.
+    pub fn view(&self, width: f32, saved: bool) -> Element<'_, Msg> {
         const SIDE: f32 = 400.0;
         const GAP: f32 = 12.0;
         let saving = (!self.name.trim().is_empty()).then_some(Msg::Save);
@@ -841,6 +865,7 @@ impl Editor {
                 .on_submit_maybe(saving.clone())
                 .size(13)
                 .width(180),
+            small("New", Msg::New),
             text(if self.unsaved {
                 "changed, not saved"
             } else {
@@ -853,6 +878,10 @@ impl Editor {
                 .on_press_maybe(saving)
                 .padding([4, 10])
                 .style(theme::segment(self.unsaved)),
+            button(text("Delete").size(13))
+                .on_press_maybe(saved.then_some(Msg::Delete))
+                .padding([4, 10])
+                .style(theme::segment(false)),
             small("Copy as Nix", Msg::Copy),
             small("Done", Msg::Done),
         ]
@@ -879,12 +908,12 @@ impl Editor {
         };
 
         let mut hint = String::from(
-            "Shown on the keyboard as you go. Save keeps it with the profiles until \
-             the daemon restarts; Copy as Nix, under services.ryukaze.settings.keyboard.profiles, \
-             for good.",
+            "Shown on the keyboard as you go. Save keeps it with the profiles, over one of its \
+             name, and Delete forgets it again; Copy as Nix puts it on the clipboard for \
+             services.ryukaze.settings.keyboard.profiles.",
         );
         if !self.zones.is_empty() {
-            hint.push_str(" Its zones stay as they were: change them in Nix.");
+            hint.push_str(" Its zones stay as they were: change them in the config.");
         }
         column![header, body, text(hint).size(12).style(theme::muted)]
             .spacing(GAP)
@@ -1485,6 +1514,11 @@ mod tests {
         );
         // Saved, until it changes again; not without a name.
         assert!(matches!(editor.update(Msg::Save), Outcome::Save(_)));
+        assert_eq!(
+            editor.update(Msg::Delete),
+            Outcome::Delete("two tone".into())
+        );
+        assert_eq!(editor.update(Msg::New), Outcome::New);
         editor.saved();
         assert!(!editor.unsaved());
         let _ = editor.update(Msg::Name(" ".into()));

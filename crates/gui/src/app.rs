@@ -110,6 +110,7 @@ pub enum Message {
     LightsRead(Result<String, String>),
     Lights(lights::Msg),
     LightsSaved(Result<(), String>),
+    LightsDeleted(Result<(), String>),
 }
 
 impl App {
@@ -342,12 +343,55 @@ impl App {
                             Message::LightsSaved,
                         )
                     }
+                    lights::Outcome::New => {
+                        // "profile 2" if there's a "profile 1", and so on.
+                        let names = match &self.status {
+                            Some(Ok(status)) => {
+                                status.keyboard_profiles.clone().unwrap_or_default()
+                            }
+                            _ => Vec::new(),
+                        };
+                        let name = (1..)
+                            .map(|n| format!("profile {n}"))
+                            .find(|name| !names.contains(name))
+                            .unwrap_or_default();
+                        let editor = lights::Editor::named(&name);
+                        let profile = editor.preview();
+                        self.lights = Some(editor);
+                        self.preview(profile)
+                    }
+                    lights::Outcome::Delete(name) => {
+                        let Some(client) = self.client.clone() else {
+                            return Task::none();
+                        };
+                        Task::perform(
+                            async move {
+                                client
+                                    .delete_keyboard_profile(&name)
+                                    .await
+                                    .map_err(client::describe)
+                            },
+                            Message::LightsDeleted,
+                        )
+                    }
                     lights::Outcome::Copy(nix) => iced::clipboard::write(nix),
                     lights::Outcome::Done => {
                         self.editing_lights = false;
                         self.preview(String::new())
                     }
                 }
+            }
+            Message::LightsDeleted(deleted) => {
+                match deleted {
+                    Ok(()) => {
+                        if let Some(editor) = &mut self.lights {
+                            editor.deleted();
+                        }
+                        self.error = None;
+                    }
+                    Err(err) => self.error = Some(err),
+                }
+                self.refresh()
             }
             Message::LightsSaved(saved) => {
                 match saved {
@@ -464,12 +508,16 @@ impl App {
         let body: Element<'_, Message> = match &self.status {
             None => text("Connecting…").style(theme::muted).into(),
             Some(Err(err)) => banner(err),
-            Some(Ok(_))
+            Some(Ok(status))
                 if self.editing_lights
                     && let Some(editor) = &self.lights =>
             {
                 let inside = (width - 2.0 * PAGE_PADDING).min(max_width);
-                editor.view(inside).map(Message::Lights)
+                let saved = status
+                    .keyboard_saved_profiles
+                    .as_ref()
+                    .is_some_and(|saved| saved.iter().any(|name| name == editor.name()));
+                editor.view(inside, saved).map(Message::Lights)
             }
             Some(Ok(status)) => self.sections(status, columns),
         };
