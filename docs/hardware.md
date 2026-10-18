@@ -53,3 +53,11 @@ flashing when pressed, and an output report `09` starts them. A still
 report then stops the keys it lists. While it sets up an effect the
 controller may turn the next report down (EPIPE); ryukazed waits a little
 and sends it again.
+
+A key flashes on its press and again on its release, and no setting of a
+key's slot makes it stay lit while held instead: of its mode byte's bits
+only `0x08`, flashing, did anything (each bit tried, and 26 values in
+all), the zero byte after it did nothing whatever its bits, nor did the
+effect a flashing key is on, and the flash's length only makes both flashes
+longer or shorter (0 ticks, no flash; 0xffff, lit for good after the first
+press).

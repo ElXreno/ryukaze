@@ -24,7 +24,9 @@ A profile's effect is one of:
   `direction = "in"`, into it; `wavelength` is how wide a round of the
   colours lies, 1 to 100 percent of the board (25 unless told);
 - `reactive`: the keys still in `color`, each flashing `flash` for
-  `flash_ms` when pressed.
+  `flash_ms` when pressed and again when let go: the controller has no
+  flash that lasts while a key is held (see the
+  [hardware notes](hardware.md#the-keyboards-controller)).
 
 The effects are the controller's own: ryukazed sends them, and the
 controller runs them by itself, flashes included, so the computer has no
