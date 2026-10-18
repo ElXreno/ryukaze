@@ -87,6 +87,8 @@ pub struct PowerLight {
     /// the profile's unless told.
     pub dgpu_awake: Option<KeyboardColor>,
     pub dgpu_asleep: Option<KeyboardColor>,
+    /// For `shift_mode`: the dGPU's colour for five seconds as it wakes.
+    pub dgpu_waking: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -685,9 +687,12 @@ pub struct PpdChanges {
 pub struct KeyboardChanges {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub numpad_follows_numlock: Option<bool>,
-    /// What the power button's light follows.
+    /// What the power button's light follows, and whether, following the
+    /// shift mode, it shows the dGPU waking.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power: Option<PowerFollows>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_dgpu_waking: Option<bool>,
     /// A profile by scenario; `""`, none of its own.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub scenarios: BTreeMap<String, String>,
@@ -789,6 +794,8 @@ impl Changes {
                 numpad_follows_numlock: has("keyboard.numpad_follows_numlock")
                     .then_some(config.keyboard.numpad_follows_numlock),
                 power: has("keyboard.power.follows").then_some(config.keyboard.power.follows),
+                power_dgpu_waking: has("keyboard.power.dgpu_waking")
+                    .then_some(config.keyboard.power.dgpu_waking),
                 scenarios: config.keyboard.scenarios.clone(),
             },
             scenarios: has("scenarios").then(|| config.scenarios.clone()),
@@ -826,6 +833,10 @@ impl Changes {
             ("profiles.ac", self.profiles.ac.is_some()),
             ("profiles.battery", self.profiles.battery.is_some()),
             ("keyboard.power.follows", self.keyboard.power.is_some()),
+            (
+                "keyboard.power.dgpu_waking",
+                self.keyboard.power_dgpu_waking.is_some(),
+            ),
             ("scenarios", self.scenarios.is_some()),
         ]
         .into_iter()
@@ -874,6 +885,10 @@ impl Changes {
                     &set.keyboard.numpad_follows_numlock,
                 ),
                 power: unless(self.keyboard.power, &set.keyboard.power),
+                power_dgpu_waking: unless(
+                    self.keyboard.power_dgpu_waking,
+                    &set.keyboard.power_dgpu_waking,
+                ),
                 scenarios: self
                     .keyboard
                     .scenarios
@@ -1411,7 +1426,7 @@ mod tests {
         assert_eq!(standard.dgpu(true), Some(Color([255, 0, 0])));
         assert_eq!(standard.dgpu(false), None);
         let own = load(
-            "[keyboard.power]\nfollows = \"dgpu\"\nshift_modes = { turbo = \"#ff00ff\" }\ndgpu_asleep = \"off\"\n",
+            "[keyboard.power]\nfollows = \"dgpu\"\nshift_modes = { turbo = \"#ff00ff\" }\ndgpu_asleep = \"off\"\ndgpu_waking = true\n",
         )
         .unwrap();
         let power = own.keyboard.power;
@@ -1419,6 +1434,7 @@ mod tests {
         assert_eq!(power.shift_mode("turbo"), Some(Color([255, 0, 255])));
         assert_eq!(power.shift_mode("eco"), None);
         assert_eq!(power.dgpu(false), Some(Color::OFF));
+        assert!(power.dgpu_waking && !standard.dgpu_waking);
         assert!(
             own.set
                 .keys()

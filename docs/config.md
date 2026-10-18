@@ -84,10 +84,12 @@ games = "wave"
 # default), or still in a colour the shift mode's (`shift_mode`: eco green,
 # comfort white, sport orange and turbo red unless told), or the dGPU's
 # (`dgpu`: red while it's awake unless `dgpu_awake` says otherwise, the
-# profile's while it sleeps unless `dgpu_asleep` does).
+# profile's while it sleeps unless `dgpu_asleep` does). Following the shift
+# mode, `dgpu_waking` shows the dGPU's colour for five seconds as it wakes.
 [keyboard.power]
 follows = "shift_mode"
 shift_modes = { eco = "#00ff00", turbo = "#ff0000" }
+dgpu_waking = true
 
 # What NextKeyboardProfile steps through, in this order, after the standard
 # ones (static, breathe, cycle, wave and reactive: white, or the rainbow),

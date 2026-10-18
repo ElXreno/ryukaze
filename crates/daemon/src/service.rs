@@ -79,6 +79,7 @@ pub struct Service {
     /// the colour it was given last.
     power_light: config::PowerLight,
     power_follows: config::PowerFollows,
+    power_dgpu_waking: bool,
     power_shown: Mutex<Option<Color>>,
     /// NumLock, and whether the numpad follows it.
     numlock: Option<bool>,
@@ -272,6 +273,7 @@ impl Service {
             source_profiles: config::Profiles::default(),
             power_light: config::PowerLight::default(),
             power_follows: config::PowerFollows::Profile,
+            power_dgpu_waking: false,
             power_shown: Mutex::new(None),
             numlock: None,
             numpad_follows: false,
@@ -450,6 +452,9 @@ impl Service {
         if let Some(follows) = self.changes.keyboard.power {
             self.power_follows = follows;
         }
+        if let Some(on) = self.changes.keyboard.power_dgpu_waking {
+            self.power_dgpu_waking = on;
+        }
         if let Some(on) = self.changes.keyboard.numpad_follows_numlock {
             report(self.put_numpad_follows_numlock(on));
         }
@@ -573,6 +578,7 @@ impl Service {
     /// From the config: what the power button's light shows.
     pub fn put_power_light(&mut self, power: config::PowerLight) {
         self.power_follows = power.follows;
+        self.power_dgpu_waking = power.dgpu_waking;
         self.power_light = power;
     }
 
@@ -971,6 +977,15 @@ impl Service {
         self.show_power(klc)
     }
 
+    /// The dGPU woke in the last five seconds, for a power button that
+    /// shows it.
+    fn dgpu_woke(&self) -> bool {
+        self.power_dgpu_waking
+            && self
+                .dgpu_seen
+                .is_some_and(|(awake, since)| awake && since.elapsed() < Duration::from_secs(5))
+    }
+
     /// What the power button was last given, `shown` from now on.
     fn power_shown(&self, shown: Option<Color>) -> Option<Color> {
         let mut last = self
@@ -996,6 +1011,8 @@ impl Service {
         let profile = || self.lighting().ok().flatten().as_ref().and_then(power_in);
         let color = match self.power_follows {
             config::PowerFollows::Profile => return Ok(()),
+            // The dGPU's for a moment as it wakes, if asked.
+            config::PowerFollows::ShiftMode if self.dgpu_woke() => self.power_light.dgpu(true),
             config::PowerFollows::ShiftMode => self
                 .ec
                 .shift_mode()
@@ -1326,6 +1343,7 @@ impl Service {
             keyboard_saved_profiles: keyboard.map(|()| self.keyboard_saved_names()),
             numpad_follows_numlock: keyboard.map(|()| self.numpad_follows),
             power_light: keyboard.map(|()| self.power_follows.name().to_owned()),
+            power_light_dgpu: keyboard.map(|()| self.power_dgpu_waking),
             ac_scenario: self.source_scenario(Source::Ac),
             battery_scenario: self.source_scenario(Source::Battery),
             config_keys: Some(self.config_set.keys()),
@@ -1814,6 +1832,18 @@ impl Service {
             }
         }
         self.remember(|changes| changes.keyboard.power = Some(follows))
+    }
+
+    /// Following the shift mode, whether the power button shows the dGPU's
+    /// colour for five seconds as it wakes.
+    pub fn set_power_light_dgpu(&mut self, on: bool) -> fdo::Result<()> {
+        info!(
+            "power button: the dgpu waking {}",
+            if on { "shown" } else { "not shown" }
+        );
+        self.power_dgpu_waking = on;
+        self.refresh_power()?;
+        self.remember(|changes| changes.keyboard.power_dgpu_waking = Some(on))
     }
 
     /// The numpad dark while NumLock is off, but for NumLock itself.
@@ -2700,6 +2730,8 @@ mod tests {
         service.set_numpad_follows_numlock(true).unwrap();
         assert!(service.set_power_light("rainbow").is_err());
         service.set_power_light("shift_mode").unwrap();
+        service.set_power_light_dgpu(true).unwrap();
+        assert_eq!(service.status().power_light_dgpu, None);
         service.set_power_profiles_sync(false).unwrap();
         assert!(!service.power_profiles_sync());
         service.set_source_scenario("ac", "silent").unwrap();
@@ -2725,6 +2757,7 @@ mod tests {
         );
         assert_eq!(kept.keyboard.numpad_follows_numlock, Some(true));
         assert_eq!(kept.keyboard.power, Some(config::PowerFollows::ShiftMode));
+        assert_eq!(kept.keyboard.power_dgpu_waking, Some(true));
         assert_eq!(kept.power_profiles_daemon.sync, Some(false));
         assert_eq!(kept.fn_key, None);
         assert_eq!(kept.cooler_boost.auto, Some(true));

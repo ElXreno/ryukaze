@@ -108,6 +108,7 @@ pub enum Message {
     NumpadFollowsNumlock(bool),
     /// What the power button's light follows.
     PowerLight(&'static str),
+    PowerLightDgpu(bool),
     /// A scenario and the keyboard profile it lights, empty for the picked.
     ScenarioLight(String, String),
     /// A power source, `ac` or `battery`, and its scenario, empty for none.
@@ -288,6 +289,9 @@ impl App {
             }
             Message::FnKey(side) => {
                 self.call(move |client| async move { client.set_fn_key(&side).await })
+            }
+            Message::PowerLightDgpu(on) => {
+                self.call(move |client| async move { client.set_power_light_dgpu(on).await })
             }
             Message::PowerLight(follows) => {
                 self.call(move |client| async move { client.set_power_light(follows).await })
@@ -819,7 +823,18 @@ impl App {
                 light = light.push(scenario_lights(scenarios, own, &standard, &saved));
             }
             if let Some(follows) = &status.power_light {
-                light = light.push(power_light(follows, status.dgpu_awake.is_some()));
+                let hybrid = status.dgpu_awake.is_some();
+                light = light.push(power_light(follows, hybrid));
+                if let Some(on) = status.power_light_dgpu
+                    && hybrid
+                    && follows == "shift_mode"
+                {
+                    light = light.push(switch(
+                        "Show the dGPU waking, for five seconds",
+                        on,
+                        Message::PowerLightDgpu,
+                    ));
+                }
             }
             if let Some(on) = status.numpad_follows_numlock {
                 light = light.push(switch(

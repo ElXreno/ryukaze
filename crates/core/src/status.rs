@@ -137,6 +137,11 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub power_light: Option<String>,
 
+    /// Following the shift mode, the power button shows the dGPU's colour
+    /// for five seconds as it wakes.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub power_light_dgpu: Option<bool>,
+
     /// The numpad dark while NumLock is off, but for NumLock itself.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub numpad_follows_numlock: Option<bool>,
