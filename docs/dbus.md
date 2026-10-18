@@ -21,6 +21,7 @@
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
 | `SetKeyboardProfile` | `s` | one of `keyboard_profiles`, until the scenario changes |
 | `NextKeyboardProfile` | | shows the keyboard profile after the one shown, and names it: for a key binding |
+| `PreviewKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, shown until another is picked or the scenario changes; empty, the one picked again |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |

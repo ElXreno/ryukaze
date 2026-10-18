@@ -55,6 +55,8 @@ pub struct Service {
     keyboard_scenarios: Vec<(String, String)>,
     /// The one shown, to show again when the controller loses it.
     keyboard_profile: Option<String>,
+    /// A profile an editor shows for now, over the one picked.
+    keyboard_preview: Option<Lighting>,
     /// NumLock, where the numpad follows it.
     numlock: Option<bool>,
     /// Where the controller's hidraw node is.
@@ -229,6 +231,7 @@ impl Service {
             keyboard_default: None,
             keyboard_scenarios: Vec::new(),
             keyboard_profile: None,
+            keyboard_preview: None,
             numlock: None,
             dev: PathBuf::from("/dev"),
         }
@@ -366,6 +369,7 @@ impl Service {
         self.keyboard_profiles = profiles;
         self.keyboard_scenarios = scenarios;
         self.keyboard_profile = self.keyboard_profile_for(scenario);
+        self.keyboard_preview = None;
         if let Some(profile) = &self.keyboard_profile {
             if self.keyboard().is_none() {
                 return Err(no_keyboard(", yet"));
@@ -390,9 +394,15 @@ impl Service {
     /// The profile of `scenario`, the one the EC's modes make, if it has
     /// one, or else the usual one; shown unless it is already.
     pub fn keyboard_for(&mut self, scenario: Option<&str>) -> fdo::Result<()> {
+        // A new scenario ends a preview too.
+        let previewing = self.keyboard_preview.take().is_some();
         let profile = self.keyboard_profile_for(scenario);
         if profile.is_none() || profile == self.keyboard_profile {
-            return Ok(());
+            return if previewing {
+                self.keyboard_back()
+            } else {
+                Ok(())
+            };
         }
         self.keyboard_profile = profile;
         if let Some(profile) = &self.keyboard_profile {
@@ -434,6 +444,7 @@ impl Service {
         }
         self.poke.notify_one();
         self.keyboard_profile = Some(name.to_owned());
+        self.keyboard_preview = None;
         info!("keyboard: {name}");
         self.light(&klc)
     }
@@ -459,12 +470,13 @@ impl Service {
     }
 
     fn light(&self, klc: &Klc) -> fdo::Result<()> {
-        let lighting = self.keyboard_profile.as_ref().and_then(|name| {
+        let picked = self.keyboard_profile.as_ref().and_then(|name| {
             self.keyboard_profiles
                 .iter()
                 .find(|(known, _)| known == name)
                 .map(|(_, lighting)| lighting)
         });
+        let lighting = self.keyboard_preview.as_ref().or(picked);
         let numpad_dark = self.numlock == Some(false);
         if lighting.is_none() && !numpad_dark {
             return Ok(());
@@ -939,6 +951,22 @@ impl Service {
     /// One of the keyboard profiles in Status, until the scenario changes.
     pub fn set_keyboard_profile(&mut self, name: &str) -> fdo::Result<()> {
         self.show_keyboard_profile(name)
+    }
+
+    /// A profile as the config writes one, `[[keyboard.profiles]]`'s keys in
+    /// TOML, shown until another is picked, the scenario changes or the
+    /// config is read again: for an editor to show what it has. Empty, the
+    /// one picked again.
+    pub fn preview_keyboard_profile(&mut self, profile: &str) -> fdo::Result<()> {
+        let klc = self.keyboard().ok_or_else(|| no_keyboard(""))?;
+        self.keyboard_preview = if profile.trim().is_empty() {
+            None
+        } else {
+            let profile: config::KeyboardProfile = toml::from_str(profile)
+                .map_err(|err| fdo::Error::InvalidArgs(format!("keyboard preview: {err}")))?;
+            Some(profile.lighting().map_err(fdo::Error::InvalidArgs)?)
+        };
+        self.light(&klc)
     }
 
     /// Shows the keyboard profile after the one shown (the first, if none)
@@ -1744,6 +1772,29 @@ mod tests {
         let _ = service.keyboard_for(Some("silent"));
         assert_eq!(shown(&service), "rainbow");
         assert!(service.keyboard_back().is_err());
+
+        // A preview, checked as the config is, until a profile is picked,
+        // the scenario changes or it's emptied.
+        let green = "name = \"draft\"\ncolor = \"#00ff00\"\n";
+        for bad in [
+            "name = \"draft\"\neffect = \"sparkle\"\n",
+            "name = \"draft\"\n",
+        ] {
+            assert!(matches!(
+                service.preview_keyboard_profile(bad),
+                Err(fdo::Error::InvalidArgs(_))
+            ));
+        }
+        let _ = service.preview_keyboard_profile(green);
+        assert!(service.keyboard_preview.is_some());
+        let _ = service.keyboard_for(Some("balanced"));
+        assert!(service.keyboard_preview.is_none());
+        let _ = service.preview_keyboard_profile(green);
+        let _ = service.set_keyboard_profile("white");
+        assert!(service.keyboard_preview.is_none());
+        let _ = service.preview_keyboard_profile(green);
+        let _ = service.preview_keyboard_profile("");
+        assert!(service.keyboard_preview.is_none());
     }
 
     #[test]
