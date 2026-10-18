@@ -6,13 +6,14 @@
 scenarios, the shift and fan modes, cooler boost, the battery (its charge,
 what it's doing, how worn it is), super battery and the charge limit,
 whichever this EC has, and polls the daemon every two seconds, so picks
-made elsewhere (Fn keys, the power profiles) show up. It draws on the GPU
-the desktop is on, with OpenGL through Mesa alone: any other vendor's
-library, NVIDIA's, would open its GPU and wake a sleeping discrete one for
-a settings window. Without Mesa it draws in software, as it does when
-`ICED_BACKEND=tiny-skia` asks it to; `WGPU_BACKEND`, `WGPU_POWER_PREF` or
-`__EGL_VENDOR_LIBRARY_FILENAMES` in the environment leave the choice to
-them. It's plain black on white or white on black, as the desktop prefers
+made elsewhere (Fn keys, the power profiles) show up. It draws on the
+integrated GPU, with Vulkan through Mesa's driver for it alone and no
+implicit layers: another driver, NVIDIA's, or Mesa's for a vendor with two
+GPUs here, would open the discrete one and wake it for a settings window.
+Where that can't be had it draws in software, as it does when
+`ICED_BACKEND=tiny-skia` asks it to; `WGPU_BACKEND`, `WGPU_POWER_PREF`,
+`VK_DRIVER_FILES` or `VK_ICD_FILENAMES` in the environment leave the choice
+to them. It's plain black on white or white on black, as the desktop prefers
 (the XDG settings portal's `color-scheme`), or in your
 [colours](#colours).
 
