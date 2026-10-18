@@ -23,6 +23,7 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `SetNumpadFollowsNumlock` | `b` | the numpad dark while NumLock is off |
 | `SetPowerLight` | `s` | what the power button's light follows: `profile`, `shift_mode` or `dgpu` |
 | `SetPowerLightDgpu` | `b` | following the shift mode, the dGPU's colour for five seconds as it wakes |
+| `SetPowerColor` | `s s` | the power button's colour for a shift mode, or `dgpu` for the dGPU's awake: `#rrggbb` or `off` |
 | `SetPowerProfilesSync` | `b` | power-profiles-daemon's profile with the shift mode, both ways |
 | `SetKeyboardProfile` | `s` | one of `keyboard_profiles`, shown but in a scenario with its own, and kept for the next start |
 | `NextKeyboardProfile` | | picks the keyboard profile after the one shown, as `SetKeyboardProfile` does, and names it: for a key binding |
@@ -47,8 +48,9 @@ What `SetChargeLimit`, `SetWebcam`, `SetFnKey`, `SetUsbShare`,
 `SetFanCurve` (and `ResetFanCurve`), `SetAdaptiveFans`,
 `SetGpuFanFollowsCpu`, `SetAutoCoolerBoost`, `SetCoolerBoostMarks`,
 `SetNumpadFollowsNumlock`, `SetPowerLight`, `SetPowerLightDgpu`,
-`SetPowerProfilesSync`, `SetSourceScenario`, `SetScenarioKeyboardProfile`
-and `SetScenarios` set is kept for the next start but for what the config sets (see
+`SetPowerColor`, `SetPowerProfilesSync`, `SetSourceScenario`,
+`SetScenarioKeyboardProfile` and `SetScenarios` set is kept for the next
+start but for what the config sets (see
 [using ryukaze](usage.md#the-window)).
 The signal `ModesChanged` (`a{sv}`) carries `shift_mode`, `fan_mode`,
 `super_battery`, `cooler_boost`, `scenario` and `keyboard_profile`, with

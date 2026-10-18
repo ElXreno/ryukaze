@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt::Display,
     io,
     path::{Path, PathBuf},
@@ -80,6 +81,8 @@ pub struct Service {
     power_light: config::PowerLight,
     power_follows: config::PowerFollows,
     power_dgpu_waking: bool,
+    /// Its colours: a shift mode's, and `dgpu` for the dGPU's awake.
+    power_colors: BTreeMap<String, Color>,
     power_shown: Mutex<Option<Color>>,
     /// NumLock, and whether the numpad follows it.
     numlock: Option<bool>,
@@ -274,6 +277,7 @@ impl Service {
             power_light: config::PowerLight::default(),
             power_follows: config::PowerFollows::Profile,
             power_dgpu_waking: false,
+            power_colors: BTreeMap::new(),
             power_shown: Mutex::new(None),
             numlock: None,
             numpad_follows: false,
@@ -455,6 +459,9 @@ impl Service {
         if let Some(on) = self.changes.keyboard.power_dgpu_waking {
             self.power_dgpu_waking = on;
         }
+        for (name, &config::KeyboardColor(color)) in &self.changes.keyboard.power_colors {
+            self.power_colors.insert(name.clone(), color);
+        }
         if let Some(on) = self.changes.keyboard.numpad_follows_numlock {
             report(self.put_numpad_follows_numlock(on));
         }
@@ -579,6 +586,7 @@ impl Service {
     pub fn put_power_light(&mut self, power: config::PowerLight) {
         self.power_follows = power.follows;
         self.power_dgpu_waking = power.dgpu_waking;
+        self.power_colors = power.colors();
         self.power_light = power;
     }
 
@@ -1012,16 +1020,23 @@ impl Service {
         let color = match self.power_follows {
             config::PowerFollows::Profile => return Ok(()),
             // The dGPU's for a moment as it wakes, if asked.
-            config::PowerFollows::ShiftMode if self.dgpu_woke() => self.power_light.dgpu(true),
+            config::PowerFollows::ShiftMode if self.dgpu_woke() => {
+                self.power_colors.get("dgpu").copied()
+            }
             config::PowerFollows::ShiftMode => self
                 .ec
                 .shift_mode()
                 .ok()
-                .and_then(|mode| self.power_light.shift_mode(&mode))
+                .and_then(|mode| self.power_colors.get(&mode).copied())
                 .or_else(profile),
             config::PowerFollows::Dgpu => {
                 let awake = self.dgpu_seen.is_some_and(|(awake, _)| awake);
-                self.power_light.dgpu(awake).or_else(profile)
+                let color = if awake {
+                    self.power_colors.get("dgpu").copied()
+                } else {
+                    self.power_light.dgpu(false)
+                };
+                color.or_else(profile)
             }
         };
         let Some(color) = color else {
@@ -1344,6 +1359,12 @@ impl Service {
             numpad_follows_numlock: keyboard.map(|()| self.numpad_follows),
             power_light: keyboard.map(|()| self.power_follows.name().to_owned()),
             power_light_dgpu: keyboard.map(|()| self.power_dgpu_waking),
+            power_colors: keyboard.map(|()| {
+                self.power_colors
+                    .iter()
+                    .map(|(name, color)| (name.clone(), color.to_string()))
+                    .collect()
+            }),
             ac_scenario: self.source_scenario(Source::Ac),
             battery_scenario: self.source_scenario(Source::Battery),
             config_keys: Some(self.config_set.keys()),
@@ -1832,6 +1853,27 @@ impl Service {
             }
         }
         self.remember(|changes| changes.keyboard.power = Some(follows))
+    }
+
+    /// The power button's colour for `name`, a shift mode or `dgpu`, the
+    /// dGPU's awake: `#rrggbb` or `off`.
+    pub fn set_power_color(&mut self, name: &str, color: &str) -> fdo::Result<()> {
+        let modes = self.ec.shift_modes().unwrap_or_default();
+        if name != "dgpu" && !modes.iter().any(|mode| mode == name) {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{name}: a shift mode, or dgpu"
+            )));
+        }
+        let color: Color = color.parse().map_err(fdo::Error::InvalidArgs)?;
+        info!("power button: {name} {color}");
+        self.power_colors.insert(name.to_owned(), color);
+        self.refresh_power()?;
+        self.remember(|changes| {
+            changes
+                .keyboard
+                .power_colors
+                .insert(name.to_owned(), config::KeyboardColor(color));
+        })
     }
 
     /// Following the shift mode, whether the power button shows the dGPU's
@@ -2731,6 +2773,10 @@ mod tests {
         assert!(service.set_power_light("rainbow").is_err());
         service.set_power_light("shift_mode").unwrap();
         service.set_power_light_dgpu(true).unwrap();
+        service.set_power_color("turbo", "#ff00ff").unwrap();
+        service.set_power_color("dgpu", "#0000ff").unwrap();
+        assert!(service.set_power_color("warp", "#ff00ff").is_err());
+        assert!(service.set_power_color("eco", "pink").is_err());
         assert_eq!(service.status().power_light_dgpu, None);
         service.set_power_profiles_sync(false).unwrap();
         assert!(!service.power_profiles_sync());
@@ -2758,6 +2804,9 @@ mod tests {
         assert_eq!(kept.keyboard.numpad_follows_numlock, Some(true));
         assert_eq!(kept.keyboard.power, Some(config::PowerFollows::ShiftMode));
         assert_eq!(kept.keyboard.power_dgpu_waking, Some(true));
+        let kept_color = |name: &str| kept.keyboard.power_colors.get(name).map(|c| c.0);
+        assert_eq!(kept_color("turbo"), Some(Color([255, 0, 255])));
+        assert_eq!(kept_color("dgpu"), Some(Color([0, 0, 255])));
         assert_eq!(kept.power_profiles_daemon.sync, Some(false));
         assert_eq!(kept.fn_key, None);
         assert_eq!(kept.cooler_boost.auto, Some(true));

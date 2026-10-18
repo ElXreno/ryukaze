@@ -133,6 +133,27 @@ impl PowerLight {
             .map(|&KeyboardColor(color)| color)
     }
 
+    /// The colours a name: each shift mode's, and `dgpu` for the dGPU's
+    /// awake, the standard ones where the config has none.
+    pub fn colors(&self) -> BTreeMap<String, Color> {
+        let modes = ["eco", "comfort", "sport", "turbo"];
+        let mut colors: BTreeMap<String, Color> = if self.shift_modes.is_empty() {
+            modes
+                .into_iter()
+                .filter_map(|mode| Some((mode.to_owned(), self.shift_mode(mode)?)))
+                .collect()
+        } else {
+            self.shift_modes
+                .iter()
+                .map(|(mode, &KeyboardColor(color))| (mode.clone(), color))
+                .collect()
+        };
+        if let Some(color) = self.dgpu(true) {
+            colors.insert("dgpu".into(), color);
+        }
+        colors
+    }
+
     /// The colour while the dGPU is awake; asleep, if one of its own.
     pub fn dgpu(&self, awake: bool) -> Option<Color> {
         if awake {
@@ -538,7 +559,7 @@ impl Keyboard {
 }
 
 /// A [`Color`] checked as it's parsed.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct KeyboardColor(pub Color);
 
@@ -693,6 +714,9 @@ pub struct KeyboardChanges {
     pub power: Option<PowerFollows>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power_dgpu_waking: Option<bool>,
+    /// Its colours, a shift mode's or `dgpu`'s.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub power_colors: BTreeMap<String, KeyboardColor>,
     /// A profile by scenario; `""`, none of its own.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub scenarios: BTreeMap<String, String>,
@@ -796,6 +820,20 @@ impl Changes {
                 power: has("keyboard.power.follows").then_some(config.keyboard.power.follows),
                 power_dgpu_waking: has("keyboard.power.dgpu_waking")
                     .then_some(config.keyboard.power.dgpu_waking),
+                power_colors: config
+                    .keyboard
+                    .power
+                    .shift_modes
+                    .clone()
+                    .into_iter()
+                    .chain(
+                        config
+                            .keyboard
+                            .power
+                            .dgpu_awake
+                            .map(|color| ("dgpu".to_owned(), color)),
+                    )
+                    .collect(),
                 scenarios: config.keyboard.scenarios.clone(),
             },
             scenarios: has("scenarios").then(|| config.scenarios.clone()),
@@ -848,6 +886,15 @@ impl Changes {
                 .keys()
                 .map(|scenario| format!("keyboard.scenarios.{scenario}")),
         )
+        .chain(
+            self.keyboard
+                .power_colors
+                .keys()
+                .map(|name| match name.as_str() {
+                    "dgpu" => "keyboard.power.dgpu_awake".to_owned(),
+                    mode => format!("keyboard.power.shift_modes.{mode}"),
+                }),
+        )
         .collect()
     }
 
@@ -889,6 +936,12 @@ impl Changes {
                     self.keyboard.power_dgpu_waking,
                     &set.keyboard.power_dgpu_waking,
                 ),
+                power_colors: self
+                    .keyboard
+                    .power_colors
+                    .into_iter()
+                    .filter(|(name, _)| !set.keyboard.power_colors.contains_key(name))
+                    .collect(),
                 scenarios: self
                     .keyboard
                     .scenarios

@@ -67,11 +67,11 @@ The power button's light goes with the profile, its effect too, unless it
 shows something of its own instead (`keyboard.power` in the
 [config](config.md), or its choice under the profiles in the window): the
 shift mode, a colour each, and if asked the dGPU's colour for five seconds
-as it wakes, or whether the dGPU is awake. Then it's still, a report on
-that key alone, so an effect on the others runs on undisturbed, and it
-changes within two seconds of what it follows. Back on the profile, the
-keyboard is lit again, as the refresh alone takes a key back into an
-effect.
+as it wakes, or whether the dGPU is awake, in colours the window changes
+too. Then it's still, a report on that key alone, so an effect on the
+others runs on undisturbed, and it changes within two seconds of what it
+follows. Back on the profile, the keyboard is lit again, as the refresh
+alone takes a key back into an effect.
 
 ## Saved profiles
 

@@ -201,7 +201,7 @@ const ORIGINS: [(Origin, &str); 5] = [
 ];
 
 /// Colours to pick at a click, as the LEDs show them rather than a screen.
-const SWATCHES: [Color; 9] = [
+pub const SWATCHES: [Color; 9] = [
     Color([255, 0, 0]),
     Color([255, 96, 0]),
     Color([255, 200, 0]),
@@ -1506,7 +1506,7 @@ fn names_of(keys: &BTreeSet<u8>) -> Vec<String> {
 }
 
 /// A colour as the LEDs show it, on screen: as it is.
-fn led(color: Color) -> iced::Color {
+pub fn led(color: Color) -> iced::Color {
     let [r, g, b] = color.0;
     iced::Color::from_rgb8(r, g, b)
 }

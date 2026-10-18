@@ -41,6 +41,7 @@ pub trait Ryukaze {
     fn set_numpad_follows_numlock(&self, on: bool) -> zbus::Result<()>;
     fn set_power_light(&self, follows: &str) -> zbus::Result<()>;
     fn set_power_light_dgpu(&self, on: bool) -> zbus::Result<()>;
+    fn set_power_color(&self, name: &str, color: &str) -> zbus::Result<()>;
     fn set_power_profiles_sync(&self, on: bool) -> zbus::Result<()>;
     fn set_source_scenario(&self, source: &str, scenario: &str) -> zbus::Result<()>;
     fn read_scenarios(&self) -> zbus::Result<String>;

@@ -8,7 +8,7 @@ use iced::{
     Alignment, Element, Length, Subscription, Task, Theme, mouse,
     widget::{
         button, canvas, column, container, mouse_area, pick_list, progress_bar, responsive, row,
-        scrollable, slider, space, text, toggler,
+        scrollable, slider, space, text, text_input, toggler,
     },
     window,
 };
@@ -70,6 +70,9 @@ pub struct App {
     /// The scenarios' editor, the same way.
     scenarios: Option<scenarios::Editor>,
     editing_scenarios: bool,
+    /// The power button's colour open to change, and it as typed.
+    power_color: Option<String>,
+    power_hex: String,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +112,11 @@ pub enum Message {
     /// What the power button's light follows.
     PowerLight(&'static str),
     PowerLightDgpu(bool),
+    /// The power button's colour for a shift mode or `dgpu`, open or shut.
+    EditPowerColor(String),
+    PowerHex(String),
+    /// A colour for it, `#rrggbb`.
+    PowerColor(String, String),
     /// A scenario and the keyboard profile it lights, empty for the picked.
     ScenarioLight(String, String),
     /// A power source, `ac` or `battery`, and its scenario, empty for none.
@@ -152,6 +160,8 @@ impl App {
             editing_lights: false,
             scenarios: None,
             editing_scenarios: false,
+            power_color: None,
+            power_hex: String::new(),
         };
         let connect = Task::perform(client::connect(session), Message::Connected);
         if hidden {
@@ -289,6 +299,35 @@ impl App {
             }
             Message::FnKey(side) => {
                 self.call(move |client| async move { client.set_fn_key(&side).await })
+            }
+            Message::EditPowerColor(name) => {
+                if self.power_color.as_ref() == Some(&name) {
+                    self.power_color = None;
+                } else {
+                    self.power_hex = match &self.status {
+                        Some(Ok(status)) => status
+                            .power_colors
+                            .as_ref()
+                            .and_then(|colors| colors.get(&name))
+                            .cloned()
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    self.power_color = Some(name);
+                }
+                Task::none()
+            }
+            Message::PowerHex(hex) => {
+                let valid = hex.parse::<ryukaze_core::keyboard::Color>().is_ok();
+                self.power_hex = hex.clone();
+                match (&self.power_color, valid) {
+                    (Some(name), true) => self.update(Message::PowerColor(name.clone(), hex)),
+                    _ => Task::none(),
+                }
+            }
+            Message::PowerColor(name, color) => {
+                self.power_hex.clone_from(&color);
+                self.call(move |client| async move { client.set_power_color(&name, &color).await })
             }
             Message::PowerLightDgpu(on) => {
                 self.call(move |client| async move { client.set_power_light_dgpu(on).await })
@@ -835,6 +874,14 @@ impl App {
                         Message::PowerLightDgpu,
                     ));
                 }
+                if follows != "profile" {
+                    light = light.push(power_colors(
+                        status,
+                        follows,
+                        self.power_color.as_deref(),
+                        &self.power_hex,
+                    ));
+                }
             }
             if let Some(on) = status.numpad_follows_numlock {
                 light = light.push(switch(
@@ -1159,6 +1206,87 @@ fn power_light<'a>(follows: &str, hybrid: bool) -> Element<'a, Message> {
         );
     }
     choices.into()
+}
+
+/// The power button's colours for what it follows: the shift modes', and
+/// the dGPU's awake; the one open, with its hex code and a few to pick.
+fn power_colors<'a>(
+    status: &Status,
+    follows: &str,
+    open: Option<&str>,
+    hex: &str,
+) -> Element<'a, Message> {
+    let colors = status.power_colors.clone().unwrap_or_default();
+    let mut names: Vec<(String, String)> = Vec::new();
+    if follows == "shift_mode" {
+        for mode in ordered(
+            status.shift_modes.as_deref().unwrap_or_default(),
+            SHIFT_ORDER,
+        ) {
+            names.push((mode.clone(), capitalize(mode)));
+        }
+    }
+    if follows == "dgpu" || status.power_light_dgpu == Some(true) {
+        names.push(("dgpu".into(), "dGPU".into()));
+    }
+    let swatch = |color: Option<&String>, size: f32| {
+        let color = color
+            .and_then(|hex| hex.parse::<ryukaze_core::keyboard::Color>().ok())
+            .map_or(iced::Color::TRANSPARENT, lights::led);
+        container(space().width(size).height(size)).style(move |theme: &Theme| container::Style {
+            background: Some(color.into()),
+            border: iced::Border::default()
+                .rounded(4)
+                .width(1)
+                .color(theme::colors(theme).border),
+            ..container::Style::default()
+        })
+    };
+    let mut cells = row![].spacing(4);
+    for (name, label) in &names {
+        let chosen = open == Some(name.as_str());
+        cells = cells.push(
+            button(
+                row![swatch(colors.get(name), 14.0), text(label.clone()).size(13)]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+            )
+            .on_press(Message::EditPowerColor(name.clone()))
+            .padding([4, 8])
+            .style(theme::segment(chosen)),
+        );
+    }
+    let mut column = column![cells.wrap().vertical_spacing(4)].spacing(6);
+    if let Some(name) = open
+        && names.iter().any(|(known, _)| known == name)
+    {
+        let mut palette = row![
+            text_input("#rrggbb", hex)
+                .on_input(Message::PowerHex)
+                .size(13)
+                .width(90),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        for color in lights::SWATCHES {
+            let led = lights::led(color);
+            palette = palette.push(
+                button(space().width(18).height(18))
+                    .padding(0)
+                    .on_press(Message::PowerColor(name.to_owned(), color.to_string()))
+                    .style(move |theme: &Theme, _| button::Style {
+                        background: Some(led.into()),
+                        border: iced::Border::default()
+                            .rounded(4)
+                            .width(1)
+                            .color(theme::colors(theme).border),
+                        ..button::Style::default()
+                    }),
+            );
+        }
+        column = column.push(palette.wrap().vertical_spacing(4));
+    }
+    column.into()
 }
 
 /// The profile a scenario lights, if one of its own: a pick list each.
@@ -1530,6 +1658,8 @@ mod tests {
             editing_lights: false,
             scenarios: None,
             editing_scenarios: false,
+            power_color: None,
+            power_hex: String::new(),
         }
     }
 
