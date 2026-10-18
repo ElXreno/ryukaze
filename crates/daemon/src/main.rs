@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
     }
     service.put_power_profiles_sync(config.power_profiles_daemon.sync);
     service.put_source_profiles(config.profiles.clone());
+    service.put_power_light(config.keyboard.power.clone());
     let state = state_dir(&args);
     service.keep_keyboard_profiles(saved::Store::new(&state));
     service.keep_changes(

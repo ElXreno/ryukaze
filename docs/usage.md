@@ -41,7 +41,7 @@ What the window changes the daemon keeps, in
 /var/lib/ryukaze/settings.toml, and sets again at the next start: the
 charge limit, the camera, the Fn key, USB Power Share, the fan curves,
 adaptive and the GPU fan's help, cooler boost when hot with its marks, the
-numpad following NumLock, power-profiles-daemon in step, the scenario
+numpad following NumLock, what the power button's light follows, power-profiles-daemon in step, the scenario
 applied on AC and on battery, which the Scenario card picks, and the
 scenarios themselves: "Edit the scenarios", there, names them and gives
 them their modes, in the order Fn+F7 steps through them. A scenario the

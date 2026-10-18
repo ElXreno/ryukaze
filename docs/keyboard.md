@@ -60,6 +60,15 @@ Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
 Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
 (Ctrl, Shift, Alt, Win, Copilot, Fn) and `wasd`.
 
+## The power button
+
+The power button's light takes no effect, but it can show something of
+its own over the profile's colour (`keyboard.power` in the
+[config](config.md), or its choice under the profiles in the window): the
+shift mode, a colour each, or whether the dGPU is awake. It changes
+within two seconds of what it follows, a still report on that key alone,
+so an effect on the others runs on undisturbed.
+
 ## Saved profiles
 
 ryukazed keeps the profile picked last and those saved in the window's

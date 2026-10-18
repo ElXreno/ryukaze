@@ -132,6 +132,11 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub keyboard_scenarios: Option<BTreeMap<String, String>>,
 
+    /// What the power button's light follows: `profile`, `shift_mode` or
+    /// `dgpu`.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub power_light: Option<String>,
+
     /// The numpad dark while NumLock is off, but for NumLock itself.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub numpad_follows_numlock: Option<bool>,

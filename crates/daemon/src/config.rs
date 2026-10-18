@@ -69,6 +69,79 @@ pub struct Keyboard {
 
     /// The numpad dark while NumLock is off, but for NumLock itself.
     pub numpad_follows_numlock: bool,
+
+    /// The power button's light, which the effects pass by.
+    pub power: PowerLight,
+}
+
+/// What the power button's light shows: the profile's colour, or, over it,
+/// the shift mode's or whether the dGPU is awake.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PowerLight {
+    pub follows: PowerFollows,
+    /// For `shift_mode`: a colour a mode, eco green, comfort white, sport
+    /// orange and turbo red unless told; a mode without one, the profile's.
+    pub shift_modes: BTreeMap<String, KeyboardColor>,
+    /// For `dgpu`: while it's awake, red unless told, and while it sleeps,
+    /// the profile's unless told.
+    pub dgpu_awake: Option<KeyboardColor>,
+    pub dgpu_asleep: Option<KeyboardColor>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerFollows {
+    #[default]
+    Profile,
+    ShiftMode,
+    Dgpu,
+}
+
+impl PowerFollows {
+    pub const ALL: [PowerFollows; 3] = [Self::Profile, Self::ShiftMode, Self::Dgpu];
+
+    /// As the config writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Profile => "profile",
+            Self::ShiftMode => "shift_mode",
+            Self::Dgpu => "dgpu",
+        }
+    }
+}
+
+impl PowerLight {
+    /// The colour for `shift_mode`, if one.
+    pub fn shift_mode(&self, shift_mode: &str) -> Option<Color> {
+        if self.shift_modes.is_empty() {
+            let standard = [
+                ("eco", [0, 255, 0]),
+                ("comfort", [255, 255, 255]),
+                ("sport", [255, 96, 0]),
+                ("turbo", [255, 0, 0]),
+            ];
+            return standard
+                .into_iter()
+                .find(|(mode, _)| *mode == shift_mode)
+                .map(|(_, rgb)| Color(rgb));
+        }
+        self.shift_modes
+            .get(shift_mode)
+            .map(|&KeyboardColor(color)| color)
+    }
+
+    /// The colour while the dGPU is awake; asleep, if one of its own.
+    pub fn dgpu(&self, awake: bool) -> Option<Color> {
+        if awake {
+            Some(
+                self.dgpu_awake
+                    .map_or(Color([255, 0, 0]), |KeyboardColor(color)| color),
+            )
+        } else {
+            self.dgpu_asleep.map(|KeyboardColor(color)| color)
+        }
+    }
 }
 
 /// One way to light the keyboard; written back as it was read, but for
@@ -612,6 +685,9 @@ pub struct PpdChanges {
 pub struct KeyboardChanges {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub numpad_follows_numlock: Option<bool>,
+    /// What the power button's light follows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power: Option<PowerFollows>,
     /// A profile by scenario; `""`, none of its own.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub scenarios: BTreeMap<String, String>,
@@ -712,6 +788,7 @@ impl Changes {
             keyboard: KeyboardChanges {
                 numpad_follows_numlock: has("keyboard.numpad_follows_numlock")
                     .then_some(config.keyboard.numpad_follows_numlock),
+                power: has("keyboard.power.follows").then_some(config.keyboard.power.follows),
                 scenarios: config.keyboard.scenarios.clone(),
             },
             scenarios: has("scenarios").then(|| config.scenarios.clone()),
@@ -748,6 +825,7 @@ impl Changes {
             ),
             ("profiles.ac", self.profiles.ac.is_some()),
             ("profiles.battery", self.profiles.battery.is_some()),
+            ("keyboard.power.follows", self.keyboard.power.is_some()),
             ("scenarios", self.scenarios.is_some()),
         ]
         .into_iter()
@@ -795,6 +873,7 @@ impl Changes {
                     self.keyboard.numpad_follows_numlock,
                     &set.keyboard.numpad_follows_numlock,
                 ),
+                power: unless(self.keyboard.power, &set.keyboard.power),
                 scenarios: self
                     .keyboard
                     .scenarios
@@ -1321,6 +1400,31 @@ mod tests {
             toml::to_string(&kept).unwrap(),
             "webcam = true\n\n[fans]\ngpu_follows_cpu = true\n"
         );
+    }
+
+    #[test]
+    fn colours_the_power_button() {
+        let standard = load("").unwrap().keyboard.power;
+        assert_eq!(standard.follows, PowerFollows::Profile);
+        assert_eq!(standard.shift_mode("eco"), Some(Color([0, 255, 0])));
+        assert_eq!(standard.shift_mode("warp"), None);
+        assert_eq!(standard.dgpu(true), Some(Color([255, 0, 0])));
+        assert_eq!(standard.dgpu(false), None);
+        let own = load(
+            "[keyboard.power]\nfollows = \"dgpu\"\nshift_modes = { turbo = \"#ff00ff\" }\ndgpu_asleep = \"off\"\n",
+        )
+        .unwrap();
+        let power = own.keyboard.power;
+        assert_eq!(power.follows, PowerFollows::Dgpu);
+        assert_eq!(power.shift_mode("turbo"), Some(Color([255, 0, 255])));
+        assert_eq!(power.shift_mode("eco"), None);
+        assert_eq!(power.dgpu(false), Some(Color::OFF));
+        assert!(
+            own.set
+                .keys()
+                .contains(&"keyboard.power.follows".to_owned())
+        );
+        assert!(load("[keyboard.power]\nfollows = \"moon\"\n").is_err());
     }
 
     #[test]

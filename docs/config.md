@@ -80,6 +80,15 @@ numpad_follows_numlock = true
 [keyboard.scenarios]
 games = "wave"
 
+# The power button's light, which the effects pass by: the profile's colour
+# (`profile`, the default), the shift mode's (`shift_mode`: eco green,
+# comfort white, sport orange and turbo red unless told), or the dGPU's
+# (`dgpu`: red while it's awake unless `dgpu_awake` says otherwise, the
+# profile's while it sleeps unless `dgpu_asleep` does).
+[keyboard.power]
+follows = "shift_mode"
+shift_modes = { eco = "#00ff00", turbo = "#ff0000" }
+
 # What NextKeyboardProfile steps through, in this order, after the standard
 # ones (static, breathe, cycle, wave and reactive: white, or the rainbow),
 # each in place of the standard one of its name. The effect is static (the

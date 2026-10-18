@@ -104,9 +104,15 @@ impl Klc {
     /// The numpad dark but for NumLock, a still report over whatever runs:
     /// an effect goes on undisturbed.
     pub fn darken_numpad(&self) -> io::Result<()> {
-        let node = OpenOptions::new().read(true).write(true).open(&self.node)?;
         let dark: Vec<(u8, Color)> = numpad_but_numlock().map(|key| (key, Color::OFF)).collect();
-        for report in reports(&dark) {
+        self.light_keys(&dark)
+    }
+
+    /// Keys still in these colours over whatever runs, the effect on the
+    /// others undisturbed.
+    pub fn light_keys(&self, keys: &[(u8, Color)]) -> io::Result<()> {
+        let node = OpenOptions::new().read(true).write(true).open(&self.node)?;
+        for report in reports(keys) {
             set_feature(&node, &report)?;
         }
         Ok(())
@@ -276,7 +282,7 @@ struct Plan {
 }
 
 /// The power button's light, which the effects pass by.
-const POWER: u8 = 0x66;
+pub const POWER: u8 = 0x66;
 
 fn plan(lighting: Option<&Lighting>, numpad_dark: bool) -> Plan {
     let mut plan = match lighting {

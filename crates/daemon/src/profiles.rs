@@ -68,6 +68,7 @@ impl Profiles {
                     .keyboard_for(modes.scenario.as_deref()),
             );
         }
+        report(service.get().await.refresh_power());
         let (sync, resync) = {
             let mut service = service.get_mut().await;
             (

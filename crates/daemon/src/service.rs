@@ -2,7 +2,7 @@ use std::{
     fmt::Display,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -11,7 +11,7 @@ use ryukaze_core::{
     dgpu::{self, Dgpu},
     fans::{self, Curve, Fan, Layout},
     gpu_mux::{self, GpuMode, GpuMux},
-    keyboard::{self, Klc, Lighting},
+    keyboard::{self, Color, Klc, Lighting},
     msi_ec::MsiEc,
     power_supply::{self, Source},
     raw_ec::RawEc,
@@ -75,6 +75,11 @@ pub struct Service {
     changes_file: Option<state::File>,
     /// What to apply when the laptop goes on AC or on battery.
     source_profiles: config::Profiles,
+    /// The power button's light: what shows on it, what it follows, and
+    /// the colour it was given last.
+    power_light: config::PowerLight,
+    power_follows: config::PowerFollows,
+    power_shown: Mutex<Option<Color>>,
     /// NumLock, and whether the numpad follows it.
     numlock: Option<bool>,
     numpad_follows: bool,
@@ -265,6 +270,9 @@ impl Service {
             config_set: config::Changes::default(),
             changes_file: None,
             source_profiles: config::Profiles::default(),
+            power_light: config::PowerLight::default(),
+            power_follows: config::PowerFollows::Profile,
+            power_shown: Mutex::new(None),
             numlock: None,
             numpad_follows: false,
             ppd_found: false,
@@ -439,6 +447,9 @@ impl Service {
                 *self.source_profiles.get_mut(source) = Some(profile.clone());
             }
         }
+        if let Some(follows) = self.changes.keyboard.power {
+            self.power_follows = follows;
+        }
         if let Some(on) = self.changes.keyboard.numpad_follows_numlock {
             report(self.put_numpad_follows_numlock(on));
         }
@@ -557,6 +568,12 @@ impl Service {
             }
         }
         Ok(())
+    }
+
+    /// From the config: what the power button's light shows.
+    pub fn put_power_light(&mut self, power: config::PowerLight) {
+        self.power_follows = power.follows;
+        self.power_light = power;
     }
 
     /// From the config: what to apply on AC and on battery.
@@ -927,23 +944,78 @@ impl Service {
         }
     }
 
-    fn light(&self, klc: &Klc) -> fdo::Result<()> {
-        let picked = match &self.keyboard_profile {
+    /// What the keyboard shows: the preview, or the profile picked.
+    fn lighting(&self) -> fdo::Result<Option<Lighting>> {
+        if let Some(preview) = &self.keyboard_preview {
+            return Ok(Some(preview.clone()));
+        }
+        match &self.keyboard_profile {
             // Checked as the config was read or the profile saved.
             Some(name) => self
                 .find_keyboard_profile(name)?
                 .lighting()
                 .map(Some)
-                .map_err(fdo::Error::Failed)?,
-            None => None,
-        };
-        let lighting = self.keyboard_preview.as_ref().or(picked.as_ref());
+                .map_err(fdo::Error::Failed),
+            None => Ok(None),
+        }
+    }
+
+    fn light(&self, klc: &Klc) -> fdo::Result<()> {
+        let lighting = self.lighting()?;
         let numpad_dark = self.numpad_follows && self.numlock == Some(false);
-        if lighting.is_none() && !numpad_dark {
+        if lighting.is_some() || numpad_dark {
+            klc.show(lighting.as_ref(), numpad_dark)
+                .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))?;
+            self.power_shown(lighting.as_ref().and_then(power_in));
+        }
+        self.show_power(klc)
+    }
+
+    /// What the power button was last given, `shown` from now on.
+    fn power_shown(&self, shown: Option<Color>) -> Option<Color> {
+        let mut last = self
+            .power_shown
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        std::mem::replace(&mut *last, shown)
+    }
+
+    /// The power button's light as it follows the shift mode or the dGPU,
+    /// where it's changed since: at every look.
+    pub fn refresh_power(&self) -> fdo::Result<()> {
+        if self.power_follows == config::PowerFollows::Profile {
             return Ok(());
         }
-        klc.show(lighting, numpad_dark)
-            .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
+        match self.keyboard() {
+            Some(klc) => self.show_power(&klc),
+            None => Ok(()),
+        }
+    }
+
+    fn show_power(&self, klc: &Klc) -> fdo::Result<()> {
+        let profile = || self.lighting().ok().flatten().as_ref().and_then(power_in);
+        let color = match self.power_follows {
+            config::PowerFollows::Profile => return Ok(()),
+            config::PowerFollows::ShiftMode => self
+                .ec
+                .shift_mode()
+                .ok()
+                .and_then(|mode| self.power_light.shift_mode(&mode))
+                .or_else(profile),
+            config::PowerFollows::Dgpu => {
+                let awake = self.dgpu_seen.is_some_and(|(awake, _)| awake);
+                self.power_light.dgpu(awake).or_else(profile)
+            }
+        };
+        let Some(color) = color else {
+            return Ok(());
+        };
+        // Once, even if it fails: tried again at the next change.
+        if self.power_shown(Some(color)) == Some(color) {
+            return Ok(());
+        }
+        klc.light_keys(&[(keyboard::POWER, color)])
+            .map_err(|err| fdo::Error::IOError(format!("keyboard: power button: {err}")))
     }
 
     fn keyboard_names(&self) -> Option<Vec<String>> {
@@ -1253,6 +1325,7 @@ impl Service {
             keyboard_profiles: keyboard.and(self.keyboard_names()),
             keyboard_saved_profiles: keyboard.map(|()| self.keyboard_saved_names()),
             numpad_follows_numlock: keyboard.map(|()| self.numpad_follows),
+            power_light: keyboard.map(|()| self.power_follows.name().to_owned()),
             ac_scenario: self.source_scenario(Source::Ac),
             battery_scenario: self.source_scenario(Source::Battery),
             config_keys: Some(self.config_set.keys()),
@@ -1720,6 +1793,33 @@ impl Service {
         kept
     }
 
+    /// What the power button's light follows: `profile`, `shift_mode` or
+    /// `dgpu`.
+    pub fn set_power_light(&mut self, follows: &str) -> fdo::Result<()> {
+        let follows = config::PowerFollows::ALL
+            .into_iter()
+            .find(|known| known.name() == follows)
+            .ok_or_else(|| {
+                fdo::Error::InvalidArgs(format!("{follows:?}: profile, shift_mode or dgpu"))
+            })?;
+        info!("power button: {}", follows.name());
+        self.power_follows = follows;
+        // The profile's again first, so a change back is shown.
+        self.power_shown(None);
+        if let Some(klc) = self.keyboard() {
+            let profile = self.lighting()?.as_ref().and_then(power_in);
+            if follows == config::PowerFollows::Profile
+                && let Some(color) = profile
+            {
+                klc.light_keys(&[(keyboard::POWER, color)])
+                    .map_err(|err| fdo::Error::IOError(format!("keyboard: power button: {err}")))?;
+            } else {
+                self.show_power(&klc)?;
+            }
+        }
+        self.remember(|changes| changes.keyboard.power = Some(follows))
+    }
+
     /// The numpad dark while NumLock is off, but for NumLock itself.
     pub fn set_numpad_follows_numlock(&mut self, on: bool) -> fdo::Result<()> {
         self.put_numpad_follows_numlock(on)?;
@@ -1793,6 +1893,15 @@ fn error(name: &str, err: io::Error) -> fdo::Error {
         }
         _ => fdo::Error::IOError(format!("{name}: {err}")),
     }
+}
+
+/// The colour `lighting` gives the power button, if any.
+fn power_in(lighting: &Lighting) -> Option<Color> {
+    keyboard::paint(lighting.color, &lighting.keys)
+        .into_iter()
+        .rev()
+        .find(|&(key, _)| key == keyboard::POWER)
+        .map(|(_, color)| color)
 }
 
 /// Where a state file is, for a warning.
@@ -2575,6 +2684,8 @@ mod tests {
         service.set_auto_cooler_boost(true).unwrap();
         service.set_cooler_boost_marks(90, 80).unwrap();
         service.set_numpad_follows_numlock(true).unwrap();
+        assert!(service.set_power_light("rainbow").is_err());
+        service.set_power_light("shift_mode").unwrap();
         service.set_power_profiles_sync(false).unwrap();
         assert!(!service.power_profiles_sync());
         service.set_source_scenario("ac", "silent").unwrap();
@@ -2599,6 +2710,7 @@ mod tests {
             Some("silent")
         );
         assert_eq!(kept.keyboard.numpad_follows_numlock, Some(true));
+        assert_eq!(kept.keyboard.power, Some(config::PowerFollows::ShiftMode));
         assert_eq!(kept.power_profiles_daemon.sync, Some(false));
         assert_eq!(kept.fn_key, None);
         assert_eq!(kept.cooler_boost.auto, Some(true));

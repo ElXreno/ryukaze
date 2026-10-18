@@ -106,6 +106,8 @@ pub enum Message {
     FnKey(String),
     UsbShare(bool),
     NumpadFollowsNumlock(bool),
+    /// What the power button's light follows.
+    PowerLight(&'static str),
     /// A scenario and the keyboard profile it lights, empty for the picked.
     ScenarioLight(String, String),
     /// A power source, `ac` or `battery`, and its scenario, empty for none.
@@ -286,6 +288,9 @@ impl App {
             }
             Message::FnKey(side) => {
                 self.call(move |client| async move { client.set_fn_key(&side).await })
+            }
+            Message::PowerLight(follows) => {
+                self.call(move |client| async move { client.set_power_light(follows).await })
             }
             Message::ScenarioLight(scenario, profile) => self.call(move |client| async move {
                 client
@@ -812,6 +817,9 @@ impl App {
             if let (Some(scenarios), Some(own)) = (&status.scenarios, &status.keyboard_scenarios) {
                 light = light.push(scenario_lights(scenarios, own, &standard, &saved));
             }
+            if let Some(follows) = &status.power_light {
+                light = light.push(power_light(follows, status.dgpu_awake.is_some()));
+            }
             if let Some(on) = status.numpad_follows_numlock {
                 light = light.push(switch(
                     "Numpad dark while NumLock is off",
@@ -1112,6 +1120,29 @@ fn small_button<'a>(label: &'a str, press: Message) -> Element<'a, Message> {
         .padding([4, 12])
         .style(theme::segment(false))
         .into()
+}
+
+/// What the power button's light follows: the profile, the shift mode, or
+/// on a hybrid laptop the dGPU.
+fn power_light<'a>(follows: &str, hybrid: bool) -> Element<'a, Message> {
+    let mut choices = row![text("Power button").size(13).width(110)]
+        .spacing(4)
+        .align_y(Alignment::Center);
+    let mut options = vec![("profile", "The profile's"), ("shift_mode", "The mode")];
+    if hybrid {
+        options.push(("dgpu", "The dGPU"));
+    }
+    for (value, label) in options {
+        let chosen = follows == value;
+        choices = choices.push(
+            button(text(label).size(13).width(Length::Fill).center())
+                .on_press_maybe((!chosen).then(|| Message::PowerLight(value)))
+                .padding([4, 4])
+                .width(Length::Fill)
+                .style(theme::segment(chosen)),
+        );
+    }
+    choices.into()
 }
 
 /// The profile a scenario lights, if one of its own: a pick list each.
