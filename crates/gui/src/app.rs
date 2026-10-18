@@ -20,7 +20,7 @@ use crate::{
     appearance,
     client::{self, Client},
     history::{self, History, Series},
-    icon, instance, report, theme, tray,
+    icon, instance, lights, report, theme, tray,
 };
 
 /// Picks the EC makes on its own (Fn keys, the daemon's power profiles)
@@ -62,6 +62,8 @@ pub struct App {
     curve_draft: Option<Curve>,
     /// The settings went to the clipboard since the last change.
     copied: bool,
+    /// The keyboard light's editor, while it's open.
+    lights: Option<lights::Editor>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +102,9 @@ pub enum Message {
     GpuMode(String),
     Scenario(String),
     KeyboardProfile(String),
+    /// Open the keyboard light's editor.
+    EditLights,
+    Lights(lights::Msg),
 }
 
 impl App {
@@ -119,6 +124,7 @@ impl App {
             curve_fan: Fan::Cpu,
             curve_draft: None,
             copied: false,
+            lights: None,
         };
         let connect = Task::perform(client::connect(session), Message::Connected);
         if hidden {
@@ -209,6 +215,10 @@ impl App {
                     self.charge_limit = None;
                     self.boost_marks = None;
                     self.curve_draft = None;
+                    // The keyboard back to its profile.
+                    if self.lights.take().is_some() {
+                        return self.preview(String::new());
+                    }
                 }
                 Task::none()
             }
@@ -261,6 +271,26 @@ impl App {
             }
             Message::KeyboardProfile(name) => {
                 self.call(move |client| async move { client.set_keyboard_profile(&name).await })
+            }
+            Message::EditLights => {
+                let editor = lights::Editor::new();
+                let profile = editor.preview();
+                self.lights = Some(editor);
+                self.preview(profile)
+            }
+            Message::Lights(msg) => {
+                let Some(editor) = &mut self.lights else {
+                    return Task::none();
+                };
+                match editor.update(msg) {
+                    lights::Outcome::Nothing => Task::none(),
+                    lights::Outcome::Preview(profile) => self.preview(profile),
+                    lights::Outcome::Copy(nix) => iced::clipboard::write(nix),
+                    lights::Outcome::Done => {
+                        self.lights = None;
+                        self.preview(String::new())
+                    }
+                }
             }
             Message::AutoCoolerBoost(on) => {
                 self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
@@ -364,6 +394,7 @@ impl App {
         let body: Element<'_, Message> = match &self.status {
             None => text("Connecting…").style(theme::muted).into(),
             Some(Err(err)) => banner(err),
+            Some(Ok(_)) if let Some(editor) = &self.lights => editor.view().map(Message::Lights),
             Some(Ok(status)) => self.sections(status, columns),
         };
 
@@ -517,7 +548,11 @@ impl App {
             let current = status.keyboard_profile.as_deref().unwrap_or_default();
             devices = devices.push(
                 column![
-                    text("Keyboard light"),
+                    row![
+                        text("Keyboard light").width(Length::Fill),
+                        small_button("Edit", Message::EditLights),
+                    ]
+                    .align_y(Alignment::Center),
                     modes_row(current, profiles, &[], Message::KeyboardProfile),
                 ]
                 .spacing(8),
@@ -643,6 +678,12 @@ impl App {
         Task::perform(async move { client.status().await }, |result| {
             Message::Status(Box::new(result.map_err(client::describe)))
         })
+    }
+
+    /// Shows a profile from the editor on the keyboard; empty, the one
+    /// picked again.
+    fn preview(&self, profile: String) -> Task<Message> {
+        self.call(move |client| async move { client.preview_keyboard_profile(&profile).await })
     }
 
     fn call<F, Fut>(&self, call: F) -> Task<Message>
@@ -941,6 +982,7 @@ mod tests {
             curve_fan: Fan::Cpu,
             curve_draft: None,
             copied: false,
+            lights: None,
         }
     }
 

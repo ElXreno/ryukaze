@@ -537,7 +537,7 @@ fn keys() -> impl Iterator<Item = u8> {
 /// on the Alpha 17's keyboard, which has no Home, End or Pause of their
 /// own (they share PgUp, PgDn and the numpad), a Copilot key where right
 /// Ctrl would be, and `102nd`, the `\` between AltGr and Fn.
-fn names() -> Vec<(String, u8)> {
+pub fn names() -> Vec<(String, u8)> {
     let mut names: Vec<(String, u8)> = Vec::new();
     names.extend((b'a'..=b'z').map(|c| (char::from(c).to_string(), c - b'a' + 0x04)));
     names.extend((1..=9).map(|n| (n.to_string(), 0x1d + n)));

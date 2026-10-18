@@ -914,6 +914,22 @@ mod tests {
         assert!(load(&format!("{twice}[keyboard.scenarios]\nloud = \"p\"\n")).is_err());
     }
 
+    /// What the window's editor sends to PreviewKeyboardProfile, as its TOML
+    /// writer lays it out: the keys sorted, tables last.
+    #[test]
+    fn reads_what_the_editor_writes() {
+        let still = "color = \"#ffffff\"\nname = \"custom\"\n\n[keys]\n102nd = \"#ff0000\"\na = \"#ff0000\"\n";
+        let wave = "colors = [\"#0000ff\", \"#ff0000\"]\ndirection = \"in\"\neffect = \"wave\"\nname = \"custom\"\norigin = \"left\"\nperiod_ms = 4000\n\n[keys]\nw = \"#ff0000\"\n";
+        for profile in [still, wave] {
+            let profile: KeyboardProfile = toml::from_str(profile).unwrap();
+            let lighting = profile.lighting().unwrap();
+            assert_eq!(
+                lighting.keys.len(),
+                if profile.colors.is_empty() { 2 } else { 1 }
+            );
+        }
+    }
+
     #[test]
     fn reads_effect_options_and_zones() {
         let config = load(

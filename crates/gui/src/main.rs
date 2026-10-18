@@ -7,6 +7,7 @@ mod curve;
 mod history;
 mod icon;
 mod instance;
+mod lights;
 mod nix;
 mod osd;
 mod report;

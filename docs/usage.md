@@ -36,6 +36,13 @@ What the window changes lasts until the daemon restarts. Copy as Nix, at
 the bottom, puts the settings on the clipboard in the shape of
 `services.ryukaze.settings`, to keep them.
 
+Edit, by the keyboard light's profiles, opens its editor: a picture of the
+keyboard to click keys on, or pick them by group, and paint them, a colour
+from sliders, a hex code or a swatch, and an effect with what it takes.
+What it has shows on the keyboard as it goes, until another profile is
+picked or the scenario changes, and Copy as Nix puts it on the clipboard
+as a profile for `services.ryukaze.settings.keyboard.profiles`.
+
 ## The tray
 
 The tray icon has the scenarios, the modes, the switches, the keyboard
