@@ -47,8 +47,11 @@ pub struct Service {
     dgpu_seen: Option<(bool, Instant)>,
     /// Where its users are looked for.
     proc: PathBuf,
-    /// The keyboard's light profiles, by name, in order.
-    keyboard_profiles: Vec<(String, Lighting)>,
+    /// The keyboard's light profiles, in order: the config's, and those
+    /// saved over D-Bus since.
+    keyboard_profiles: Vec<config::KeyboardProfile>,
+    /// The saved ones, kept when the config is applied again.
+    keyboard_saved: Vec<config::KeyboardProfile>,
     /// The one shown outside the scenarios with one of their own.
     keyboard_default: Option<String>,
     /// (scenario, profile) pairs.
@@ -228,6 +231,7 @@ impl Service {
             dgpu_seen: None,
             proc: PathBuf::from("/proc"),
             keyboard_profiles: Vec::new(),
+            keyboard_saved: Vec::new(),
             keyboard_default: None,
             keyboard_scenarios: Vec::new(),
             keyboard_profile: None,
@@ -355,18 +359,22 @@ impl Service {
         Ok(Some(format!("shift mode {mode}")))
     }
 
-    /// From the config: the profiles, the one shown outside the scenarios
-    /// with their own (the first, if none is named), and theirs; shown at
-    /// once for `scenario`, the one the EC is in.
+    /// From the config: the profiles, checked, the one shown outside the
+    /// scenarios with their own (the first, if none is named), and theirs;
+    /// shown at once for `scenario`, the one the EC is in. Profiles saved
+    /// since the daemon started stay, over the config's of their names.
     pub fn configure_keyboard(
         &mut self,
-        profiles: Vec<(String, Lighting)>,
+        profiles: Vec<config::KeyboardProfile>,
         default: Option<String>,
         scenarios: Vec<(String, String)>,
         scenario: Option<&str>,
     ) -> fdo::Result<()> {
-        self.keyboard_default = default.or_else(|| profiles.first().map(|(name, _)| name.clone()));
+        self.keyboard_default = default.or_else(|| profiles.first().map(|p| p.name.clone()));
         self.keyboard_profiles = profiles;
+        for saved in self.keyboard_saved.clone() {
+            self.keep_keyboard_profile(saved);
+        }
         self.keyboard_scenarios = scenarios;
         self.keyboard_profile = self.keyboard_profile_for(scenario);
         self.keyboard_preview = None;
@@ -424,24 +432,39 @@ impl Service {
         own.or_else(|| self.keyboard_default.clone())
     }
 
+    /// In place of the one of its name, or after the others.
+    fn keep_keyboard_profile(&mut self, profile: config::KeyboardProfile) {
+        match self
+            .keyboard_profiles
+            .iter_mut()
+            .find(|known| known.name == profile.name)
+        {
+            Some(known) => *known = profile,
+            None => self.keyboard_profiles.push(profile),
+        }
+    }
+
+    fn find_keyboard_profile(&self, name: &str) -> fdo::Result<&config::KeyboardProfile> {
+        self.keyboard_profiles
+            .iter()
+            .find(|known| known.name == name)
+            .ok_or_else(|| {
+                let names: Vec<&str> = self
+                    .keyboard_profiles
+                    .iter()
+                    .map(|profile| profile.name.as_str())
+                    .collect();
+                fdo::Error::InvalidArgs(format!(
+                    "{name} is not one of the keyboard profiles: {}",
+                    names.join(", ")
+                ))
+            })
+    }
+
     /// Shows the profile `name` until the scenario changes.
     fn show_keyboard_profile(&mut self, name: &str) -> fdo::Result<()> {
         let klc = self.keyboard().ok_or_else(|| no_keyboard(""))?;
-        if !self
-            .keyboard_profiles
-            .iter()
-            .any(|(known, _)| known == name)
-        {
-            let names: Vec<&str> = self
-                .keyboard_profiles
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect();
-            return Err(fdo::Error::InvalidArgs(format!(
-                "{name} is not one of the keyboard profiles: {}",
-                names.join(", ")
-            )));
-        }
+        self.find_keyboard_profile(name)?;
         self.poke.notify_one();
         self.keyboard_profile = Some(name.to_owned());
         self.keyboard_preview = None;
@@ -470,13 +493,16 @@ impl Service {
     }
 
     fn light(&self, klc: &Klc) -> fdo::Result<()> {
-        let picked = self.keyboard_profile.as_ref().and_then(|name| {
-            self.keyboard_profiles
-                .iter()
-                .find(|(known, _)| known == name)
-                .map(|(_, lighting)| lighting)
-        });
-        let lighting = self.keyboard_preview.as_ref().or(picked);
+        let picked = match &self.keyboard_profile {
+            // Checked as the config was read or the profile saved.
+            Some(name) => self
+                .find_keyboard_profile(name)?
+                .lighting()
+                .map(Some)
+                .map_err(fdo::Error::Failed)?,
+            None => None,
+        };
+        let lighting = self.keyboard_preview.as_ref().or(picked.as_ref());
         let numpad_dark = self.numlock == Some(false);
         if lighting.is_none() && !numpad_dark {
             return Ok(());
@@ -489,7 +515,7 @@ impl Service {
         (!self.keyboard_profiles.is_empty()).then(|| {
             self.keyboard_profiles
                 .iter()
-                .map(|(name, _)| name.clone())
+                .map(|profile| profile.name.clone())
                 .collect()
         })
     }
@@ -962,11 +988,46 @@ impl Service {
         self.keyboard_preview = if profile.trim().is_empty() {
             None
         } else {
-            let profile: config::KeyboardProfile = toml::from_str(profile)
-                .map_err(|err| fdo::Error::InvalidArgs(format!("keyboard preview: {err}")))?;
-            Some(profile.lighting().map_err(fdo::Error::InvalidArgs)?)
+            Some(
+                keyboard_profile(profile, "keyboard preview")?
+                    .lighting()
+                    .map_err(fdo::Error::InvalidArgs)?,
+            )
         };
         self.light(&klc)
+    }
+
+    /// The keyboard profile `name` as the config writes one, in TOML: for
+    /// an editor to start from.
+    pub fn read_keyboard_profile(&self, name: &str) -> fdo::Result<String> {
+        toml::to_string(self.find_keyboard_profile(name)?)
+            .map_err(|err| fdo::Error::Failed(format!("keyboard profile {name}: {err}")))
+    }
+
+    /// A profile as the config writes one, in TOML, kept with the others,
+    /// in place of the one of its name if there is one, until the daemon
+    /// restarts; shown at once, until the scenario changes.
+    pub fn save_keyboard_profile(&mut self, profile: &str) -> fdo::Result<()> {
+        if self.keyboard().is_none() {
+            return Err(no_keyboard(""));
+        }
+        let profile = keyboard_profile(profile, "keyboard profile")?;
+        if profile.name.trim().is_empty() {
+            return Err(fdo::Error::InvalidArgs("keyboard profile: no name".into()));
+        }
+        profile.lighting().map_err(fdo::Error::InvalidArgs)?;
+        let name = profile.name.clone();
+        match self
+            .keyboard_saved
+            .iter_mut()
+            .find(|saved| saved.name == name)
+        {
+            Some(saved) => *saved = profile.clone(),
+            None => self.keyboard_saved.push(profile.clone()),
+        }
+        self.keep_keyboard_profile(profile);
+        info!("keyboard: {name} saved");
+        self.show_keyboard_profile(&name)
     }
 
     /// Shows the keyboard profile after the one shown (the first, if none)
@@ -983,9 +1044,9 @@ impl Service {
         let next = self
             .keyboard_profiles
             .iter()
-            .position(|(name, _)| Some(name) == self.keyboard_profile.as_ref())
+            .position(|profile| Some(&profile.name) == self.keyboard_profile.as_ref())
             .map_or(0, |i| (i + 1) % self.keyboard_profiles.len());
-        let name = self.keyboard_profiles[next].0.clone();
+        let name = self.keyboard_profiles[next].name.clone();
         self.show_keyboard_profile(&name)?;
         Ok(name)
     }
@@ -1165,6 +1226,11 @@ fn error(name: &str, err: io::Error) -> fdo::Error {
         }
         _ => fdo::Error::IOError(format!("{name}: {err}")),
     }
+}
+
+/// A keyboard profile sent over D-Bus, in TOML; errors for `whose`.
+fn keyboard_profile(text: &str, whose: &str) -> fdo::Result<config::KeyboardProfile> {
+    toml::from_str(text).map_err(|err| fdo::Error::InvalidArgs(format!("{whose}: {err}")))
 }
 
 fn no_keyboard(yet: &str) -> fdo::Error {
@@ -1692,30 +1758,13 @@ mod tests {
 
     #[test]
     fn keyboard_profiles_where_the_controller_is() {
-        use ryukaze_core::keyboard::Effect;
-
         let sysfs = alpha17("17KKIMS1.115");
         let mut service = service(sysfs.path());
-        let still = |hex: &str| Lighting {
-            effect: Effect::Static,
-            color: Some(hex.parse().unwrap()),
-            keys: Vec::new(),
-            zones: Vec::new(),
-        };
-        let wave = Lighting {
-            effect: Effect::Wave {
-                period_ms: 3000,
-                colors: keyboard::RAINBOW.to_vec(),
-                wave: keyboard::Wave::default(),
-            },
-            color: None,
-            keys: Vec::new(),
-            zones: Vec::new(),
-        };
+        let profile = |text: &str| keyboard_profile(text, "test").unwrap();
         let profiles = vec![
-            ("orange".to_owned(), still("#ff6000")),
-            ("rainbow".to_owned(), wave),
-            ("white".to_owned(), still("#ffffff")),
+            profile("name = \"orange\"\ncolor = \"#ff6000\"\n"),
+            profile("name = \"rainbow\"\neffect = \"wave\"\n"),
+            profile("name = \"white\"\ncolor = \"#ffffff\"\n"),
         ];
         let silent = vec![("silent".to_owned(), "rainbow".to_owned())];
         // No controller: said so, and nothing in Status.
@@ -1745,7 +1794,7 @@ mod tests {
         // The usual profile, the first; a scenario's own while the EC is in
         // it. A file takes no HID reports, hence the errors.
         let shown = |service: &Service| service.status().keyboard_profile.unwrap();
-        let _ = service.configure_keyboard(profiles, None, silent, Some("balanced"));
+        let _ = service.configure_keyboard(profiles.clone(), None, silent, Some("balanced"));
         assert_eq!(shown(&service), "orange");
         assert_eq!(
             service.status().keyboard_profiles.unwrap(),
@@ -1795,6 +1844,36 @@ mod tests {
         let _ = service.preview_keyboard_profile(green);
         let _ = service.preview_keyboard_profile("");
         assert!(service.keyboard_preview.is_none());
+
+        // Read as the config has it; saved over one of its name or after
+        // the others, shown, and kept when the config is applied again.
+        assert_eq!(
+            service.read_keyboard_profile("rainbow").unwrap(),
+            "name = \"rainbow\"\neffect = \"wave\"\n"
+        );
+        assert!(matches!(
+            service.read_keyboard_profile("blue"),
+            Err(fdo::Error::InvalidArgs(_))
+        ));
+        for bad in ["name = \"\"\ncolor = \"#00ff00\"\n", "name = \"draft\"\n"] {
+            assert!(matches!(
+                service.save_keyboard_profile(bad),
+                Err(fdo::Error::InvalidArgs(_))
+            ));
+        }
+        let _ = service.save_keyboard_profile(green);
+        let _ = service.save_keyboard_profile("name = \"white\"\ncolor = \"#eeeeee\"\n");
+        assert_eq!(shown(&service), "white");
+        let names = ["orange", "rainbow", "white", "draft"];
+        assert_eq!(service.status().keyboard_profiles.unwrap(), names);
+        let _ = service.configure_keyboard(profiles, None, Vec::new(), Some("balanced"));
+        assert_eq!(service.status().keyboard_profiles.unwrap(), names);
+        assert!(
+            service
+                .read_keyboard_profile("white")
+                .unwrap()
+                .contains("#eeeeee")
+        );
     }
 
     #[test]

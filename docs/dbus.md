@@ -1,6 +1,7 @@
 # D-Bus API
 
-`io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
+The daemon is `io.github.kontonkara.ryukaze` on the system bus, its
+interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 
 | Method | Arguments | |
 |---|---|---|
@@ -22,6 +23,8 @@
 | `SetKeyboardProfile` | `s` | one of `keyboard_profiles`, until the scenario changes |
 | `NextKeyboardProfile` | | shows the keyboard profile after the one shown, and names it: for a key binding |
 | `PreviewKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, shown until another is picked or the scenario changes; empty, the one picked again |
+| `ReadKeyboardProfile` | `s` | one of `keyboard_profiles` as the config writes it, in TOML (`s`): for an editor to start from |
+| `SaveKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, kept with the others (in place of the one of its name) until the daemon restarts, and shown until the scenario changes |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |
@@ -38,5 +41,5 @@ whatever changed them: a call (at once), a power profile, the automatic
 boost or the EC itself on Fn+F8 (within two seconds). The window, the tray and the on-screen card take it as it comes.
 
 [data/io.github.kontonkara.ryukaze.conf](../data/io.github.kontonkara.ryukaze.conf)
-lets everyone call `Status` and only root call the setters; the NixOS
-module adds the users in `services.ryukaze.users`.
+lets everyone call `Status` and `ReadKeyboardProfile` and only root call the
+setters; the NixOS module adds the users in `services.ryukaze.users`.

@@ -10,7 +10,7 @@ use ryukaze_core::{
     keyboard::{self, Color, Effect, Lighting, Origin, Zone},
     power_supply::Source,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{adaptive::Smoothing, boost};
 
@@ -66,8 +66,9 @@ pub struct Keyboard {
     pub numpad_follows_numlock: bool,
 }
 
-/// One way to light the keyboard.
-#[derive(Debug, Clone, Deserialize)]
+/// One way to light the keyboard; written back as it was read, but for
+/// what was left unset, for an editor to start from.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyboardProfile {
     pub name: String,
@@ -77,63 +78,79 @@ pub struct KeyboardProfile {
 
     /// The keys without their own: still, breathing, or between flashes;
     /// with a cycle or a wave, the power button, which they pass by.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<KeyboardColor>,
 
     /// How long a breath, or a round of the colours, takes.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub period_ms: Option<u32>,
 
     /// In `breathe`, what the colour fades to and back from: black unless
     /// told.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fade_to: Option<KeyboardColor>,
 
     /// In `cycle` and `wave`, the colours gone through: the rainbow unless
     /// told.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub colors: Vec<KeyboardColor>,
 
     /// In `wave`: `out` of the origin (the default) or `in` to it, the
     /// origin `middle` (the default), `left`, `right`, `top` or `bottom`,
     /// and how wide a round of the colours lies, in percent of the board.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub direction: Option<Direction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<OriginName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wavelength: Option<u8>,
 
     /// In `reactive`, what a pressed key flashes, and for how long.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub flash: Option<KeyboardColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub flash_ms: Option<u32>,
 
     /// Keys and groups of keys in their own colours, by name, still
     /// whatever the effects: a single key over a group, a smaller group
     /// over a larger one.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, KeyboardColor>,
 
     /// Parts of the board with an effect of their own, a later one over an
     /// earlier.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub zones: Vec<KeyboardZone>,
 }
 
 /// Keys, by name, with an effect of their own: what a profile takes, but
 /// for still colours, which go in its `keys`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyboardZone {
     pub keys: Vec<String>,
     pub effect: EffectName,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<KeyboardColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub period_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fade_to: Option<KeyboardColor>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub colors: Vec<KeyboardColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub direction: Option<Direction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<OriginName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wavelength: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub flash: Option<KeyboardColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub flash_ms: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EffectName {
     #[default]
@@ -144,14 +161,14 @@ pub enum EffectName {
     Reactive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
     Out,
     In,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OriginName {
     Middle,
@@ -384,14 +401,6 @@ impl KeyboardZone {
 }
 
 impl Keyboard {
-    /// The profiles, by name; checked at load.
-    pub fn lightings(&self) -> Vec<(String, Lighting)> {
-        self.profiles
-            .iter()
-            .filter_map(|profile| Some((profile.name.clone(), profile.lighting().ok()?)))
-            .collect()
-    }
-
     /// (scenario, profile) pairs.
     pub fn scenario_profiles(&self) -> Vec<(String, String)> {
         self.scenarios
@@ -402,8 +411,8 @@ impl Keyboard {
 }
 
 /// A [`Color`] checked as it's parsed.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(try_from = "String")]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct KeyboardColor(pub Color);
 
 impl TryFrom<String> for KeyboardColor {
@@ -411,6 +420,12 @@ impl TryFrom<String> for KeyboardColor {
 
     fn try_from(text: String) -> Result<Self, String> {
         text.parse().map(KeyboardColor)
+    }
+}
+
+impl From<KeyboardColor> for String {
+    fn from(KeyboardColor(color): KeyboardColor) -> String {
+        color.to_string()
     }
 }
 
@@ -811,7 +826,7 @@ mod tests {
         assert_eq!(ac.scenario.as_deref(), Some("games"));
         assert!(config.power_profiles_daemon.sync);
         assert!(config.keyboard.numpad_follows_numlock);
-        assert_eq!(config.keyboard.lightings().len(), 5);
+        assert_eq!(config.keyboard.profiles.len(), 5);
     }
 
     #[test]
@@ -847,7 +862,12 @@ mod tests {
             "##,
         )
         .unwrap();
-        let lightings = config.keyboard.lightings();
+        let lightings: Vec<(String, Lighting)> = config
+            .keyboard
+            .profiles
+            .iter()
+            .map(|profile| (profile.name.clone(), profile.lighting().unwrap()))
+            .collect();
         let names: Vec<&str> = lightings.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["orange", "breathe", "rainbow", "typing"]);
         assert_eq!(lightings[0].1.effect, Effect::Static);
@@ -914,6 +934,36 @@ mod tests {
         assert!(load(&format!("{twice}[keyboard.scenarios]\nloud = \"p\"\n")).is_err());
     }
 
+    /// Written back for KeyboardProfile as it was read, unset fields left
+    /// out, and read again the same.
+    #[test]
+    fn writes_a_profile_back() {
+        let config = load(
+            r##"
+            [[keyboard.profiles]]
+            name = "split"
+            effect = "wave"
+            colors = ["#ff0000", "#0000ff"]
+            origin = "left"
+            keys = { wasd = "#ffffff", "102nd" = "off" }
+
+            [[keyboard.profiles.zones]]
+            keys = ["numpad"]
+            effect = "breathe"
+            color = "#ff6000"
+            "##,
+        )
+        .unwrap();
+        let profile = &config.keyboard.profiles[0];
+        let written = toml::to_string(profile).unwrap();
+        assert_eq!(
+            written,
+            "name = \"split\"\neffect = \"wave\"\ncolors = [\"#ff0000\", \"#0000ff\"]\norigin = \"left\"\n\n[keys]\n102nd = \"off\"\nwasd = \"#ffffff\"\n\n[[zones]]\nkeys = [\"numpad\"]\neffect = \"breathe\"\ncolor = \"#ff6000\"\n"
+        );
+        let again: KeyboardProfile = toml::from_str(&written).unwrap();
+        assert_eq!(again.lighting(), profile.lighting());
+    }
+
     /// What the window's editor sends to PreviewKeyboardProfile, as its TOML
     /// writer lays it out: the keys sorted, tables last.
     #[test]
@@ -954,7 +1004,7 @@ mod tests {
             "##,
         )
         .unwrap();
-        let split = &config.keyboard.lightings()[0].1;
+        let split = &config.keyboard.profiles[0].lighting().unwrap();
         assert_eq!(split.effect, Effect::Static);
         assert_eq!(split.zones.len(), 2);
         assert_eq!(split.zones[0].keys.len(), 17 + 4);

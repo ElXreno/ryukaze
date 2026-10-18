@@ -130,7 +130,7 @@ impl Profiles {
         let keyboard = &self.config.keyboard;
         let scenario = service.modes().scenario;
         report(service.configure_keyboard(
-            keyboard.lightings(),
+            keyboard.profiles.clone(),
             keyboard.profile.clone(),
             keyboard.scenario_profiles(),
             scenario.as_deref(),
