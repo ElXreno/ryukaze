@@ -60,7 +60,9 @@ pub struct Service {
     /// their own; or else the one picked last, or else the config's first.
     keyboard_named: Option<String>,
     keyboard_first: Option<String>,
-    /// (scenario, profile) pairs.
+    /// (scenario, profile) pairs: the config's, and with what the window
+    /// changed.
+    keyboard_config_scenarios: Vec<(String, String)>,
     keyboard_scenarios: Vec<(String, String)>,
     /// The one shown, to show again when the controller loses it.
     keyboard_profile: Option<String>,
@@ -255,6 +257,7 @@ impl Service {
             keyboard_profiles: Vec::new(),
             keyboard_named: None,
             keyboard_first: None,
+            keyboard_config_scenarios: Vec::new(),
             keyboard_scenarios: Vec::new(),
             keyboard_profile: None,
             keyboard_preview: None,
@@ -694,7 +697,8 @@ impl Service {
         self.keyboard_first = first;
         self.keyboard_config = profiles;
         self.merge_keyboard_profiles();
-        self.keyboard_scenarios = scenarios;
+        self.keyboard_config_scenarios = scenarios;
+        self.merge_keyboard_scenarios();
         self.keyboard_profile = self.keyboard_profile_for(scenario);
         self.keyboard_preview = None;
         if let Some(profile) = &self.keyboard_profile {
@@ -756,6 +760,19 @@ impl Service {
         own.or_else(|| self.keyboard_named.clone())
             .or(picked)
             .or_else(|| self.keyboard_first.clone())
+    }
+
+    /// The config's scenario profiles, and the window's for scenarios it
+    /// leaves.
+    fn merge_keyboard_scenarios(&mut self) {
+        let mut scenarios = self.keyboard_config_scenarios.clone();
+        for (scenario, profile) in &self.changes.keyboard.scenarios {
+            scenarios.retain(|(known, _)| known != scenario);
+            if !profile.is_empty() {
+                scenarios.push((scenario.clone(), profile.clone()));
+            }
+        }
+        self.keyboard_scenarios = scenarios;
     }
 
     /// The config's profiles, then the saved ones but for any of a name the
@@ -1190,7 +1207,9 @@ impl Service {
             numpad_follows_numlock: keyboard.map(|()| self.numpad_follows),
             ac_scenario: self.source_scenario(Source::Ac),
             battery_scenario: self.source_scenario(Source::Battery),
-            config_keys: Some(self.config_set.keys().into_iter().map(Into::into).collect()),
+            config_keys: Some(self.config_set.keys()),
+            keyboard_scenarios: keyboard
+                .map(|()| self.keyboard_scenarios.iter().cloned().collect()),
             power_profiles_sync: self.ppd_found.then_some(self.ppd_sync),
             usb_share: self
                 .usb_share
@@ -1549,6 +1568,51 @@ impl Service {
             self.apply_profile(&profile)?;
         }
         self.remember(|changes| *changes.profiles.get_mut(source) = Some(profile))
+    }
+
+    /// The keyboard profile shown while the EC is in `scenario`'s modes, or
+    /// none of its own for `""`; shown at once in that scenario.
+    pub fn set_scenario_keyboard_profile(
+        &mut self,
+        scenario: &str,
+        profile: &str,
+    ) -> fdo::Result<()> {
+        if self.scenarios.iter().all(|known| known.name != scenario) {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{scenario} is not one of the scenarios"
+            )));
+        }
+        if !profile.is_empty() {
+            self.find_keyboard_profile(profile)?;
+        }
+        let (scenario, profile) = (scenario.to_owned(), profile.to_owned());
+        info!(
+            "keyboard: {} in {scenario}",
+            if profile.is_empty() {
+                "the one picked"
+            } else {
+                &profile
+            }
+        );
+        let mut changes = self.changes.clone();
+        changes
+            .keyboard
+            .scenarios
+            .insert(scenario.clone(), profile.clone());
+        let kept = self.remember(|kept| *kept = changes);
+        // Until the next start, where the config sets it.
+        if self.config_set.keyboard.scenarios.contains_key(&scenario) {
+            self.keyboard_config_scenarios
+                .retain(|(known, _)| *known != scenario);
+            if !profile.is_empty() {
+                self.keyboard_config_scenarios
+                    .push((scenario.clone(), profile));
+            }
+        }
+        self.merge_keyboard_scenarios();
+        let now = self.modes().scenario;
+        self.keyboard_for(now.as_deref())?;
+        kept
     }
 
     /// The numpad dark while NumLock is off, but for NumLock itself.
@@ -2336,6 +2400,29 @@ mod tests {
                 .unwrap()
                 .contains("#ffffff")
         );
+
+        // A scenario's own from the window: kept, and back to the picked
+        // one with none.
+        gone.dev = service.dev.clone();
+        gone.keep_changes(
+            state::File::new(state.path(), "settings.toml"),
+            config::Changes::default(),
+        );
+        assert!(gone.set_scenario_keyboard_profile("loud", "white").is_err());
+        assert!(
+            gone.set_scenario_keyboard_profile("silent", "blue")
+                .is_err()
+        );
+        let _ = gone.set_scenario_keyboard_profile("silent", "white");
+        let own = |service: &Service| service.status().keyboard_scenarios.unwrap();
+        assert_eq!(own(&gone).get("silent").map(String::as_str), Some("white"));
+        let kept: config::Changes = state::File::new(state.path(), "settings.toml").load();
+        assert_eq!(
+            kept.keyboard.scenarios.get("silent").map(String::as_str),
+            Some("white")
+        );
+        let _ = gone.set_scenario_keyboard_profile("silent", "");
+        assert_eq!(own(&gone).get("silent"), None);
     }
 
     #[test]

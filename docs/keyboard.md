@@ -4,8 +4,8 @@ On a controller checked, the SteelSeries KLC (1038:113a) of the Alpha 17
 C7VG, ryukazed lights the keys in profiles: a standard one for each effect
 (static, breathe, cycle, wave and reactive, white or the rainbow), the
 config's (see the [config](config.md)), and those saved in the window. The
-one shown is a scenario's own from `keyboard.scenarios` while the EC is in
-its modes, and otherwise the one picked last, by `SetKeyboardProfile` or
+one shown is a scenario's own, from `keyboard.scenarios` or picked under
+the profiles in the window, while the EC is in its modes, and otherwise the one picked last, by `SetKeyboardProfile` or
 `NextKeyboardProfile`, or else `keyboard.profile`. The tray, the window,
 `ryukaze --next-keyboard-profile` and, with a hwdb entry, Fn+F9 pick them
 (see [using ryukaze](usage.md#the-fn-keys)); the window's editor makes new

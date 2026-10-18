@@ -12,9 +12,9 @@ use std::{
 };
 
 use iced::{
-    Border, Color, Font, Theme, color,
+    Border, Color, Font, Shadow, Theme, color,
     theme::Style,
-    widget::{button, container, progress_bar, slider, text, toggler},
+    widget::{button, container, overlay::menu, pick_list, progress_bar, slider, text, toggler},
 };
 use serde::Deserialize;
 
@@ -278,6 +278,35 @@ pub fn segment(chosen: bool) -> impl Fn(&Theme, button::Status) -> button::Style
             border: Border::default().rounded(8),
             ..button::Style::default()
         }
+    }
+}
+
+/// A pick list, closed: a choice not taken, as a segment is.
+pub fn pick(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let colors = colors(theme);
+    let background = match status {
+        pick_list::Status::Hovered | pick_list::Status::Opened { .. } => colors.hover,
+        pick_list::Status::Active => colors.idle,
+    };
+    pick_list::Style {
+        text_color: colors.text,
+        placeholder_color: colors.muted,
+        handle_color: colors.muted,
+        background: background.into(),
+        border: Border::default().rounded(8),
+    }
+}
+
+/// A pick list, open.
+pub fn menu(theme: &Theme) -> menu::Style {
+    let colors = colors(theme);
+    menu::Style {
+        background: colors.card.into(),
+        border: Border::default().rounded(8).width(1).color(colors.border),
+        text_color: colors.text,
+        selected_text_color: colors.on_strong,
+        selected_background: colors.strong.into(),
+        shadow: Shadow::default(),
     }
 }
 

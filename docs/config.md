@@ -74,7 +74,8 @@ profile = "static"
 # The numpad dark while NumLock is off, but for NumLock itself.
 numpad_follows_numlock = true
 
-# A profile by scenario, shown while the EC is in its modes.
+# A profile by scenario, shown while the EC is in its modes; the window
+# picks them too, for scenarios not set here.
 [keyboard.scenarios]
 games = "wave"
 

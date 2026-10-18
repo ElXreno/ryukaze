@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     future::Future,
     time::{Duration, Instant},
 };
@@ -6,8 +7,8 @@ use std::{
 use iced::{
     Alignment, Element, Length, Subscription, Task, Theme, mouse,
     widget::{
-        button, canvas, column, container, mouse_area, progress_bar, responsive, row, scrollable,
-        slider, space, text, toggler,
+        button, canvas, column, container, mouse_area, pick_list, progress_bar, responsive, row,
+        scrollable, slider, space, text, toggler,
     },
     window,
 };
@@ -102,6 +103,8 @@ pub enum Message {
     FnKey(String),
     UsbShare(bool),
     NumpadFollowsNumlock(bool),
+    /// A scenario and the keyboard profile it lights, empty for the picked.
+    ScenarioLight(String, String),
     /// A power source, `ac` or `battery`, and its scenario, empty for none.
     SourceScenario(&'static str, String),
     PowerProfilesSync(bool),
@@ -273,6 +276,11 @@ impl App {
             Message::FnKey(side) => {
                 self.call(move |client| async move { client.set_fn_key(&side).await })
             }
+            Message::ScenarioLight(scenario, profile) => self.call(move |client| async move {
+                client
+                    .set_scenario_keyboard_profile(&scenario, &profile)
+                    .await
+            }),
             Message::SourceScenario(source, scenario) => self.call(move |client| async move {
                 client.set_source_scenario(source, &scenario).await
             }),
@@ -713,6 +721,9 @@ impl App {
                     .push(text("Saved here").size(12).style(theme::muted))
                     .push(profile_grid(current, &saved));
             }
+            if let (Some(scenarios), Some(own)) = (&status.scenarios, &status.keyboard_scenarios) {
+                light = light.push(scenario_lights(scenarios, own, &standard, &saved));
+            }
             if let Some(on) = status.numpad_follows_numlock {
                 light = light.push(switch(
                     "Numpad dark while NumLock is off",
@@ -1012,6 +1023,50 @@ fn small_button<'a>(label: &'a str, press: Message) -> Element<'a, Message> {
         .on_press(press)
         .padding([4, 12])
         .style(theme::segment(false))
+        .into()
+}
+
+/// The profile a scenario lights, if one of its own: a pick list each.
+fn scenario_lights<'a>(
+    scenarios: &[String],
+    own: &BTreeMap<String, String>,
+    standard: &[String],
+    saved: &[String],
+) -> Element<'a, Message> {
+    const PICKED: &str = "the picked one";
+    let options: Vec<String> = std::iter::once(PICKED.to_owned())
+        .chain(standard.iter().chain(saved).cloned())
+        .collect();
+    let mut lists = row![].spacing(8);
+    for scenario in scenarios {
+        let picked = own
+            .get(scenario)
+            .cloned()
+            .unwrap_or_else(|| PICKED.to_owned());
+        let scenario = scenario.clone();
+        lists = lists.push(
+            column![
+                text(capitalize(&scenario)).size(12).style(theme::muted),
+                pick_list(options.clone(), Some(picked), move |profile: String| {
+                    let profile = if profile == PICKED {
+                        String::new()
+                    } else {
+                        profile
+                    };
+                    Message::ScenarioLight(scenario.clone(), profile)
+                })
+                .text_size(13)
+                .padding([4, 8])
+                .width(Length::Fill)
+                .style(theme::pick)
+                .menu_style(theme::menu),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+        );
+    }
+    column![text("In the scenarios").size(13), lists,]
+        .spacing(6)
         .into()
 }
 

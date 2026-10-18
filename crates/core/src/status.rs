@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use zvariant::{Type, as_value::optional as opt};
 
@@ -124,6 +126,11 @@ pub struct Status {
     /// `DeleteKeyboardProfile` takes.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub keyboard_saved_profiles: Option<Vec<String>>,
+
+    /// The keyboard light's profile by scenario, for those with one of
+    /// their own.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub keyboard_scenarios: Option<BTreeMap<String, String>>,
 
     /// The numpad dark while NumLock is off, but for NumLock itself.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]

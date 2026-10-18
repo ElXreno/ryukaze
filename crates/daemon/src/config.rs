@@ -609,6 +609,9 @@ pub struct PpdChanges {
 pub struct KeyboardChanges {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub numpad_follows_numlock: Option<bool>,
+    /// A profile by scenario; `""`, none of its own.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub scenarios: BTreeMap<String, String>,
 }
 
 impl PpdChanges {
@@ -706,6 +709,7 @@ impl Changes {
             keyboard: KeyboardChanges {
                 numpad_follows_numlock: has("keyboard.numpad_follows_numlock")
                     .then_some(config.keyboard.numpad_follows_numlock),
+                scenarios: config.keyboard.scenarios.clone(),
             },
             profiles: Profiles {
                 ac: has("profiles.ac").then(|| config.profiles.ac.clone().unwrap_or_default()),
@@ -716,7 +720,7 @@ impl Changes {
     }
 
     /// The keys set, as the config writes them.
-    pub fn keys(&self) -> Vec<&'static str> {
+    pub fn keys(&self) -> Vec<String> {
         let (fans, boost) = (&self.fans, &self.cooler_boost);
         [
             ("charge_limit", self.charge_limit.is_some()),
@@ -742,7 +746,14 @@ impl Changes {
             ("profiles.battery", self.profiles.battery.is_some()),
         ]
         .into_iter()
-        .filter_map(|(key, set)| set.then_some(key))
+        .filter(|&(_, set)| set)
+        .map(|(key, _)| key.to_owned())
+        .chain(
+            self.keyboard
+                .scenarios
+                .keys()
+                .map(|scenario| format!("keyboard.scenarios.{scenario}")),
+        )
         .collect()
     }
 
@@ -779,6 +790,12 @@ impl Changes {
                     self.keyboard.numpad_follows_numlock,
                     &set.keyboard.numpad_follows_numlock,
                 ),
+                scenarios: self
+                    .keyboard
+                    .scenarios
+                    .into_iter()
+                    .filter(|(scenario, _)| !set.keyboard.scenarios.contains_key(scenario))
+                    .collect(),
             },
             profiles: Profiles {
                 ac: unless(self.profiles.ac, &set.profiles.ac),

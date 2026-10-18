@@ -41,6 +41,7 @@ pub trait Ryukaze {
     fn set_numpad_follows_numlock(&self, on: bool) -> zbus::Result<()>;
     fn set_power_profiles_sync(&self, on: bool) -> zbus::Result<()>;
     fn set_source_scenario(&self, source: &str, scenario: &str) -> zbus::Result<()>;
+    fn set_scenario_keyboard_profile(&self, scenario: &str, profile: &str) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn modes_changed(&self, modes: Status) -> zbus::Result<()>;
