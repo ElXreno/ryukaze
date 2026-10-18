@@ -20,6 +20,8 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `SetWebcam` | `b` | the camera on or off |
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
+| `SetNumpadFollowsNumlock` | `b` | the numpad dark while NumLock is off |
+| `SetPowerProfilesSync` | `b` | power-profiles-daemon's profile with the shift mode, both ways |
 | `SetKeyboardProfile` | `s` | one of `keyboard_profiles`, shown but in a scenario with its own, and kept for the next start |
 | `NextKeyboardProfile` | | picks the keyboard profile after the one shown, as `SetKeyboardProfile` does, and names it: for a key binding |
 | `PreviewKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, shown until another is picked or the scenario changes; empty, the one picked again |
@@ -37,8 +39,8 @@ it means; `ryukaze --status --json` prints the same dictionary.
 Every setter reads the value back and fails if the EC didn't take it.
 What `SetChargeLimit`, `SetWebcam`, `SetFnKey`, `SetUsbShare`,
 `SetFanCurve` (and `ResetFanCurve`), `SetAdaptiveFans`,
-`SetGpuFanFollowsCpu`, `SetAutoCoolerBoost` and `SetCoolerBoostMarks` set
-is kept for the next start but for what the config sets (see
+`SetGpuFanFollowsCpu`, `SetAutoCoolerBoost`, `SetCoolerBoostMarks`,
+`SetNumpadFollowsNumlock` and `SetPowerProfilesSync` set is kept for the next start but for what the config sets (see
 [using ryukaze](usage.md#the-window)).
 The signal `ModesChanged` (`a{sv}`) carries `shift_mode`, `fan_mode`,
 `super_battery`, `cooler_boost`, `scenario` and `keyboard_profile`, with

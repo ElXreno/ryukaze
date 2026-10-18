@@ -40,7 +40,8 @@ which doesn't wake it, and looks through /proc only while it's up).
 What the window changes the daemon keeps, in
 /var/lib/ryukaze/settings.toml, and sets again at the next start: the
 charge limit, the camera, the Fn key, USB Power Share, the fan curves,
-adaptive and the GPU fan's help, and cooler boost when hot with its marks.
+adaptive and the GPU fan's help, cooler boost when hot with its marks, the
+numpad following NumLock, and power-profiles-daemon in step.
 What the [config](config.md) sets, though, it sets again at every start: a
 change to it in the window lasts until then. The modes themselves aren't
 kept; the power source's profile sets them at start. Copy as Nix, at the
@@ -123,7 +124,8 @@ the card follow it.
 
 Where power-profiles-daemon runs, its profile goes with the shift mode
 (see the [config](config.md)), so a desktop's power menu (GNOME's, KDE's,
-Noctalia's) picks scenarios too, and shows the one Fn+F7 picked.
+Noctalia's) picks scenarios too, and shows the one Fn+F7 picked. A switch
+under the modes in the window turns it off and on.
 
 ## Colours
 

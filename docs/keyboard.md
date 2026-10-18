@@ -72,10 +72,11 @@ before the config took its name waits in the file, unshown.
 
 ## NumLock
 
-With `numpad_follows_numlock` the numpad goes dark while NumLock is off,
-NumLock itself aside. ryukazed reads the laptop keyboard's events for it
-with the kernel holding back all but its lights' changes (`EVIOCSMASK`),
-so no key press reaches the daemon this way either. Going dark leaves an
+With `numpad_follows_numlock`, or its switch in the window's Devices,
+the numpad goes dark while NumLock is off, NumLock itself aside. ryukazed
+reads the laptop keyboard's events for it with the kernel holding back all
+but its lights' changes (`EVIOCSMASK`), so no key press reaches the daemon
+this way either. Going dark leaves an
 effect running; coming back on starts it over on every key, a blink: the
 controller takes keys back into an effect only with the refresh, which
 restarts it.

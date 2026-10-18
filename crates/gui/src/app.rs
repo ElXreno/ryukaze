@@ -101,6 +101,8 @@ pub enum Message {
     Webcam(bool),
     FnKey(String),
     UsbShare(bool),
+    NumpadFollowsNumlock(bool),
+    PowerProfilesSync(bool),
     GpuMode(String),
     Scenario(String),
     KeyboardProfile(String),
@@ -268,6 +270,12 @@ impl App {
             }
             Message::FnKey(side) => {
                 self.call(move |client| async move { client.set_fn_key(&side).await })
+            }
+            Message::NumpadFollowsNumlock(on) => {
+                self.call(move |client| async move { client.set_numpad_follows_numlock(on).await })
+            }
+            Message::PowerProfilesSync(on) => {
+                self.call(move |client| async move { client.set_power_profiles_sync(on).await })
             }
             Message::UsbShare(on) => {
                 self.call(move |client| async move { client.set_usb_share(on).await })
@@ -586,13 +594,16 @@ impl App {
         }
 
         if let (Some(current), Some(modes)) = (&status.shift_mode, &status.shift_modes) {
-            put(
-                [0, 0],
-                section(
-                    "Performance",
-                    modes_row(current, modes, SHIFT_ORDER, Message::ShiftMode),
-                ),
-            );
+            let mut performance =
+                column![modes_row(current, modes, SHIFT_ORDER, Message::ShiftMode)].spacing(12);
+            if let Some(on) = status.power_profiles_sync {
+                performance = performance.push(switch(
+                    "In step with power-profiles-daemon",
+                    on,
+                    Message::PowerProfilesSync,
+                ));
+            }
+            put([0, 0], section("Performance", performance));
         }
 
         let mut fans = column![].spacing(12);
@@ -676,6 +687,13 @@ impl App {
                 light = light
                     .push(text("Saved here").size(12).style(theme::muted))
                     .push(profile_grid(current, &saved));
+            }
+            if let Some(on) = status.numpad_follows_numlock {
+                light = light.push(switch(
+                    "Numpad dark while NumLock is off",
+                    on,
+                    Message::NumpadFollowsNumlock,
+                ));
             }
             devices = devices.push(light);
         }

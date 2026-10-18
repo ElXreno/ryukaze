@@ -588,6 +588,36 @@ pub struct Changes {
     pub fans: FanChanges,
     #[serde(skip_serializing_if = "BoostChanges::is_empty")]
     pub cooler_boost: BoostChanges,
+    #[serde(skip_serializing_if = "PpdChanges::is_empty")]
+    pub power_profiles_daemon: PpdChanges,
+    #[serde(skip_serializing_if = "KeyboardChanges::is_empty")]
+    pub keyboard: KeyboardChanges,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PpdChanges {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KeyboardChanges {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub numpad_follows_numlock: Option<bool>,
+}
+
+impl PpdChanges {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl KeyboardChanges {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -666,6 +696,14 @@ impl Changes {
                 cpu_c: has("cooler_boost.cpu_c").then_some(boost.cpu_c),
                 gpu_c: has("cooler_boost.gpu_c").then_some(boost.gpu_c),
             },
+            power_profiles_daemon: PpdChanges {
+                sync: has("power_profiles_daemon.sync")
+                    .then_some(config.power_profiles_daemon.sync),
+            },
+            keyboard: KeyboardChanges {
+                numpad_follows_numlock: has("keyboard.numpad_follows_numlock")
+                    .then_some(config.keyboard.numpad_follows_numlock),
+            },
         }
     }
 
@@ -690,6 +728,18 @@ impl Changes {
                 auto: unless(boost.auto, &set.cooler_boost.auto),
                 cpu_c: unless(boost.cpu_c, &set.cooler_boost.cpu_c),
                 gpu_c: unless(boost.gpu_c, &set.cooler_boost.gpu_c),
+            },
+            power_profiles_daemon: PpdChanges {
+                sync: unless(
+                    self.power_profiles_daemon.sync,
+                    &set.power_profiles_daemon.sync,
+                ),
+            },
+            keyboard: KeyboardChanges {
+                numpad_follows_numlock: unless(
+                    self.keyboard.numpad_follows_numlock,
+                    &set.keyboard.numpad_follows_numlock,
+                ),
             },
         }
     }

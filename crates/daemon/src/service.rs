@@ -71,8 +71,14 @@ pub struct Service {
     changes: config::Changes,
     config_set: config::Changes,
     changes_file: Option<state::File>,
-    /// NumLock, where the numpad follows it.
+    /// NumLock, and whether the numpad follows it.
     numlock: Option<bool>,
+    numpad_follows: bool,
+    /// power-profiles-daemon: whether it runs, whether its profile goes
+    /// with the shift mode, and whether to tell it the shift mode at once.
+    ppd_found: bool,
+    ppd_sync: bool,
+    ppd_resync: bool,
     /// Where the controller's hidraw node is.
     dev: PathBuf,
 }
@@ -254,6 +260,10 @@ impl Service {
             config_set: config::Changes::default(),
             changes_file: None,
             numlock: None,
+            numpad_follows: false,
+            ppd_found: false,
+            ppd_sync: true,
+            ppd_resync: false,
             dev: PathBuf::from("/dev"),
         }
     }
@@ -412,6 +422,12 @@ impl Service {
         if let Some(on) = boost.auto {
             report(self.put_auto_cooler_boost(on));
         }
+        if let Some(on) = self.changes.keyboard.numpad_follows_numlock {
+            report(self.put_numpad_follows_numlock(on));
+        }
+        if let Some(on) = self.changes.power_profiles_daemon.sync {
+            self.put_power_profiles_sync(on);
+        }
         if boost.cpu_c.is_some() || boost.gpu_c.is_some() {
             let marks = &self.boost.config;
             let (cpu_c, gpu_c) = (
@@ -446,6 +462,67 @@ impl Service {
                 file.path().display()
             ))
         })
+    }
+
+    /// The numpad dark while NumLock is off, or not.
+    pub fn put_numpad_follows_numlock(&mut self, on: bool) -> fdo::Result<()> {
+        if self.numpad_follows == on {
+            return Ok(());
+        }
+        self.numpad_follows = on;
+        info!("numpad follows numlock: {}", if on { "on" } else { "off" });
+        if self.numlock != Some(false) {
+            return Ok(());
+        }
+        let Some(klc) = self.keyboard() else {
+            return Ok(());
+        };
+        if on {
+            klc.darken_numpad()
+                .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
+        } else {
+            self.light(&klc)
+        }
+    }
+
+    /// Whether power-profiles-daemon's profile goes with the shift mode;
+    /// switched on, it's told the shift mode at the next look.
+    pub fn put_power_profiles_sync(&mut self, on: bool) {
+        if self.ppd_sync == on {
+            return;
+        }
+        self.ppd_sync = on;
+        self.ppd_resync = on;
+        info!(
+            "in step with power-profiles-daemon: {}",
+            if on { "on" } else { "off" }
+        );
+        self.poke.notify_one();
+    }
+
+    /// NumLock can't be watched: a numpad set to follow it can't.
+    pub fn numlock_unwatched(&self) -> fdo::Result<()> {
+        if self.numpad_follows {
+            return Err(fdo::Error::NotSupported(
+                "the numpad can't follow NumLock: it isn't watched".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether power-profiles-daemon runs, for Status.
+    pub fn power_profiles_found(&mut self, found: bool) {
+        self.ppd_found = found;
+    }
+
+    /// Whether power-profiles-daemon goes with the shift mode.
+    pub fn power_profiles_sync(&self) -> bool {
+        self.ppd_sync
+    }
+
+    /// Whether it's to be told the shift mode now, once.
+    pub fn take_power_profiles_resync(&mut self) -> bool {
+        std::mem::take(&mut self.ppd_resync)
     }
 
     pub fn put_fan_curve(&mut self, fan: Fan, curve: Curve) -> fdo::Result<()> {
@@ -730,13 +807,16 @@ impl Service {
         self.light(&klc)
     }
 
-    /// NumLock went on or off, for a numpad that follows it: dark while
+    /// NumLock went on or off: for a numpad that follows it, dark while
     /// it's off, but for NumLock itself.
     pub fn numlock(&mut self, on: bool) -> fdo::Result<()> {
         if self.numlock == Some(on) {
             return Ok(());
         }
         self.numlock = Some(on);
+        if !self.numpad_follows {
+            return Ok(());
+        }
         let Some(klc) = self.keyboard() else {
             return Ok(());
         };
@@ -761,7 +841,7 @@ impl Service {
             None => None,
         };
         let lighting = self.keyboard_preview.as_ref().or(picked.as_ref());
-        let numpad_dark = self.numlock == Some(false);
+        let numpad_dark = self.numpad_follows && self.numlock == Some(false);
         if lighting.is_none() && !numpad_dark {
             return Ok(());
         }
@@ -1075,6 +1155,8 @@ impl Service {
             keyboard_profile: keyboard.and(self.keyboard_profile.clone()),
             keyboard_profiles: keyboard.and(self.keyboard_names()),
             keyboard_saved_profiles: keyboard.map(|()| self.keyboard_saved_names()),
+            numpad_follows_numlock: keyboard.map(|()| self.numpad_follows),
+            power_profiles_sync: self.ppd_found.then_some(self.ppd_sync),
             usb_share: self
                 .usb_share
                 .as_ref()
@@ -1393,6 +1475,18 @@ impl Service {
             || self.ec.cooler_boost(),
             |&on| self.ec.set_cooler_boost(on),
         )
+    }
+
+    /// The numpad dark while NumLock is off, but for NumLock itself.
+    pub fn set_numpad_follows_numlock(&mut self, on: bool) -> fdo::Result<()> {
+        self.put_numpad_follows_numlock(on)?;
+        self.remember(|changes| changes.keyboard.numpad_follows_numlock = Some(on))
+    }
+
+    /// power-profiles-daemon's profile with the shift mode, both ways.
+    pub fn set_power_profiles_sync(&mut self, on: bool) -> fdo::Result<()> {
+        self.put_power_profiles_sync(on);
+        self.remember(|changes| changes.power_profiles_daemon.sync = Some(on))
     }
 
     /// 10 to 100 percent; charging resumes 10 points below it.
@@ -2203,7 +2297,12 @@ mod tests {
         service.set_fn_key("left").unwrap();
         service.set_auto_cooler_boost(true).unwrap();
         service.set_cooler_boost_marks(90, 80).unwrap();
+        service.set_numpad_follows_numlock(true).unwrap();
+        service.set_power_profiles_sync(false).unwrap();
+        assert!(!service.power_profiles_sync());
         let kept: config::Changes = file().load();
+        assert_eq!(kept.keyboard.numpad_follows_numlock, Some(true));
+        assert_eq!(kept.power_profiles_daemon.sync, Some(false));
         assert_eq!(kept.fn_key, None);
         assert_eq!(kept.cooler_boost.auto, Some(true));
         assert_eq!(

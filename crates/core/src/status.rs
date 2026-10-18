@@ -125,6 +125,15 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub keyboard_saved_profiles: Option<Vec<String>>,
 
+    /// The numpad dark while NumLock is off, but for NumLock itself.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub numpad_follows_numlock: Option<bool>,
+
+    /// power-profiles-daemon's profile goes with the shift mode, both ways;
+    /// there while it runs.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub power_profiles_sync: Option<bool>,
+
     /// Where the panel hangs: `hybrid` (off the iGPU) or `discrete` (off
     /// the dGPU).
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]

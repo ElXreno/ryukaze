@@ -68,8 +68,16 @@ impl Profiles {
                     .keyboard_for(modes.scenario.as_deref()),
             );
         }
+        let (sync, resync) = {
+            let mut service = service.get_mut().await;
+            (
+                service.power_profiles_sync(),
+                service.take_power_profiles_resync(),
+            )
+        };
         if let (Some(link), Some(shift_mode)) = (&mut self.link, &modes.shift_mode)
-            && before.is_none_or(|before| before.shift_mode != modes.shift_mode)
+            && sync
+            && (resync || before.is_none_or(|before| before.shift_mode != modes.shift_mode))
         {
             link.push(shift_mode).await;
         }
@@ -77,20 +85,17 @@ impl Profiles {
 
     /// power-profiles-daemon changed its profile, or started again.
     pub async fn power_profile(&mut self, event: power_profiles::Event) {
+        let service = self.service().await;
         let Some(link) = &mut self.link else {
             return;
         };
+        let sync = service.get().await.power_profiles_sync();
         match event {
             power_profiles::Event::Profile(profile) => {
-                if !link.heard(&profile) {
+                if !link.heard(&profile) || !sync {
                     return;
                 }
-                let followed = self
-                    .service()
-                    .await
-                    .get_mut()
-                    .await
-                    .follow_power_profile(&profile);
+                let followed = service.get_mut().await.follow_power_profile(&profile);
                 match followed {
                     Ok(Some(applied)) => info!("power-profiles-daemon: {profile}, so {applied}"),
                     Ok(None) => {}
@@ -104,6 +109,7 @@ impl Profiles {
                     .announced
                     .as_ref()
                     .and_then(|modes| modes.shift_mode.as_deref())
+                    && sync
                 {
                     link.push(shift_mode).await;
                 }
@@ -117,6 +123,7 @@ impl Profiles {
         let service = self.service().await;
         let mut service = service.get_mut().await;
         let (config, kept) = (&self.config, service.changes().clone());
+        service.power_profiles_found(self.link.is_some());
         if let Some(percent) = config.charge_limit.or(kept.charge_limit) {
             report(service.put_charge_limit(percent));
         }

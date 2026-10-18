@@ -123,26 +123,33 @@ async fn main() -> Result<()> {
     } else {
         zbus::connection::Builder::system()?
     };
-    // Before the first colours go on, so the numpad starts as NumLock has it.
-    let (numlock_events, mut numlock) = mpsc::unbounded_channel();
-    let numlock_now = if config.keyboard.numpad_follows_numlock {
-        numlock::watch(&args.sysfs, numlock_events)
-            .inspect_err(|err| warn!("the numpad doesn't follow NumLock: {err}"))
-            .ok()
-    } else {
-        None
-    };
     let mut service = Service::new(ec, fans, boost, scenarios);
+    // The config's, then what the window changed and kept.
+    if let Err(err) = service.put_numpad_follows_numlock(config.keyboard.numpad_follows_numlock) {
+        warn!("{err}");
+    }
+    service.put_power_profiles_sync(config.power_profiles_daemon.sync);
     let state = state_dir(&args);
     service.keep_keyboard_profiles(saved::Store::new(&state));
     service.keep_changes(
         state::File::new(&state, "settings.toml"),
         config.set.clone(),
     );
-    if let Some(on) = numlock_now
-        && let Err(err) = service.numlock(on)
-    {
-        warn!("{err}");
+    // Before the first colours go on, so the numpad starts as NumLock has
+    // it; watched while the numpad doesn't follow it too, so it can start.
+    let (numlock_events, mut numlock) = mpsc::unbounded_channel();
+    match numlock::watch(&args.sysfs, numlock_events) {
+        Ok(on) => {
+            if let Err(err) = service.numlock(on) {
+                warn!("{err}");
+            }
+        }
+        Err(err) => {
+            info!("NumLock isn't watched: {err}");
+            if let Err(err) = service.numlock_unwatched() {
+                warn!("{err}");
+            }
+        }
     }
     let poke = service.poke();
     let connection = builder
@@ -163,10 +170,11 @@ async fn main() -> Result<()> {
         warn!("no word from logind ({err}): nothing is put back after sleep");
     }
     let (ppd_events, mut ppd) = mpsc::unbounded_channel();
-    let link = if config.power_profiles_daemon.sync {
+    // Where it's there to start, whether in step yet or not.
+    let link = if power_profiles::installed(&connection).await {
         power_profiles::Link::new(&connection, ppd_events)
             .await
-            .inspect_err(|err| warn!("not in step with power-profiles-daemon: {err}"))
+            .inspect_err(|err| warn!("power-profiles-daemon: {err}"))
             .ok()
     } else {
         None

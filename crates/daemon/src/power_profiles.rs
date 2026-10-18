@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use futures_util::StreamExt;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
-use zbus::{Connection, fdo, proxy::CacheProperties, zvariant::Value};
+use zbus::{Connection, fdo, names::BusName, proxy::CacheProperties, zvariant::Value};
 
 const SERVICE: &str = "org.freedesktop.UPower.PowerProfiles";
 const PATH: &str = "/org/freedesktop/UPower/PowerProfiles";
@@ -60,6 +60,21 @@ pub enum Event {
 pub struct Link {
     proxy: PowerProfilesProxy<'static>,
     echoes: Echoes,
+}
+
+/// ppd runs, or the bus starts it when called.
+pub async fn installed(connection: &Connection) -> bool {
+    let Ok(bus) = fdo::DBusProxy::new(connection).await else {
+        return false;
+    };
+    let Ok(name) = BusName::try_from(SERVICE) else {
+        return false;
+    };
+    bus.name_has_owner(name.clone()).await.unwrap_or(false)
+        || bus
+            .list_activatable_names()
+            .await
+            .is_ok_and(|names| names.iter().any(|known| known.as_str() == SERVICE))
 }
 
 impl Link {
