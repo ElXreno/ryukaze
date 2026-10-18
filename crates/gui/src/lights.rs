@@ -295,7 +295,11 @@ pub enum Msg {
     Name(String),
     /// A profile of its own, from scratch.
     New,
+    /// Another of the daemon's, as it is.
+    Open(String),
     Save,
+    /// Saved under this name instead: a standard one's copy.
+    SaveAs(String),
     Delete,
     Copy,
     Done,
@@ -309,6 +313,8 @@ pub enum Outcome {
     Preview(String),
     /// Start a new profile instead.
     New,
+    /// Open this one of the daemon's instead.
+    Open(String),
     /// Keep this profile, TOML, with the daemon's.
     Save(String),
     /// Forget the saved profile of this name.
@@ -568,6 +574,11 @@ impl Editor {
                 };
             }
             Msg::New => return Outcome::New,
+            Msg::Open(name) => return Outcome::Open(name),
+            Msg::SaveAs(name) => {
+                self.name = name;
+                return Outcome::Save(self.toml());
+            }
             Msg::Delete => return Outcome::Delete(self.name.trim().to_owned()),
             Msg::Copy => return Outcome::Copy(self.nix()),
             Msg::Done => return Outcome::Done,
@@ -850,12 +861,32 @@ impl Editor {
     }
 
     /// In `width`: the picture with the panels at its side, or under it in
-    /// a narrow window. `saved`: whether the daemon keeps a profile of this
-    /// name saved, to delete.
-    pub fn view(&self, width: f32, saved: bool) -> Element<'_, Msg> {
+    /// a narrow window, and the daemon's profiles to open.
+    pub fn view<'a>(&'a self, width: f32, known: &Known) -> Element<'a, Msg> {
         const SIDE: f32 = 400.0;
         const GAP: f32 = 12.0;
-        let saving = (!self.name.trim().is_empty()).then_some(Msg::Save);
+        let name = self.name();
+        let standard = known.standard.iter().any(|known| known == name);
+        let saved = known.saved.iter().any(|known| known == name);
+        // A standard one stays as it is: saved, it's a copy.
+        let saving = if name.is_empty() {
+            None
+        } else if standard {
+            let taken = |copy: &String| known.standard.contains(copy) || known.saved.contains(copy);
+            (2..)
+                .map(|n| format!("{name} {n}"))
+                .find(|copy| !taken(copy))
+                .map(Msg::SaveAs)
+        } else {
+            Some(Msg::Save)
+        };
+        let note = if standard {
+            "a standard profile: Save keeps a copy"
+        } else if self.unsaved {
+            "changed, not saved"
+        } else {
+            ""
+        };
         let header = row![
             text("Keyboard light").size(20),
             space().width(8),
@@ -865,14 +896,7 @@ impl Editor {
                 .on_submit_maybe(saving.clone())
                 .size(13)
                 .width(180),
-            small("New", Msg::New),
-            text(if self.unsaved {
-                "changed, not saved"
-            } else {
-                ""
-            })
-            .size(12)
-            .style(theme::muted),
+            text(note).size(12).style(theme::muted),
             space::horizontal(),
             button(text("Save").size(13))
                 .on_press_maybe(saving)
@@ -887,6 +911,33 @@ impl Editor {
         ]
         .spacing(8)
         .align_y(Alignment::Center);
+
+        // The profiles there are, to open one instead.
+        let chip = |profile: &String| -> Element<'a, Msg> {
+            let open = profile == name;
+            button(text(theme_label(profile)).size(13))
+                .on_press_maybe((!open).then(|| Msg::Open(profile.clone())))
+                .padding([4, 10])
+                .style(theme::segment(open))
+                .into()
+        };
+        let mut profiles = row![text("Standard").size(12).style(theme::muted)]
+            .spacing(6)
+            .align_y(Alignment::Center);
+        for profile in &known.standard {
+            profiles = profiles.push(chip(profile));
+        }
+        profiles = profiles.push(space().width(12));
+        if !known.saved.is_empty() {
+            profiles = profiles.push(text("Saved here").size(12).style(theme::muted));
+        }
+        for profile in &known.saved {
+            profiles = profiles.push(chip(profile));
+        }
+        let profiles = profiles
+            .push(small("New", Msg::New))
+            .wrap()
+            .vertical_spacing(6);
 
         let wide = width >= 1000.0;
         let across = if wide { width - SIDE - GAP } else { width };
@@ -908,16 +959,21 @@ impl Editor {
         };
 
         let mut hint = String::from(
-            "Shown on the keyboard as you go. Save keeps it with the profiles, over one of its \
-             name, and Delete forgets it again; Copy as Nix puts it on the clipboard for \
+            "Shown on the keyboard as you go. Save keeps it with the profiles, here on this \
+             computer, and Delete forgets it again; Copy as Nix puts it on the clipboard for \
              services.ryukaze.settings.keyboard.profiles.",
         );
         if !self.zones.is_empty() {
             hint.push_str(" Its zones stay as they were: change them in the config.");
         }
-        column![header, body, text(hint).size(12).style(theme::muted)]
-            .spacing(GAP)
-            .into()
+        column![
+            header,
+            profiles,
+            body,
+            text(hint).size(12).style(theme::muted)
+        ]
+        .spacing(GAP)
+        .into()
     }
 
     /// Under the picture: picking by group.
@@ -1173,6 +1229,13 @@ impl Editor {
             .spacing(10),
         )
     }
+}
+
+/// The daemon's keyboard light profiles: the standard ones and the
+/// config's, which stay as they are, and those saved here.
+pub struct Known {
+    pub standard: Vec<String>,
+    pub saved: Vec<String>,
 }
 
 /// A profile's field, for TOML and Nix alike.

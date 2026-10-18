@@ -41,19 +41,21 @@ What the window changes lasts until the daemon restarts. Copy as Nix, at
 the bottom, puts the settings on the clipboard in the shape of
 `services.ryukaze.settings`, to keep them.
 
-Edit, by the keyboard light's profiles, opens its editor on the profile
-shown, or on what was left there unsaved: a picture of the keyboard, an
+Devices has the keyboard light's profiles, the standard ones and the
+config's, and under them those saved here. Edit, by them, opens its editor
+on the profile shown, or on what was left there unsaved, with the profiles
+above it to open another or start a new one: a picture of the keyboard, an
 effect with its colours, and a colour, from sliders, a hex code or a
 swatch, for whichever of them is picked. Keys picked on the picture, by a
 click, by dragging over them or by group, take the colour as their own;
 with none picked, it's the effect's. What it has shows on the keyboard as
-it goes, until another profile is picked or the scenario changes. New
-starts one from scratch; Save keeps it with the profiles under its name,
-over one of the same name, on the disk (see
-[saved profiles](keyboard.md#saved-profiles)), and Delete forgets a saved
-one again; Copy as Nix puts it on the clipboard as a profile for
-`services.ryukaze.settings.keyboard.profiles`. A profile's zones it keeps
-as they are.
+it goes, until another profile is picked or the scenario changes. Save
+keeps it with the profiles under its name, on the disk (see
+[saved profiles](keyboard.md#saved-profiles)), or for a standard one or the
+config's, which stay as they are, a copy of it under a name of its own;
+Delete forgets a saved one again. Copy as Nix puts it on the clipboard as
+a profile for `services.ryukaze.settings.keyboard.profiles`. A profile's
+zones it keeps as they are.
 
 ## The tray
 

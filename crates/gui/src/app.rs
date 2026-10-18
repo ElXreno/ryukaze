@@ -289,30 +289,24 @@ impl App {
                     self.editing_lights = true;
                     return self.preview(editor.preview());
                 }
-                let shown = match &self.status {
-                    Some(Ok(status)) => status.keyboard_profile.clone(),
-                    _ => None,
-                };
-                match (shown, self.client.clone()) {
-                    (Some(name), Some(client)) => Task::perform(
-                        async move {
-                            client
-                                .read_keyboard_profile(&name)
-                                .await
-                                .map_err(client::describe)
-                        },
-                        Message::LightsRead,
-                    ),
-                    _ => self.update(Message::LightsRead(Err(String::new()))),
+                match self.shown_lights() {
+                    Some(name) => self.read_lights(name),
+                    None => self.update(Message::LightsRead(Err(String::new()))),
                 }
             }
             Message::LightsRead(read) => {
                 self.editing_lights = true;
                 match read.and_then(|profile| lights::Editor::from_toml(&profile)) {
-                    // What the keyboard shows already.
+                    // Shown, unless the keyboard shows it already.
                     Ok(editor) => {
+                        let shown = self.shown_lights().as_deref() == Some(editor.name());
+                        let profile = editor.preview();
                         self.lights = Some(editor);
-                        Task::none()
+                        if shown {
+                            Task::none()
+                        } else {
+                            self.preview(profile)
+                        }
                     }
                     Err(_) => {
                         let editor = lights::Editor::new();
@@ -360,6 +354,7 @@ impl App {
                         self.lights = Some(editor);
                         self.preview(profile)
                     }
+                    lights::Outcome::Open(name) => self.read_lights(name),
                     lights::Outcome::Delete(name) => {
                         let Some(client) = self.client.clone() else {
                             return Task::none();
@@ -513,11 +508,9 @@ impl App {
                     && let Some(editor) = &self.lights =>
             {
                 let inside = (width - 2.0 * PAGE_PADDING).min(max_width);
-                let saved = status
-                    .keyboard_saved_profiles
-                    .as_ref()
-                    .is_some_and(|saved| saved.iter().any(|name| name == editor.name()));
-                editor.view(inside, saved).map(Message::Lights)
+                let (saved, standard) = keyboard_profiles(status);
+                let known = lights::Known { standard, saved };
+                editor.view(inside, &known).map(Message::Lights)
             }
             Some(Ok(status)) => self.sections(status, columns),
         };
@@ -667,19 +660,24 @@ impl App {
         if let Some(on) = status.usb_share {
             devices = devices.push(switch("Charge USB when off", on, Message::UsbShare));
         }
-        if let Some(profiles) = &status.keyboard_profiles {
+        if status.keyboard_profiles.is_some() {
             let current = status.keyboard_profile.as_deref().unwrap_or_default();
-            devices = devices.push(
-                column![
-                    row![
-                        text("Keyboard light").width(Length::Fill),
-                        small_button("Edit", Message::EditLights),
-                    ]
-                    .align_y(Alignment::Center),
-                    modes_row(current, profiles, &[], Message::KeyboardProfile),
+            let (saved, standard) = keyboard_profiles(status);
+            let mut light = column![
+                row![
+                    text("Keyboard light").width(Length::Fill),
+                    small_button("Edit", Message::EditLights),
                 ]
-                .spacing(8),
-            );
+                .align_y(Alignment::Center),
+                profile_grid(current, &standard),
+            ]
+            .spacing(8);
+            if !saved.is_empty() {
+                light = light
+                    .push(text("Saved here").size(12).style(theme::muted))
+                    .push(profile_grid(current, &saved));
+            }
+            devices = devices.push(light);
         }
         if status.webcam.is_some()
             || status.fn_key.is_some()
@@ -805,6 +803,30 @@ impl App {
 
     /// Shows a profile from the editor on the keyboard; empty, the one
     /// picked again.
+    /// The keyboard light's profile shown.
+    fn shown_lights(&self) -> Option<String> {
+        match &self.status {
+            Some(Ok(status)) => status.keyboard_profile.clone(),
+            _ => None,
+        }
+    }
+
+    /// A profile of the daemon's, for the editor.
+    fn read_lights(&self, name: String) -> Task<Message> {
+        let Some(client) = self.client.clone() else {
+            return Task::none();
+        };
+        Task::perform(
+            async move {
+                client
+                    .read_keyboard_profile(&name)
+                    .await
+                    .map_err(client::describe)
+            },
+            Message::LightsRead,
+        )
+    }
+
     fn preview(&self, profile: String) -> Task<Message> {
         self.call(move |client| async move { client.preview_keyboard_profile(&profile).await })
     }
@@ -948,6 +970,41 @@ fn small_button<'a>(label: &'a str, press: Message) -> Element<'a, Message> {
         .padding([4, 12])
         .style(theme::segment(false))
         .into()
+}
+
+/// The keyboard light's profiles: those saved in the window, and the
+/// others, the standard ones and the config's.
+pub fn keyboard_profiles(status: &Status) -> (Vec<String>, Vec<String>) {
+    let saved = status.keyboard_saved_profiles.clone().unwrap_or_default();
+    status
+        .keyboard_profiles
+        .iter()
+        .flatten()
+        .cloned()
+        .partition(|name| saved.contains(name))
+}
+
+/// Keyboard light profiles to pick, five a row, every button as wide.
+fn profile_grid<'a>(current: &str, names: &[String]) -> Element<'a, Message> {
+    const ACROSS: usize = 5;
+    let rows = names.chunks(ACROSS).map(|names| {
+        let mut buttons = row![].spacing(6);
+        for name in names {
+            let chosen = name == current;
+            buttons = buttons.push(
+                button(text(capitalize(name)).width(Length::Fill).center())
+                    .on_press_maybe((!chosen).then(|| Message::KeyboardProfile(name.clone())))
+                    .padding([8, 4])
+                    .width(Length::Fill)
+                    .style(theme::segment(chosen)),
+            );
+        }
+        for _ in names.len()..ACROSS {
+            buttons = buttons.push(space().width(Length::Fill));
+        }
+        buttons.into()
+    });
+    column(rows).spacing(6).into()
 }
 
 /// One of a row of choices; the chosen one is filled and does nothing.
