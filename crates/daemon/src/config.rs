@@ -794,13 +794,13 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_example_parses() {
-        let readme = include_str!("../../../readme.md");
-        let example = readme
+    fn the_documented_example_parses() {
+        let page = include_str!("../../../docs/config.md");
+        let example = page
             .split("```toml\n")
             .filter_map(|block| block.split_once("```").map(|(toml, _)| toml))
             .find(|toml| toml.contains("[profiles."))
-            .expect("a config example in the readme");
+            .expect("a config example in docs/config.md");
         let config = load(example).unwrap();
         assert_eq!(config.charge_limit, Some(80));
         assert_eq!(config.fn_key.as_deref(), Some("left"));

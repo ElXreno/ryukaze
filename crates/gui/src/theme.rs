@@ -390,13 +390,13 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_example_parses() {
-        let readme = include_str!("../../../readme.md");
-        let example = readme
+    fn the_documented_example_parses() {
+        let page = include_str!("../../../docs/usage.md");
+        let example = page
             .split("```toml\n")
             .filter_map(|block| block.split_once("```").map(|(toml, _)| toml))
             .find(|toml| toml.starts_with("mode ="))
-            .expect("a theme example in the readme");
+            .expect("a theme example in docs/usage.md");
         let palettes = parse(example).unwrap();
         assert_eq!(palettes.mode, Some(Mode::Dark));
         assert_ne!(palettes.dark, DARK);

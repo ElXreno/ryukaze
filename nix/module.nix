@@ -76,7 +76,7 @@ in
           };
           description = ''
             The window's colours for everyone, as /etc/xdg/ryukaze/theme.toml
-            (see the README); a user's ~/.config/ryukaze/theme.toml replaces
+            (see docs/usage.md); a user's ~/.config/ryukaze/theme.toml replaces
             it. The window reads it at start.
           '';
         };
@@ -124,7 +124,7 @@ in
             A profile is applied when the laptop goes on AC or on battery, and
             the charge limit at start. The EC keeps the charge limit across
             reboots, so unsetting it doesn't lift it: set 100. Fan curves are
-            for the advanced fan mode (see the README), on EC firmware whose
+            for the advanced fan mode (see docs/fans.md), on EC firmware whose
             layout ryukaze knows.
           '';
         };

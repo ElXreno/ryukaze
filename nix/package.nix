@@ -33,8 +33,8 @@ rustPlatform.buildRustPackage {
       ../Cargo.lock
       ../crates
       ../data
-      # The config tests parse its example.
-      ../readme.md
+      # The config and theme tests parse the examples on its pages.
+      ../docs
     ];
   };
 

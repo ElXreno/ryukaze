@@ -1,0 +1,74 @@
+# The keyboard's backlight
+
+On a controller checked, the SteelSeries KLC (1038:113a) of the Alpha 17
+C7VG, ryukazed lights the keys in profiles (see the [config](config.md)):
+`keyboard.profile` most of the time, a scenario's own from
+`keyboard.scenarios` while the EC is in its modes, and the one
+`NextKeyboardProfile` or `SetKeyboardProfile` picked until the scenario
+changes. The tray, the window, `ryukaze --next-keyboard-profile` and, with
+a hwdb entry, Fn+F9 pick them (see [using ryukaze](usage.md#the-fn-keys)).
+
+## Effects
+
+A profile's effect is one of:
+
+- `static`: the keys still in `color`;
+- `breathe`: `color` fading to `fade_to`, black unless told, and back, a
+  breath every `period_ms`;
+- `cycle`: every key through `colors` together, the rainbow unless told
+  (2 to 8 of them), a round every `period_ms`;
+- `wave`: `colors` as a wave across the board, out of its `origin`
+  (`middle`, the default, `left`, `right`, `top` or `bottom`) or, with
+  `direction = "in"`, into it; `wavelength` is how wide a round of the
+  colours lies, 1 to 100 percent of the board (25 unless told);
+- `reactive`: the keys still in `color`, each flashing `flash` for
+  `flash_ms` when pressed.
+
+The effects are the controller's own: ryukazed sends them, and the
+controller runs them by itself, flashes included, so the computer has no
+part in them and the daemon never sees a key press. `period_ms` goes from
+2000 to 60000, and with more than six colours from 330 a colour;
+`flash_ms` goes from 100 to 5000.
+
+## Keys and zones
+
+A profile's `keys` give keys and groups of keys colours of their own, still
+over any effect: a single key over a group, a smaller group over a larger
+one. The power button, which the effects pass by, stays still in `color`.
+
+Its `zones` give keys an effect of their own beside its own: each zone a
+list of `keys`, by name or group, and an effect with what it takes, a later
+zone over an earlier one. There may be eight; the controller holds nine
+effects at once. Still colours go in `keys` instead.
+
+Keys: `a` to `z`, `0` to `9`, `f1` to `f12`, `esc`, `tab`, `capslock`,
+`enter`, `backspace`, `space`, `minus`, `equal`, `lbracket`, `rbracket`,
+`backslash`, `semicolon`, `apostrophe`, `grave`, `comma`, `dot`, `slash`,
+`102nd` (the `\` between AltGr and Fn), `prtsc`, `scrolllock`, `insert`,
+`delete`, `pageup`, `pagedown` (Home and End share them), `up`, `down`,
+`left`, `right`, `numlock`, `kp0` to `kp9`, `kpslash`, `kpasterisk`,
+`kpminus`, `kpplus`, `kpenter`, `kpdot`, `lctrl`, `lshift`, `lalt`, `win`,
+`ralt`, `rshift`, `fn`, `copilot`, and `power`, the power button's light.
+
+Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
+Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
+(Ctrl, Shift, Alt, Win, Copilot, Fn) and `wasd`.
+
+## NumLock
+
+With `numpad_follows_numlock` the numpad goes dark while NumLock is off,
+NumLock itself aside. ryukazed reads the laptop keyboard's events for it
+with the kernel holding back all but its lights' changes (`EVIOCSMASK`),
+so no key press reaches the daemon this way either. Going dark leaves an
+effect running; coming back on starts it over on every key, a blink: the
+controller takes keys back into an effect only with the refresh, which
+restarts it.
+
+## Colours
+
+The colours go to the LEDs as they are, and they show light shades nearly
+white and blue strong: a `#fab387` peach on screen is about `#ff6000`
+there.
+
+How the controller takes all this is in the
+[hardware notes](hardware.md#the-keyboards-controller).
