@@ -400,7 +400,54 @@ impl KeyboardZone {
     }
 }
 
+/// The standard profiles, one an effect, there without a config.
+const STANDARD: &str = r##"
+[[profiles]]
+name = "static"
+color = "#ffffff"
+
+[[profiles]]
+name = "breathe"
+effect = "breathe"
+color = "#ffffff"
+
+[[profiles]]
+name = "cycle"
+effect = "cycle"
+
+[[profiles]]
+name = "wave"
+effect = "wave"
+
+[[profiles]]
+name = "reactive"
+effect = "reactive"
+color = "#202020"
+flash = "#ffffff"
+"##;
+
+#[derive(Deserialize)]
+struct Standard {
+    profiles: Vec<KeyboardProfile>,
+}
+
 impl Keyboard {
+    /// The standard profiles, each in place of the config's of its name if
+    /// there is one, then the config's others: the profiles there are.
+    pub fn all_profiles(&self) -> Vec<KeyboardProfile> {
+        let Standard { mut profiles } = toml::from_str(STANDARD).expect("the standard profiles");
+        for own in &self.profiles {
+            match profiles
+                .iter_mut()
+                .find(|standard| standard.name == own.name)
+            {
+                Some(standard) => standard.clone_from(own),
+                None => profiles.push(own.clone()),
+            }
+        }
+        profiles
+    }
+
     /// (scenario, profile) pairs.
     pub fn scenario_profiles(&self) -> Vec<(String, String)> {
         self.scenarios
@@ -638,7 +685,8 @@ impl Config {
                 bail!("{}: {err}", path.display());
             }
         }
-        let profile_names: Vec<&str> = keyboard.profiles.iter().map(|p| p.name.as_str()).collect();
+        let all_profiles = keyboard.all_profiles();
+        let profile_names: Vec<&str> = all_profiles.iter().map(|p| p.name.as_str()).collect();
         let named_profiles = keyboard
             .profile
             .iter()
@@ -928,10 +976,36 @@ mod tests {
             assert!(one(bad).is_err(), "{bad}");
         }
         assert!(load("[keyboard]\nprofile = \"none\"\n").is_err());
+        // The standard ones without a config of their own.
+        assert!(load("[keyboard]\nprofile = \"wave\"\n").is_ok());
         assert!(load("[keyboard.scenarios]\nsilent = \"none\"\n").is_err());
         let twice = "[[keyboard.profiles]]\nname = \"p\"\neffect = \"cycle\"\n";
         assert!(load(&twice.repeat(2)).is_err());
         assert!(load(&format!("{twice}[keyboard.scenarios]\nloud = \"p\"\n")).is_err());
+    }
+
+    #[test]
+    fn has_a_standard_profile_an_effect() {
+        let names = |config: &Config| -> Vec<String> {
+            let profiles = config.keyboard.all_profiles();
+            for profile in &profiles {
+                profile.lighting().unwrap();
+            }
+            profiles.into_iter().map(|profile| profile.name).collect()
+        };
+        let standard = ["static", "breathe", "cycle", "wave", "reactive"];
+        assert_eq!(names(&load("").unwrap()), standard);
+        // The config's in place of the standard of its name, its others after.
+        let config = load(
+            "[[keyboard.profiles]]\nname = \"mine\"\ncolor = \"#00ff00\"\n\n[[keyboard.profiles]]\nname = \"static\"\ncolor = \"#ff6000\"\n",
+        )
+        .unwrap();
+        assert_eq!(names(&config), [&standard[..], &["mine"]].concat());
+        let all = config.keyboard.all_profiles();
+        assert_eq!(
+            all[0].color.map(|KeyboardColor(c)| c),
+            Some(Color([255, 96, 0]))
+        );
     }
 
     /// Written back for KeyboardProfile as it was read, unset fields left

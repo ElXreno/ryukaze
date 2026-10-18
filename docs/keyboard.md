@@ -1,14 +1,15 @@
 # The keyboard's backlight
 
 On a controller checked, the SteelSeries KLC (1038:113a) of the Alpha 17
-C7VG, ryukazed lights the keys in profiles (see the [config](config.md)):
-`keyboard.profile` most of the time, a scenario's own from
-`keyboard.scenarios` while the EC is in its modes, and the one
-`NextKeyboardProfile` or `SetKeyboardProfile` picked until the scenario
-changes. The tray, the window, `ryukaze --next-keyboard-profile` and, with
-a hwdb entry, Fn+F9 pick them (see [using ryukaze](usage.md#the-fn-keys)).
-The window's editor changes them and makes new ones (see
-[using ryukaze](usage.md#the-window)).
+C7VG, ryukazed lights the keys in profiles: a standard one for each effect
+(static, breathe, cycle, wave and reactive, white or the rainbow), the
+config's (see the [config](config.md)), and those saved in the window. The
+one shown is a scenario's own from `keyboard.scenarios` while the EC is in
+its modes, and otherwise the one picked last, by `SetKeyboardProfile` or
+`NextKeyboardProfile`, or else `keyboard.profile`. The tray, the window,
+`ryukaze --next-keyboard-profile` and, with a hwdb entry, Fn+F9 pick them
+(see [using ryukaze](usage.md#the-fn-keys)); the window's editor makes new
+ones (see [using ryukaze](usage.md#the-window)).
 
 ## Effects
 
@@ -60,13 +61,14 @@ Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
 
 ## Saved profiles
 
-Profiles saved in the window's editor (`SaveKeyboardProfile`) are kept in
-`keyboard-profiles.toml` in ryukazed's state directory, /var/lib/ryukaze
-(`StateDirectory=` in its unit, or `--state`), as `[[profiles]]` written
-the way the config has them, and read back as it starts. They come after
-the config's, each in place of the config's of its name if there is one,
-until deleted there (`DeleteKeyboardProfile`), which brings the config's
-back.
+ryukazed keeps the profile picked last and those saved in the window's
+editor (`SaveKeyboardProfile`) in `keyboard.toml` in its state directory,
+/var/lib/ryukaze (`StateDirectory=` in its unit, or `--state`), as `picked`
+and `[[profiles]]` written the way the config has them, and reads them
+back as it starts. A saved profile comes after the config's, under a name
+of its own: the standard ones and the config's can't be saved over or
+deleted (`DeleteKeyboardProfile` takes only the saved), and one saved
+before the config took its name waits in the file, unshown.
 
 ## NumLock
 

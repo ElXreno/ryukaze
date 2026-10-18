@@ -130,8 +130,15 @@ impl Profiles {
         let keyboard = &self.config.keyboard;
         let scenario = service.modes().scenario;
         report(service.configure_keyboard(
-            keyboard.profiles.clone(),
-            keyboard.profile.clone(),
+            keyboard.all_profiles(),
+            // Named, or the config's first; with neither, the keyboard is
+            // left as it is until a profile is picked.
+            keyboard.profile.clone().or_else(|| {
+                keyboard
+                    .profiles
+                    .first()
+                    .map(|profile| profile.name.clone())
+            }),
             keyboard.scenario_profiles(),
             scenario.as_deref(),
         ));

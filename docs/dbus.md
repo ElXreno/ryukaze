@@ -20,12 +20,12 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `SetWebcam` | `b` | the camera on or off |
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
-| `SetKeyboardProfile` | `s` | one of `keyboard_profiles`, until the scenario changes |
-| `NextKeyboardProfile` | | shows the keyboard profile after the one shown, and names it: for a key binding |
+| `SetKeyboardProfile` | `s` | one of `keyboard_profiles`, shown but in a scenario with its own, and kept for the next start |
+| `NextKeyboardProfile` | | picks the keyboard profile after the one shown, as `SetKeyboardProfile` does, and names it: for a key binding |
 | `PreviewKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, shown until another is picked or the scenario changes; empty, the one picked again |
 | `ReadKeyboardProfile` | `s` | one of `keyboard_profiles` as the config writes it, in TOML (`s`): for an editor to start from |
-| `SaveKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, kept with the others, in place of the one of its name, and on the disk (see [saved profiles](keyboard.md#saved-profiles)); shown until the scenario changes |
-| `DeleteKeyboardProfile` | `s` | one of `keyboard_saved_profiles` gone, the config's of its name back if there is one |
+| `SaveKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, under a name of its own or a saved one's, kept with the others and on the disk (see [saved profiles](keyboard.md#saved-profiles)), and picked |
+| `DeleteKeyboardProfile` | `s` | one of `keyboard_saved_profiles` gone |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |

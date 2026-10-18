@@ -64,7 +64,9 @@ sync = true
 # The keyboard's backlight (see keyboard.md), in profiles, one shown at a
 # time: set at start, after sleep and when its controller comes back.
 [keyboard]
-# The one shown outside the scenarios with their own; the first if unset.
+# The one shown outside the scenarios with their own, unless another was
+# picked since; the first of the profiles below if unset. With neither, the
+# keyboard is left as it is until one is picked.
 profile = "static"
 # The numpad dark while NumLock is off, but for NumLock itself.
 numpad_follows_numlock = true
@@ -73,9 +75,11 @@ numpad_follows_numlock = true
 [keyboard.scenarios]
 games = "wave"
 
-# What NextKeyboardProfile steps through, in this order. The effect is
-# static (the default), breathe, cycle, wave or reactive; keys and groups of
-# keys can have colours of their own, still whatever the effect.
+# What NextKeyboardProfile steps through, in this order, after the standard
+# ones (static, breathe, cycle, wave and reactive: white, or the rainbow),
+# each in place of the standard one of its name. The effect is static (the
+# default), breathe, cycle, wave or reactive; keys and groups of keys can
+# have colours of their own, still whatever the effect.
 [[keyboard.profiles]]
 name = "static"
 color = "#ff6000"
