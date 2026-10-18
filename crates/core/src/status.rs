@@ -129,6 +129,19 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub numpad_follows_numlock: Option<bool>,
 
+    /// The scenario applied when the laptop goes on AC, and on battery:
+    /// `""` for none, `*` for modes the config gives it of its own.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub ac_scenario: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub battery_scenario: Option<String>,
+
+    /// The settings the config sets, as it writes them (`charge_limit`,
+    /// `fans.adaptive`, `profiles.ac`): it sets them again at every start,
+    /// over what the window changed.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub config_keys: Option<Vec<String>>,
+
     /// power-profiles-daemon's profile goes with the shift mode, both ways;
     /// there while it runs.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]

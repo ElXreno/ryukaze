@@ -102,6 +102,8 @@ pub enum Message {
     FnKey(String),
     UsbShare(bool),
     NumpadFollowsNumlock(bool),
+    /// A power source, `ac` or `battery`, and its scenario, empty for none.
+    SourceScenario(&'static str, String),
     PowerProfilesSync(bool),
     GpuMode(String),
     Scenario(String),
@@ -271,6 +273,9 @@ impl App {
             Message::FnKey(side) => {
                 self.call(move |client| async move { client.set_fn_key(&side).await })
             }
+            Message::SourceScenario(source, scenario) => self.call(move |client| async move {
+                client.set_source_scenario(source, &scenario).await
+            }),
             Message::NumpadFollowsNumlock(on) => {
                 self.call(move |client| async move { client.set_numpad_follows_numlock(on).await })
             }
@@ -584,13 +589,33 @@ impl App {
         // In the config's order; none picked while the modes make none.
         if let Some(scenarios) = &status.scenarios {
             let current = status.scenario.as_deref().unwrap_or_default();
-            put(
-                [0, 0],
-                section(
-                    "Scenario",
-                    modes_row(current, scenarios, &[], Message::Scenario),
-                ),
-            );
+            let mut scenario =
+                column![modes_row(current, scenarios, &[], Message::Scenario)].spacing(10);
+            let sources = [
+                ("ac", "On AC", &status.ac_scenario),
+                ("battery", "On battery", &status.battery_scenario),
+            ];
+            let from_config: Vec<&str> = sources
+                .iter()
+                .filter(|(source, ..)| config_sets(status, &format!("profiles.{source}")))
+                .map(|(_, label, _)| *label)
+                .collect();
+            for (source, label, picked) in sources {
+                if let Some(picked) = picked {
+                    scenario = scenario.push(source_row(source, label, picked, scenarios));
+                }
+            }
+            if !from_config.is_empty() {
+                scenario = scenario.push(
+                    text(format!(
+                        "{}: set in the config, which sets it again at the next start",
+                        from_config.join(" and ")
+                    ))
+                    .size(12)
+                    .style(theme::muted),
+                );
+            }
+            put([0, 0], section("Scenario", scenario));
         }
 
         if let (Some(current), Some(modes)) = (&status.shift_mode, &status.shift_modes) {
@@ -988,6 +1013,53 @@ fn small_button<'a>(label: &'a str, press: Message) -> Element<'a, Message> {
         .padding([4, 12])
         .style(theme::segment(false))
         .into()
+}
+
+/// Whether the config sets `key`, as it writes it: then it sets it again
+/// at every start.
+fn config_sets(status: &Status, key: &str) -> bool {
+    status
+        .config_keys
+        .as_ref()
+        .is_some_and(|keys| keys.iter().any(|known| known == key))
+}
+
+/// What a power source applies: a scenario, nothing, or the config's own
+/// modes, which only the config changes.
+fn source_row<'a>(
+    source: &'static str,
+    label: &'a str,
+    picked: &str,
+    scenarios: &[String],
+) -> Element<'a, Message> {
+    let choice = |name: String, value: String, chosen: bool| -> Element<'a, Message> {
+        button(text(name).size(13).width(Length::Fill).center())
+            .on_press_maybe((!chosen).then(|| Message::SourceScenario(source, value)))
+            .padding([4, 4])
+            .width(Length::Fill)
+            .style(theme::segment(chosen))
+            .into()
+    };
+    let mut choices = row![text(label).size(13).width(84)]
+        .spacing(4)
+        .align_y(Alignment::Center);
+    choices = choices.push(choice("Nothing".into(), String::new(), picked.is_empty()));
+    for scenario in scenarios {
+        choices = choices.push(choice(
+            capitalize(scenario),
+            scenario.clone(),
+            scenario == picked,
+        ));
+    }
+    if picked == "*" {
+        choices = choices.push(
+            button(text("Own modes").size(13).width(Length::Fill).center())
+                .padding([4, 4])
+                .width(Length::Fill)
+                .style(theme::segment(true)),
+        );
+    }
+    choices.into()
 }
 
 /// The keyboard light's profiles: those saved in the window, and the

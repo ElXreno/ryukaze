@@ -23,6 +23,7 @@ usb_share = false
 # Applied when the laptop goes on AC or on battery: a scenario by name
 # (below), the modes themselves, or both, the modes over the scenario's. A
 # mode switched over D-Bus in between stays until the next plug or unplug.
+# The window picks a scenario for each too, unless they're set here.
 [profiles.ac]
 scenario = "games"
 

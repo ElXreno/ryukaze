@@ -71,6 +71,8 @@ pub struct Service {
     changes: config::Changes,
     config_set: config::Changes,
     changes_file: Option<state::File>,
+    /// What to apply when the laptop goes on AC or on battery.
+    source_profiles: config::Profiles,
     /// NumLock, and whether the numpad follows it.
     numlock: Option<bool>,
     numpad_follows: bool,
@@ -259,6 +261,7 @@ impl Service {
             changes: config::Changes::default(),
             config_set: config::Changes::default(),
             changes_file: None,
+            source_profiles: config::Profiles::default(),
             numlock: None,
             numpad_follows: false,
             ppd_found: false,
@@ -422,6 +425,11 @@ impl Service {
         if let Some(on) = boost.auto {
             report(self.put_auto_cooler_boost(on));
         }
+        for source in [Source::Ac, Source::Battery] {
+            if let Some(profile) = self.changes.profiles.get(source) {
+                *self.source_profiles.get_mut(source) = Some(profile.clone());
+            }
+        }
         if let Some(on) = self.changes.keyboard.numpad_follows_numlock {
             report(self.put_numpad_follows_numlock(on));
         }
@@ -498,6 +506,30 @@ impl Service {
             if on { "on" } else { "off" }
         );
         self.poke.notify_one();
+    }
+
+    /// From the config: what to apply on AC and on battery.
+    pub fn put_source_profiles(&mut self, profiles: config::Profiles) {
+        self.source_profiles = profiles;
+    }
+
+    /// What to apply on `source`, if anything.
+    pub fn source_profile(&self, source: Source) -> Option<config::Profile> {
+        self.source_profiles.get(source).cloned()
+    }
+
+    /// For Status: the scenario `source` applies, `""` for nothing, `*` for
+    /// modes of the config's own.
+    fn source_scenario(&self, source: Source) -> Option<String> {
+        self.scenario_names()?;
+        Some(match self.source_profiles.get(source) {
+            Some(config::Profile {
+                scenario: Some(scenario),
+                ..
+            }) => scenario.clone(),
+            Some(profile) if *profile != config::Profile::default() => "*".into(),
+            _ => String::new(),
+        })
     }
 
     /// NumLock can't be watched: a numpad set to follow it can't.
@@ -1156,6 +1188,9 @@ impl Service {
             keyboard_profiles: keyboard.and(self.keyboard_names()),
             keyboard_saved_profiles: keyboard.map(|()| self.keyboard_saved_names()),
             numpad_follows_numlock: keyboard.map(|()| self.numpad_follows),
+            ac_scenario: self.source_scenario(Source::Ac),
+            battery_scenario: self.source_scenario(Source::Battery),
+            config_keys: Some(self.config_set.keys().into_iter().map(Into::into).collect()),
             power_profiles_sync: self.ppd_found.then_some(self.ppd_sync),
             usb_share: self
                 .usb_share
@@ -1475,6 +1510,45 @@ impl Service {
             || self.ec.cooler_boost(),
             |&on| self.ec.set_cooler_boost(on),
         )
+    }
+
+    /// The scenario to apply when the laptop goes on `source`, `ac` or
+    /// `battery`, or nothing for `""`; applied at once on that source.
+    pub fn set_source_scenario(&mut self, source: &str, scenario: &str) -> fdo::Result<()> {
+        let source = match source {
+            "ac" => Source::Ac,
+            "battery" => Source::Battery,
+            _ => {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "{source:?}: ac or battery"
+                )));
+            }
+        };
+        let profile = if scenario.is_empty() {
+            config::Profile::default()
+        } else if self.scenarios.iter().any(|known| known.name == scenario) {
+            config::Profile {
+                scenario: Some(scenario.to_owned()),
+                ..config::Profile::default()
+            }
+        } else {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{scenario} is not one of the scenarios"
+            )));
+        };
+        info!(
+            "on {source}: {}",
+            if scenario.is_empty() {
+                "nothing"
+            } else {
+                scenario
+            }
+        );
+        *self.source_profiles.get_mut(source) = Some(profile.clone());
+        if power_supply::source(self.ec.sysfs()).ok().flatten() == Some(source) {
+            self.apply_profile(&profile)?;
+        }
+        self.remember(|changes| *changes.profiles.get_mut(source) = Some(profile))
     }
 
     /// The numpad dark while NumLock is off, but for NumLock itself.
@@ -2287,9 +2361,14 @@ mod tests {
         let sysfs = alpha17("17KKIMS1.115");
         let state = tempfile::tempdir().unwrap();
         let file = || state::File::new(state.path(), "settings.toml");
-        // The config sets the Fn key, and nothing of the boost.
+        // The config sets the Fn key and what AC applies, and nothing of
+        // the boost.
         let set = config::Changes {
             fn_key: Some("right".into()),
+            profiles: config::Profiles {
+                ac: Some(config::Profile::default()),
+                battery: None,
+            },
             ..config::Changes::default()
         };
         let mut service = service(sysfs.path());
@@ -2300,7 +2379,27 @@ mod tests {
         service.set_numpad_follows_numlock(true).unwrap();
         service.set_power_profiles_sync(false).unwrap();
         assert!(!service.power_profiles_sync());
+        service.set_source_scenario("ac", "silent").unwrap();
+        service.set_source_scenario("battery", "silent").unwrap();
+        assert!(service.set_source_scenario("battery", "loud").is_err());
+        assert!(service.set_source_scenario("mains", "").is_err());
+        let status = service.status();
+        assert_eq!(status.battery_scenario.as_deref(), Some("silent"));
+        assert!(
+            status
+                .config_keys
+                .unwrap()
+                .contains(&"profiles.ac".to_owned())
+        );
         let kept: config::Changes = file().load();
+        assert_eq!(kept.profiles.ac, None);
+        assert_eq!(
+            kept.profiles
+                .battery
+                .and_then(|profile| profile.scenario)
+                .as_deref(),
+            Some("silent")
+        );
         assert_eq!(kept.keyboard.numpad_follows_numlock, Some(true));
         assert_eq!(kept.power_profiles_daemon.sync, Some(false));
         assert_eq!(kept.fn_key, None);

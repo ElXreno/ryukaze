@@ -41,7 +41,8 @@ What the window changes the daemon keeps, in
 /var/lib/ryukaze/settings.toml, and sets again at the next start: the
 charge limit, the camera, the Fn key, USB Power Share, the fan curves,
 adaptive and the GPU fan's help, cooler boost when hot with its marks, the
-numpad following NumLock, and power-profiles-daemon in step.
+numpad following NumLock, power-profiles-daemon in step, and the scenario
+applied on AC and on battery, which the Scenario card picks.
 What the [config](config.md) sets, though, it sets again at every start: a
 change to it in the window lasts until then. The modes themselves aren't
 kept; the power source's profile sets them at start. Copy as Nix, at the

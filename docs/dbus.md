@@ -30,6 +30,7 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `DeleteKeyboardProfile` | `s` | one of `keyboard_saved_profiles` gone |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
+| `SetSourceScenario` | `s s` | `ac` or `battery`, and one of `scenarios` to apply on it, or `""` for nothing; applied at once while on it |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |
 
 `Status`'s keys are in
@@ -40,7 +41,8 @@ Every setter reads the value back and fails if the EC didn't take it.
 What `SetChargeLimit`, `SetWebcam`, `SetFnKey`, `SetUsbShare`,
 `SetFanCurve` (and `ResetFanCurve`), `SetAdaptiveFans`,
 `SetGpuFanFollowsCpu`, `SetAutoCoolerBoost`, `SetCoolerBoostMarks`,
-`SetNumpadFollowsNumlock` and `SetPowerProfilesSync` set is kept for the next start but for what the config sets (see
+`SetNumpadFollowsNumlock`, `SetPowerProfilesSync` and `SetSourceScenario`
+set is kept for the next start but for what the config sets (see
 [using ryukaze](usage.md#the-window)).
 The signal `ModesChanged` (`a{sv}`) carries `shift_mode`, `fan_mode`,
 `super_battery`, `cooler_boost`, `scenario` and `keyboard_profile`, with

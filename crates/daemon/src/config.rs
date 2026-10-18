@@ -592,6 +592,9 @@ pub struct Changes {
     pub power_profiles_daemon: PpdChanges,
     #[serde(skip_serializing_if = "KeyboardChanges::is_empty")]
     pub keyboard: KeyboardChanges,
+    /// A profile a power source, a scenario's or none.
+    #[serde(skip_serializing_if = "Profiles::is_empty")]
+    pub profiles: Profiles,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -704,7 +707,43 @@ impl Changes {
                 numpad_follows_numlock: has("keyboard.numpad_follows_numlock")
                     .then_some(config.keyboard.numpad_follows_numlock),
             },
+            profiles: Profiles {
+                ac: has("profiles.ac").then(|| config.profiles.ac.clone().unwrap_or_default()),
+                battery: has("profiles.battery")
+                    .then(|| config.profiles.battery.clone().unwrap_or_default()),
+            },
         }
+    }
+
+    /// The keys set, as the config writes them.
+    pub fn keys(&self) -> Vec<&'static str> {
+        let (fans, boost) = (&self.fans, &self.cooler_boost);
+        [
+            ("charge_limit", self.charge_limit.is_some()),
+            ("webcam", self.webcam.is_some()),
+            ("fn_key", self.fn_key.is_some()),
+            ("usb_share", self.usb_share.is_some()),
+            ("fans.cpu", fans.cpu.is_some()),
+            ("fans.gpu", fans.gpu.is_some()),
+            ("fans.adaptive", fans.adaptive.is_some()),
+            ("fans.gpu_follows_cpu", fans.gpu_follows_cpu.is_some()),
+            ("cooler_boost.auto", boost.auto.is_some()),
+            ("cooler_boost.cpu_c", boost.cpu_c.is_some()),
+            ("cooler_boost.gpu_c", boost.gpu_c.is_some()),
+            (
+                "power_profiles_daemon.sync",
+                self.power_profiles_daemon.sync.is_some(),
+            ),
+            (
+                "keyboard.numpad_follows_numlock",
+                self.keyboard.numpad_follows_numlock.is_some(),
+            ),
+            ("profiles.ac", self.profiles.ac.is_some()),
+            ("profiles.battery", self.profiles.battery.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect()
     }
 
     /// These but for the keys `set` has: the config's to decide.
@@ -740,6 +779,10 @@ impl Changes {
                     self.keyboard.numpad_follows_numlock,
                     &set.keyboard.numpad_follows_numlock,
                 ),
+            },
+            profiles: Profiles {
+                ac: unless(self.profiles.ac, &set.profiles.ac),
+                battery: unless(self.profiles.battery, &set.profiles.battery),
             },
         }
     }
@@ -777,20 +820,26 @@ impl Changes {
 }
 
 /// What to switch the EC to when the laptop goes on AC or on battery.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profiles {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ac: Option<Profile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub battery: Option<Profile>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
     /// A scenario by name: its modes, under any set here.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scenario: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub shift_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fan_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub super_battery: Option<bool>,
 }
 
@@ -957,6 +1006,17 @@ impl Profiles {
             Source::Ac => self.ac.as_ref(),
             Source::Battery => self.battery.as_ref(),
         }
+    }
+
+    pub fn get_mut(&mut self, source: Source) -> &mut Option<Profile> {
+        match source {
+            Source::Ac => &mut self.ac,
+            Source::Battery => &mut self.battery,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
     }
 }
 

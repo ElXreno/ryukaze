@@ -209,7 +209,9 @@ impl Profiles {
         }
         self.applied = Some(source);
 
-        let Some(profile) = self.config.profiles.get(source) else {
+        let service = self.service().await;
+        let mut service = service.get_mut().await;
+        let Some(profile) = service.source_profile(source) else {
             info!("on {source}, no profile for it");
             return;
         };
@@ -217,7 +219,7 @@ impl Profiles {
             Some(scenario) => info!("on {source}, applying its profile ({scenario})"),
             None => info!("on {source}, applying its profile"),
         }
-        report(self.service().await.get_mut().await.apply_profile(profile));
+        report(service.apply_profile(&profile));
     }
 
     /// Goes through the object server, so it waits for D-Bus calls in
