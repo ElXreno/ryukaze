@@ -2,8 +2,10 @@
 
 `/etc/ryukaze/config.toml` (or `ryukazed --config <file>`); the NixOS module
 writes it from `services.ryukaze.settings`. Every key is optional, and
-what's unset the daemon leaves alone. The [advanced fan mode](fans.md) and
-the [keyboard's backlight](keyboard.md) have pages of their own.
+what's unset the daemon leaves alone, or sets as the window last left it
+(see [using ryukaze](usage.md#the-window)); what's set it sets again at
+every start. The [advanced fan mode](fans.md) and the
+[keyboard's backlight](keyboard.md) have pages of their own.
 
 ```toml
 # Battery charge end threshold, set at start. The EC keeps it across

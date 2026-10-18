@@ -1,5 +1,5 @@
 //! What the window can change, in the shape of `services.ryukaze.settings`:
-//! a change made here lasts until the daemon restarts, and this keeps it.
+//! for a config that's to have what the window changed.
 
 use std::fmt::Write;
 

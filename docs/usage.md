@@ -37,9 +37,15 @@ a hybrid laptop whether the dGPU sleeps, how long, and which processes hold
 it open while it doesn't (ryukazed reads the kernel's runtime PM status,
 which doesn't wake it, and looks through /proc only while it's up).
 
-What the window changes lasts until the daemon restarts. Copy as Nix, at
-the bottom, puts the settings on the clipboard in the shape of
-`services.ryukaze.settings`, to keep them.
+What the window changes the daemon keeps, in
+/var/lib/ryukaze/settings.toml, and sets again at the next start: the
+charge limit, the camera, the Fn key, USB Power Share, the fan curves,
+adaptive and the GPU fan's help, and cooler boost when hot with its marks.
+What the [config](config.md) sets, though, it sets again at every start: a
+change to it in the window lasts until then. The modes themselves aren't
+kept; the power source's profile sets them at start. Copy as Nix, at the
+bottom, puts the settings on the clipboard in the shape of
+`services.ryukaze.settings`, for a config that's to have them.
 
 Devices has the keyboard light's profiles, the standard ones and the
 config's, and under them those saved here. Edit, by them, opens its editor

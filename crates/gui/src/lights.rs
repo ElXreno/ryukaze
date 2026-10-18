@@ -1,7 +1,7 @@
 //! The keyboard light's editor: a picture of the Alpha 17's keys to pick and
 //! paint, an effect and its colours, shown on the keyboard as it goes (as a
 //! preview the daemon drops at the next profile or scenario), saved with the
-//! daemon's profiles until it restarts, and copied out as Nix, a profile for
+//! daemon's profiles, and copied out as Nix, a profile for
 //! `keyboard.profiles`.
 
 use std::{

@@ -701,7 +701,7 @@ impl App {
         let hint = if self.copied {
             "Copied, for services.ryukaze.settings"
         } else {
-            "Changes here last until ryukazed restarts"
+            "Changes here are kept, but for what the config sets, which it sets again at the next start"
         };
         let footer = row![
             text(hint).size(12).style(theme::muted).width(Length::Fill),
@@ -1490,7 +1490,10 @@ mod tests {
         assert!(shown(&app, "Copied, for services.ryukaze.settings"));
         // A change after the copy isn't in it.
         let _ = app.update(Message::Applied(Ok(())));
-        assert!(shown(&app, "Changes here last until ryukazed restarts"));
+        assert!(shown(
+            &app,
+            "Changes here are kept, but for what the config sets, which it sets again at the next start"
+        ));
     }
 
     #[test]

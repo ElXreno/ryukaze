@@ -11,12 +11,12 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `SetSuperBattery` | `b` | |
 | `SetCoolerBoost` | `b` | |
 | `SetChargeLimit` | `y` | 10 to 100; charging resumes 10 points below |
-| `SetFanCurve` | `s ay ay` | `cpu` or `gpu`, 6 temperatures, 7 speeds: the curve advanced runs on until the daemon restarts |
+| `SetFanCurve` | `s ay ay` | `cpu` or `gpu`, 6 temperatures, 7 speeds: the curve advanced runs on |
 | `ResetFanCurve` | `s` | back to the configured curve, or the EC's own |
-| `SetAdaptiveFans` | `b` | adaptive or stepping in advanced, until the daemon restarts |
+| `SetAdaptiveFans` | `b` | adaptive or stepping in advanced |
 | `SetGpuFanFollowsCpu` | `b` | while adaptive, the GPU fan at least at the CPU curve's speed |
-| `SetAutoCoolerBoost` | `b` | cooler boost by itself when hot, until the daemon restarts |
-| `SetCoolerBoostMarks` | `y y` | the CPU and GPU °C (60 to 100) it comes on at, until the daemon restarts |
+| `SetAutoCoolerBoost` | `b` | cooler boost by itself when hot |
+| `SetCoolerBoostMarks` | `y y` | the CPU and GPU °C (60 to 100) it comes on at |
 | `SetWebcam` | `b` | the camera on or off |
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
@@ -35,6 +35,11 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 it means; `ryukaze --status --json` prints the same dictionary.
 
 Every setter reads the value back and fails if the EC didn't take it.
+What `SetChargeLimit`, `SetWebcam`, `SetFnKey`, `SetUsbShare`,
+`SetFanCurve` (and `ResetFanCurve`), `SetAdaptiveFans`,
+`SetGpuFanFollowsCpu`, `SetAutoCoolerBoost` and `SetCoolerBoostMarks` set
+is kept for the next start but for what the config sets (see
+[using ryukaze](usage.md#the-window)).
 The signal `ModesChanged` (`a{sv}`) carries `shift_mode`, `fan_mode`,
 `super_battery`, `cooler_boost`, `scenario` and `keyboard_profile`, with
 `scenarios` and `keyboard_profiles`, as in `Status`, whenever they change,

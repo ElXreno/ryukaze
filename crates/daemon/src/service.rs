@@ -25,7 +25,7 @@ use crate::{
     adaptive::{self, Smoothed, Smoothing},
     boost::AutoBoost,
     config::{self, Profile, Scenario},
-    power_profiles, saved,
+    power_profiles, saved, state,
 };
 
 pub struct Service {
@@ -57,14 +57,20 @@ pub struct Service {
     /// The two together, in order: the config's, then the saved.
     keyboard_profiles: Vec<config::KeyboardProfile>,
     /// The one the config names to show outside the scenarios with one of
-    /// their own, unless another was picked since.
-    keyboard_default: Option<String>,
+    /// their own; or else the one picked last, or else the config's first.
+    keyboard_named: Option<String>,
+    keyboard_first: Option<String>,
     /// (scenario, profile) pairs.
     keyboard_scenarios: Vec<(String, String)>,
     /// The one shown, to show again when the controller loses it.
     keyboard_profile: Option<String>,
     /// A profile an editor shows for now, over the one picked.
     keyboard_preview: Option<Lighting>,
+    /// The settings changed in the window, kept for the next start but for
+    /// those the config sets, `config_set`, which it decides; and where.
+    changes: config::Changes,
+    config_set: config::Changes,
+    changes_file: Option<state::File>,
     /// NumLock, where the numpad follows it.
     numlock: Option<bool>,
     /// Where the controller's hidraw node is.
@@ -239,10 +245,14 @@ impl Service {
             keyboard_kept: saved::Kept::default(),
             keyboard_store: None,
             keyboard_profiles: Vec::new(),
-            keyboard_default: None,
+            keyboard_named: None,
+            keyboard_first: None,
             keyboard_scenarios: Vec::new(),
             keyboard_profile: None,
             keyboard_preview: None,
+            changes: config::Changes::default(),
+            config_set: config::Changes::default(),
+            changes_file: None,
             numlock: None,
             dev: PathBuf::from("/dev"),
         }
@@ -366,6 +376,190 @@ impl Service {
         Ok(Some(format!("shift mode {mode}")))
     }
 
+    /// The settings changed in the window before, read as the daemon
+    /// starts but for those the config sets, `set`, which it decides: the
+    /// fans' and the automatic boost's set again here, the EC's with the
+    /// config's (see `changes`); and where to keep them from now on.
+    pub fn keep_changes(&mut self, file: state::File, set: config::Changes) {
+        let (changes, wrong) = file.load::<config::Changes>().checked();
+        for wrong in wrong {
+            warn!("{}: {wrong}", file.path().display());
+        }
+        self.changes = changes.without(&set);
+        self.config_set = set;
+        self.changes_file = Some(file);
+        let report = |result: fdo::Result<()>| {
+            if let Err(err) = result {
+                warn!("{err}");
+            }
+        };
+        let config::Changes {
+            fans,
+            cooler_boost: boost,
+            ..
+        } = self.changes.clone();
+        for (fan, curve) in [(Fan::Cpu, fans.cpu), (Fan::Gpu, fans.gpu)] {
+            if let Some(config::FanCurve(curve)) = curve {
+                report(self.put_fan_curve(fan, curve));
+            }
+        }
+        if let Some(on) = fans.adaptive {
+            report(self.put_adaptive_fans(on));
+        }
+        if let Some(on) = fans.gpu_follows_cpu {
+            report(self.put_gpu_fan_follows_cpu(on));
+        }
+        if let Some(on) = boost.auto {
+            report(self.put_auto_cooler_boost(on));
+        }
+        if boost.cpu_c.is_some() || boost.gpu_c.is_some() {
+            let marks = &self.boost.config;
+            let (cpu_c, gpu_c) = (
+                boost.cpu_c.unwrap_or(marks.cpu_c),
+                boost.gpu_c.unwrap_or(marks.gpu_c),
+            );
+            report(self.put_cooler_boost_marks(cpu_c, gpu_c));
+        }
+    }
+
+    /// The settings changed in the window and kept, none the config sets.
+    pub fn changes(&self) -> &config::Changes {
+        &self.changes
+    }
+
+    /// A change from the window kept for the next start, unless the config
+    /// sets it: then the config's comes back at the next start.
+    fn remember(&mut self, change: impl FnOnce(&mut config::Changes)) -> fdo::Result<()> {
+        let mut changes = self.changes.clone();
+        change(&mut changes);
+        let changes = changes.without(&self.config_set);
+        if changes == self.changes {
+            return Ok(());
+        }
+        self.changes = changes;
+        let Some(file) = &self.changes_file else {
+            return Ok(());
+        };
+        file.store(&self.changes).map_err(|err| {
+            fdo::Error::IOError(format!(
+                "settings: set until ryukazed restarts, as {} can't be written: {err}",
+                file.path().display()
+            ))
+        })
+    }
+
+    pub fn put_fan_curve(&mut self, fan: Fan, curve: Curve) -> fdo::Result<()> {
+        let fans = self.fans.as_mut().ok_or_else(no_curves)?;
+        fans.active[fan as usize] = curve;
+        fans.adaptive.targets[fan as usize] = None;
+        self.adapt()?;
+        self.sync_curves()
+    }
+
+    fn put_adaptive_fans(&mut self, on: bool) -> fdo::Result<()> {
+        let fans = self.fans.as_mut().ok_or_else(no_curves)?;
+        if fans.adaptive.on == on {
+            return Ok(());
+        }
+        fans.adaptive.on = on;
+        fans.adaptive.rest();
+        info!("adaptive fans: {}", if on { "on" } else { "off" });
+        self.adapt()?;
+        self.sync_curves()
+    }
+
+    fn put_gpu_fan_follows_cpu(&mut self, on: bool) -> fdo::Result<()> {
+        let fans = self.fans.as_mut().ok_or_else(no_curves)?;
+        if fans.adaptive.gpu_follows_cpu == on {
+            return Ok(());
+        }
+        fans.adaptive.gpu_follows_cpu = on;
+        fans.adaptive.targets[Fan::Gpu as usize] = None;
+        info!("gpu fan follows the cpu: {}", if on { "on" } else { "off" });
+        self.adapt()
+    }
+
+    pub fn put_webcam(&mut self, on: bool) -> fdo::Result<()> {
+        apply(
+            "webcam",
+            on,
+            || self.ec.webcam(),
+            |&on| self.ec.set_webcam(on),
+        )
+    }
+
+    pub fn put_fn_key(&mut self, side: &str) -> fdo::Result<()> {
+        if !matches!(side, "left" | "right") {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "fn key {side:?}: left or right"
+            )));
+        }
+        apply(
+            "fn_key",
+            side.to_owned(),
+            || self.ec.fn_key(),
+            |_| self.ec.set_fn_key(side),
+        )
+    }
+
+    pub fn put_usb_share(&mut self, on: bool) -> fdo::Result<()> {
+        let (raw, share) = self.usb_share.as_ref().ok_or_else(|| {
+            fdo::Error::NotSupported("usb_share: this EC's map doesn't have it".into())
+        })?;
+        apply("usb_share", on, || share.get(raw), |&on| share.set(raw, on))
+    }
+
+    fn put_auto_cooler_boost(&mut self, on: bool) -> fdo::Result<()> {
+        if self.boost.config.auto == on {
+            return Ok(());
+        }
+        self.boost.config.auto = on;
+        info!("cooler boost when hot: {}", if on { "on" } else { "off" });
+        let boost_on = self
+            .ec
+            .cooler_boost()
+            .map_err(|e| error("cooler_boost", e))?;
+        match self.boost.stop(boost_on) {
+            Some(want) if !on => self.set_cooler_boost(want),
+            _ => Ok(()),
+        }
+    }
+
+    fn put_cooler_boost_marks(&mut self, cpu_c: u8, gpu_c: u8) -> fdo::Result<()> {
+        for (name, mark) in [("CPU", cpu_c), ("GPU", gpu_c)] {
+            if !COOLER_BOOST_MARKS.contains(&mark) {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "{name} mark {mark} °C is outside {}..{}",
+                    COOLER_BOOST_MARKS.start(),
+                    COOLER_BOOST_MARKS.end()
+                )));
+            }
+        }
+        let config = &mut self.boost.config;
+        if (config.cpu_c, config.gpu_c) != (cpu_c, gpu_c) {
+            info!(
+                "cooler boost marks: CPU {} -> {cpu_c} °C, GPU {} -> {gpu_c} °C",
+                config.cpu_c, config.gpu_c
+            );
+            (config.cpu_c, config.gpu_c) = (cpu_c, gpu_c);
+        }
+        Ok(())
+    }
+
+    pub fn put_charge_limit(&mut self, percent: u8) -> fdo::Result<()> {
+        if !(10..=100).contains(&percent) {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "charge limit {percent}% is outside 10..100"
+            )));
+        }
+        apply(
+            "charge_limit",
+            percent,
+            || self.ec.charge_limit(),
+            |&percent| self.ec.set_charge_limit(percent),
+        )
+    }
+
     /// The profiles saved before and the one picked last, read as the
     /// daemon starts, and where to keep them from now on.
     pub fn keep_keyboard_profiles(&mut self, store: saved::Store) {
@@ -375,17 +569,20 @@ impl Service {
     }
 
     /// From the config: the profiles, the standard ones among them,
-    /// checked, the one shown outside the scenarios with their own unless
-    /// another was picked since, and theirs; shown at once for `scenario`,
-    /// the one the EC is in. The saved profiles stay.
+    /// checked; the one it names to show outside the scenarios with their
+    /// own, and its first, shown if it names none and none was picked; and
+    /// the scenarios'. Shown at once for `scenario`, the one the EC is in.
+    /// The saved profiles stay.
     pub fn configure_keyboard(
         &mut self,
         profiles: Vec<config::KeyboardProfile>,
-        default: Option<String>,
+        named: Option<String>,
+        first: Option<String>,
         scenarios: Vec<(String, String)>,
         scenario: Option<&str>,
     ) -> fdo::Result<()> {
-        self.keyboard_default = default;
+        self.keyboard_named = named;
+        self.keyboard_first = first;
         self.keyboard_config = profiles;
         self.merge_keyboard_profiles();
         self.keyboard_scenarios = scenarios;
@@ -447,7 +644,9 @@ impl Service {
                 .iter()
                 .any(|profile| &profile.name == name)
         });
-        own.or(picked).or_else(|| self.keyboard_default.clone())
+        own.or_else(|| self.keyboard_named.clone())
+            .or(picked)
+            .or_else(|| self.keyboard_first.clone())
     }
 
     /// The config's profiles, then the saved ones but for any of a name the
@@ -963,16 +1162,13 @@ impl Service {
         Ok(())
     }
 
-    /// The curve advanced runs `fan` ("cpu" or "gpu") on, until the daemon
-    /// restarts; see `fans::Curve`. In advanced it's on the fan at once.
+    /// The curve advanced runs `fan` ("cpu" or "gpu") on; see
+    /// `fans::Curve`. In advanced it's on the fan at once.
     pub fn set_fan_curve(&mut self, fan: &str, temps: Vec<u8>, speeds: Vec<u8>) -> fdo::Result<()> {
         let fan = parse_fan(fan)?;
         let curve = Curve::new(&temps, &speeds).map_err(fdo::Error::InvalidArgs)?;
-        let fans = self.fans.as_mut().ok_or_else(no_curves)?;
-        fans.active[fan as usize] = curve;
-        fans.adaptive.targets[fan as usize] = None;
-        self.adapt()?;
-        self.sync_curves()
+        self.put_fan_curve(fan, curve)?;
+        self.remember(|changes| *changes.fans.curve(fan) = Some(config::FanCurve(curve)))
     }
 
     /// Back to the configured curve, or the EC's own where none is.
@@ -980,58 +1176,33 @@ impl Service {
         let fan = parse_fan(fan)?;
         self.fans.as_mut().ok_or_else(no_curves)?.reset(fan);
         self.adapt()?;
-        self.sync_curves()
+        self.sync_curves()?;
+        self.remember(|changes| *changes.fans.curve(fan) = None)
     }
 
-    /// Whether advanced is adaptive, until the daemon restarts; off, the EC
-    /// steps through the curves itself.
+    /// Whether advanced is adaptive; off, the EC steps through the curves
+    /// itself.
     pub fn set_adaptive_fans(&mut self, on: bool) -> fdo::Result<()> {
-        let fans = self.fans.as_mut().ok_or_else(no_curves)?;
-        if fans.adaptive.on == on {
-            return Ok(());
-        }
-        fans.adaptive.on = on;
-        fans.adaptive.rest();
-        info!("adaptive fans: {}", if on { "on" } else { "off" });
-        self.adapt()?;
-        self.sync_curves()
+        self.put_adaptive_fans(on)?;
+        self.remember(|changes| changes.fans.adaptive = Some(on))
     }
 
     /// While adaptive: whether the GPU fan runs at least as fast as the
-    /// CPU's curve asks, until the daemon restarts.
+    /// CPU's curve asks.
     pub fn set_gpu_fan_follows_cpu(&mut self, on: bool) -> fdo::Result<()> {
-        let fans = self.fans.as_mut().ok_or_else(no_curves)?;
-        if fans.adaptive.gpu_follows_cpu == on {
-            return Ok(());
-        }
-        fans.adaptive.gpu_follows_cpu = on;
-        fans.adaptive.targets[Fan::Gpu as usize] = None;
-        info!("gpu fan follows the cpu: {}", if on { "on" } else { "off" });
-        self.adapt()
+        self.put_gpu_fan_follows_cpu(on)?;
+        self.remember(|changes| changes.fans.gpu_follows_cpu = Some(on))
     }
 
     pub fn set_webcam(&mut self, on: bool) -> fdo::Result<()> {
-        apply(
-            "webcam",
-            on,
-            || self.ec.webcam(),
-            |&on| self.ec.set_webcam(on),
-        )
+        self.put_webcam(on)?;
+        self.remember(|changes| changes.webcam = Some(on))
     }
 
     /// `left` or `right` of the Win key.
     pub fn set_fn_key(&mut self, side: &str) -> fdo::Result<()> {
-        if !matches!(side, "left" | "right") {
-            return Err(fdo::Error::InvalidArgs(format!(
-                "fn key {side:?}: left or right"
-            )));
-        }
-        apply(
-            "fn_key",
-            side.to_owned(),
-            || self.ec.fn_key(),
-            |_| self.ec.set_fn_key(side),
-        )
+        self.put_fn_key(side)?;
+        self.remember(|changes| changes.fn_key = Some(side.to_owned()))
     }
 
     /// One of the keyboard profiles in Status, picked.
@@ -1147,10 +1318,8 @@ impl Service {
 
     /// USB ports powered while the laptop is off.
     pub fn set_usb_share(&mut self, on: bool) -> fdo::Result<()> {
-        let (raw, share) = self.usb_share.as_ref().ok_or_else(|| {
-            fdo::Error::NotSupported("usb_share: this EC's map doesn't have it".into())
-        })?;
-        apply("usb_share", on, || share.get(raw), |&on| share.set(raw, on))
+        self.put_usb_share(on)?;
+        self.remember(|changes| changes.usb_share = Some(on))
     }
 
     /// `hybrid` or `discrete` from the next restart on. Waits for the
@@ -1189,45 +1358,21 @@ impl Service {
         ))
     }
 
-    /// Cooler boost by itself when it gets hot, until the daemon restarts.
-    /// Switched off, a boost it started ends.
+    /// Cooler boost by itself when it gets hot. Switched off, a boost it
+    /// started ends.
     pub fn set_auto_cooler_boost(&mut self, on: bool) -> fdo::Result<()> {
-        if self.boost.config.auto == on {
-            return Ok(());
-        }
-        self.boost.config.auto = on;
-        info!("cooler boost when hot: {}", if on { "on" } else { "off" });
-        let boost_on = self
-            .ec
-            .cooler_boost()
-            .map_err(|e| error("cooler_boost", e))?;
-        match self.boost.stop(boost_on) {
-            Some(want) if !on => self.set_cooler_boost(want),
-            _ => Ok(()),
-        }
+        self.put_auto_cooler_boost(on)?;
+        self.remember(|changes| changes.cooler_boost.auto = Some(on))
     }
 
     /// The CPU and GPU temperatures, °C, cooler boost comes on at by
-    /// itself, until the daemon restarts.
+    /// itself.
     pub fn set_cooler_boost_marks(&mut self, cpu_c: u8, gpu_c: u8) -> fdo::Result<()> {
-        for (name, mark) in [("CPU", cpu_c), ("GPU", gpu_c)] {
-            if !COOLER_BOOST_MARKS.contains(&mark) {
-                return Err(fdo::Error::InvalidArgs(format!(
-                    "{name} mark {mark} °C is outside {}..{}",
-                    COOLER_BOOST_MARKS.start(),
-                    COOLER_BOOST_MARKS.end()
-                )));
-            }
-        }
-        let config = &mut self.boost.config;
-        if (config.cpu_c, config.gpu_c) != (cpu_c, gpu_c) {
-            info!(
-                "cooler boost marks: CPU {} -> {cpu_c} °C, GPU {} -> {gpu_c} °C",
-                config.cpu_c, config.gpu_c
-            );
-            (config.cpu_c, config.gpu_c) = (cpu_c, gpu_c);
-        }
-        Ok(())
+        self.put_cooler_boost_marks(cpu_c, gpu_c)?;
+        self.remember(|changes| {
+            changes.cooler_boost.cpu_c = Some(cpu_c);
+            changes.cooler_boost.gpu_c = Some(gpu_c);
+        })
     }
 
     pub fn set_super_battery(&mut self, on: bool) -> fdo::Result<()> {
@@ -1252,17 +1397,8 @@ impl Service {
 
     /// 10 to 100 percent; charging resumes 10 points below it.
     pub fn set_charge_limit(&mut self, percent: u8) -> fdo::Result<()> {
-        if !(10..=100).contains(&percent) {
-            return Err(fdo::Error::InvalidArgs(format!(
-                "charge limit {percent}% is outside 10..100"
-            )));
-        }
-        apply(
-            "charge_limit",
-            percent,
-            || self.ec.charge_limit(),
-            |&percent| self.ec.set_charge_limit(percent),
-        )
+        self.put_charge_limit(percent)?;
+        self.remember(|changes| changes.charge_limit = Some(percent))
     }
 }
 
@@ -1869,6 +2005,7 @@ mod tests {
         assert!(matches!(
             service.configure_keyboard(
                 profiles.clone(),
+                None,
                 Some("orange".into()),
                 silent.clone(),
                 Some("balanced")
@@ -1899,6 +2036,7 @@ mod tests {
         let shown = |service: &Service| service.status().keyboard_profile.unwrap();
         let _ = service.configure_keyboard(
             profiles.clone(),
+            None,
             Some("orange".into()),
             silent,
             Some("balanced"),
@@ -1982,21 +2120,25 @@ mod tests {
         assert_eq!(service.status().keyboard_profiles.unwrap(), names);
         assert_eq!(service.status().keyboard_saved_profiles.unwrap(), ["draft"]);
         let orange = Some("orange".to_owned());
-        let _ = service.configure_keyboard(profiles.clone(), orange.clone(), Vec::new(), None);
+        let _ =
+            service.configure_keyboard(profiles.clone(), None, orange.clone(), Vec::new(), None);
         assert_eq!(service.status().keyboard_profiles.unwrap(), names);
 
         // On the disk for the next start, picked as it was left.
         let mut next = self::service(sysfs.path());
         next.dev = service.dev.clone();
         next.keep_keyboard_profiles(saved::Store::new(state.path()));
-        let _ = next.configure_keyboard(profiles.clone(), orange.clone(), Vec::new(), None);
+        let _ = next.configure_keyboard(profiles.clone(), None, orange.clone(), Vec::new(), None);
         assert_eq!(next.status().keyboard_profiles.unwrap(), names);
         assert_eq!(shown(&next), "draft");
         let _ = next.set_keyboard_profile("white");
         let mut again = self::service(sysfs.path());
         again.keep_keyboard_profiles(saved::Store::new(state.path()));
-        let _ = again.configure_keyboard(profiles.clone(), orange.clone(), Vec::new(), None);
+        let _ = again.configure_keyboard(profiles.clone(), None, orange.clone(), Vec::new(), None);
         assert_eq!(again.keyboard_profile.as_deref(), Some("white"));
+        // The one the config names, over the one picked.
+        let _ = again.configure_keyboard(profiles.clone(), orange.clone(), None, Vec::new(), None);
+        assert_eq!(again.keyboard_profile.as_deref(), Some("orange"));
 
         // Deleted: only a saved one, and the usual one shown for it.
         assert!(matches!(
@@ -2016,7 +2158,7 @@ mod tests {
         gone.keyboard_kept
             .profiles
             .push(keyboard_profile("name = \"white\"\ncolor = \"#010101\"\n", "test").unwrap());
-        let _ = gone.configure_keyboard(profiles, orange, Vec::new(), None);
+        let _ = gone.configure_keyboard(profiles, None, orange, Vec::new(), None);
         assert_eq!(
             gone.status().keyboard_profiles.unwrap(),
             ["orange", "rainbow", "white"]
@@ -2044,6 +2186,43 @@ mod tests {
         assert_eq!(status.super_battery, Some(true));
         // Super battery over silent's: no longer silent.
         assert_eq!(status.scenario, None);
+    }
+
+    #[test]
+    fn keeps_the_windows_changes_but_not_the_configs() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let state = tempfile::tempdir().unwrap();
+        let file = || state::File::new(state.path(), "settings.toml");
+        // The config sets the Fn key, and nothing of the boost.
+        let set = config::Changes {
+            fn_key: Some("right".into()),
+            ..config::Changes::default()
+        };
+        let mut service = service(sysfs.path());
+        service.keep_changes(file(), set.clone());
+        service.set_fn_key("left").unwrap();
+        service.set_auto_cooler_boost(true).unwrap();
+        service.set_cooler_boost_marks(90, 80).unwrap();
+        let kept: config::Changes = file().load();
+        assert_eq!(kept.fn_key, None);
+        assert_eq!(kept.cooler_boost.auto, Some(true));
+        assert_eq!(
+            (kept.cooler_boost.cpu_c, kept.cooler_boost.gpu_c),
+            (Some(90), Some(80))
+        );
+
+        // Set again at the next start; a bad one left out.
+        std::fs::write(
+            file().path(),
+            "fn_key = \"left\"\ncharge_limit = 5\n[cooler_boost]\nauto = true\ncpu_c = 90\ngpu_c = 80\n",
+        )
+        .unwrap();
+        let mut next = self::service(sysfs.path());
+        next.keep_changes(file(), set);
+        assert_eq!(next.changes().fn_key, None);
+        assert_eq!(next.changes().charge_limit, None);
+        assert!(next.boost.config.auto);
+        assert_eq!((next.boost.config.cpu_c, next.boost.config.gpu_c), (90, 80));
     }
 
     #[test]

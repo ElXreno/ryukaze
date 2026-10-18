@@ -111,37 +111,38 @@ impl Profiles {
         }
     }
 
-    /// At start and when msi-ec binds: everything, as if just booted.
+    /// At start and when msi-ec binds: everything, as if just booted, the
+    /// config's settings and those changed in the window and kept.
     pub async fn apply_all(&mut self) {
         let service = self.service().await;
         let mut service = service.get_mut().await;
-        if let Some(percent) = self.config.charge_limit {
-            report(service.set_charge_limit(percent));
+        let (config, kept) = (&self.config, service.changes().clone());
+        if let Some(percent) = config.charge_limit.or(kept.charge_limit) {
+            report(service.put_charge_limit(percent));
         }
-        if let Some(on) = self.config.webcam {
-            report(service.set_webcam(on));
+        if let Some(on) = config.webcam.or(kept.webcam) {
+            report(service.put_webcam(on));
         }
-        if let Some(on) = self.config.usb_share {
-            report(service.set_usb_share(on));
+        if let Some(on) = config.usb_share.or(kept.usb_share) {
+            report(service.put_usb_share(on));
         }
-        if let Some(side) = &self.config.fn_key {
-            report(service.set_fn_key(side));
+        if let Some(side) = config.fn_key.as_ref().or(kept.fn_key.as_ref()) {
+            report(service.put_fn_key(side));
         }
-        let keyboard = &self.config.keyboard;
+        let keyboard = &config.keyboard;
         let scenario = service.modes().scenario;
-        report(service.configure_keyboard(
-            keyboard.all_profiles(),
-            // Named, or the config's first; with neither, the keyboard is
-            // left as it is until a profile is picked.
-            keyboard.profile.clone().or_else(|| {
+        report(
+            service.configure_keyboard(
+                keyboard.all_profiles(),
+                keyboard.profile.clone(),
                 keyboard
                     .profiles
                     .first()
-                    .map(|profile| profile.name.clone())
-            }),
-            keyboard.scenario_profiles(),
-            scenario.as_deref(),
-        ));
+                    .map(|profile| profile.name.clone()),
+                keyboard.scenario_profiles(),
+                scenario.as_deref(),
+            ),
+        );
         report(service.sync_curves());
         drop(service);
         self.applied = None;

@@ -12,6 +12,7 @@ mod profiles;
 mod saved;
 mod service;
 mod sleep;
+mod state;
 mod uevent;
 
 use std::{
@@ -132,7 +133,12 @@ async fn main() -> Result<()> {
         None
     };
     let mut service = Service::new(ec, fans, boost, scenarios);
-    service.keep_keyboard_profiles(saved::Store::new(&state_dir(&args)));
+    let state = state_dir(&args);
+    service.keep_keyboard_profiles(saved::Store::new(&state));
+    service.keep_changes(
+        state::File::new(&state, "settings.toml"),
+        config.set.clone(),
+    );
     if let Some(on) = numlock_now
         && let Err(err) = service.numlock(on)
     {

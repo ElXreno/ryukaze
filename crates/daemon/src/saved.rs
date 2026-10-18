@@ -3,15 +3,12 @@
 //! directory's keyboard.toml (`picked`, and `[[profiles]]` the way the
 //! config has them) and read back as the daemon starts.
 
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{io, path::Path};
 
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::config::KeyboardProfile;
+use crate::{config::KeyboardProfile, state};
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -23,39 +20,25 @@ pub struct Kept {
 }
 
 pub struct Store {
-    path: PathBuf,
+    file: state::File,
 }
 
 impl Store {
     pub fn new(dir: &Path) -> Self {
         Self {
-            path: dir.join("keyboard.toml"),
+            file: state::File::new(dir, "keyboard.toml"),
         }
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        self.file.path()
     }
 
     /// What was kept: nothing without the file, and of a file gone bad what
     /// still holds, with a warning for the rest.
     pub fn load(&self) -> Kept {
-        let path = self.path.display();
-        let text = match fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Kept::default(),
-            Err(err) => {
-                warn!("{path}: {err}");
-                return Kept::default();
-            }
-        };
-        let read: Kept = match toml::from_str(&text) {
-            Ok(read) => read,
-            Err(err) => {
-                warn!("{path}: {err}");
-                return Kept::default();
-            }
-        };
+        let path = self.path().display();
+        let read: Kept = self.file.load();
         let mut profiles: Vec<KeyboardProfile> = Vec::new();
         for profile in read.profiles {
             if let Err(err) = profile.lighting() {
@@ -77,21 +60,15 @@ impl Store {
         }
     }
 
-    /// All of it, written whole to a file beside it first, so that a crash
-    /// midway leaves the old one.
     pub fn store(&self, kept: &Kept) -> io::Result<()> {
-        if let Some(dir) = self.path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let text = toml::to_string(kept).map_err(io::Error::other)?;
-        let new = self.path.with_extension("toml.new");
-        fs::write(&new, text)?;
-        fs::rename(&new, &self.path)
+        self.file.store(kept)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]

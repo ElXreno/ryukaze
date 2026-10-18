@@ -45,6 +45,11 @@ pub struct Config {
     pub power_profiles_daemon: PowerProfilesDaemon,
 
     pub keyboard: Keyboard,
+
+    /// Of the keys the window changes too, those this config sets, which
+    /// it decides at every start.
+    #[serde(skip)]
+    pub set: Changes,
 }
 
 /// The keyboard's backlight, set at start, after sleep and whenever the
@@ -537,11 +542,11 @@ impl Fans {
 }
 
 /// A [`Curve`] checked as it's parsed, so a bad one fails at start.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(try_from = "RawCurve")]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(try_from = "RawCurve", into = "RawCurve")]
 pub struct FanCurve(pub Curve);
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RawCurve {
     temps: Vec<u8>,
@@ -553,6 +558,171 @@ impl TryFrom<RawCurve> for FanCurve {
 
     fn try_from(raw: RawCurve) -> Result<Self, String> {
         Curve::new(&raw.temps, &raw.speeds).map(FanCurve)
+    }
+}
+
+impl From<FanCurve> for RawCurve {
+    fn from(FanCurve(curve): FanCurve) -> Self {
+        Self {
+            temps: curve.temps.to_vec(),
+            speeds: curve.speeds.to_vec(),
+        }
+    }
+}
+
+/// What the window changed, kept in the state directory's settings.toml and
+/// set at start over the config: the config's keys, in its shape, that the
+/// setters change. Unset, the config's stands.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Changes {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge_limit: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webcam: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fn_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usb_share: Option<bool>,
+    #[serde(skip_serializing_if = "FanChanges::is_empty")]
+    pub fans: FanChanges,
+    #[serde(skip_serializing_if = "BoostChanges::is_empty")]
+    pub cooler_boost: BoostChanges,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FanChanges {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<FanCurve>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<FanCurve>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_follows_cpu: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BoostChanges {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_c: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_c: Option<u8>,
+}
+
+impl FanChanges {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn curve(&mut self, fan: Fan) -> &mut Option<FanCurve> {
+        match fan {
+            Fan::Cpu => &mut self.cpu,
+            Fan::Gpu => &mut self.gpu,
+        }
+    }
+}
+
+impl BoostChanges {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Changes {
+    /// Of these keys, the ones `table`, the config as written, sets, with
+    /// the values they came to in `config`.
+    fn set_in(config: &Config, table: &toml::Table) -> Self {
+        let has = |path: &str| {
+            let mut at = Some(table);
+            let mut parts = path.split('.').peekable();
+            while let Some(part) = parts.next() {
+                let value = at.and_then(|table| table.get(part));
+                if parts.peek().is_none() {
+                    return value.is_some();
+                }
+                at = value.and_then(toml::Value::as_table);
+            }
+            false
+        };
+        let (fans, boost) = (&config.fans, &config.cooler_boost);
+        Self {
+            charge_limit: config.charge_limit,
+            webcam: config.webcam,
+            fn_key: config.fn_key.clone(),
+            usb_share: config.usb_share,
+            fans: FanChanges {
+                cpu: fans.cpu,
+                gpu: fans.gpu,
+                adaptive: has("fans.adaptive").then_some(fans.adaptive),
+                gpu_follows_cpu: has("fans.gpu_follows_cpu").then_some(fans.gpu_follows_cpu),
+            },
+            cooler_boost: BoostChanges {
+                auto: has("cooler_boost.auto").then_some(boost.auto),
+                cpu_c: has("cooler_boost.cpu_c").then_some(boost.cpu_c),
+                gpu_c: has("cooler_boost.gpu_c").then_some(boost.gpu_c),
+            },
+        }
+    }
+
+    /// These but for the keys `set` has: the config's to decide.
+    pub fn without(self, set: &Changes) -> Self {
+        fn unless<T, U>(value: Option<T>, set: &Option<U>) -> Option<T> {
+            if set.is_some() { None } else { value }
+        }
+        let (fans, boost) = (self.fans, self.cooler_boost);
+        Self {
+            charge_limit: unless(self.charge_limit, &set.charge_limit),
+            webcam: unless(self.webcam, &set.webcam),
+            fn_key: unless(self.fn_key, &set.fn_key),
+            usb_share: unless(self.usb_share, &set.usb_share),
+            fans: FanChanges {
+                cpu: unless(fans.cpu, &set.fans.cpu),
+                gpu: unless(fans.gpu, &set.fans.gpu),
+                adaptive: unless(fans.adaptive, &set.fans.adaptive),
+                gpu_follows_cpu: unless(fans.gpu_follows_cpu, &set.fans.gpu_follows_cpu),
+            },
+            cooler_boost: BoostChanges {
+                auto: unless(boost.auto, &set.cooler_boost.auto),
+                cpu_c: unless(boost.cpu_c, &set.cooler_boost.cpu_c),
+                gpu_c: unless(boost.gpu_c, &set.cooler_boost.gpu_c),
+            },
+        }
+    }
+
+    /// The ones the config would take, the others dropped with what's wrong.
+    pub fn checked(mut self) -> (Self, Vec<String>) {
+        let mut wrong = Vec::new();
+        if let Some(limit) = self.charge_limit
+            && !(10..=100).contains(&limit)
+        {
+            wrong.push(format!("charge_limit {limit} is outside 10..100"));
+            self.charge_limit = None;
+        }
+        if let Some(side) = &self.fn_key
+            && !matches!(side.as_str(), "left" | "right")
+        {
+            wrong.push(format!("fn_key {side:?}: left or right"));
+            self.fn_key = None;
+        }
+        let boost = &mut self.cooler_boost;
+        for (key, mark) in [("cpu_c", &mut boost.cpu_c), ("gpu_c", &mut boost.gpu_c)] {
+            if let Some(c) = *mark
+                && !COOLER_BOOST_MARKS.contains(&c)
+            {
+                wrong.push(format!(
+                    "cooler_boost.{key} {c} is outside {}..{}",
+                    COOLER_BOOST_MARKS.start(),
+                    COOLER_BOOST_MARKS.end()
+                ));
+                *mark = None;
+            }
+        }
+        (self, wrong)
     }
 }
 
@@ -614,8 +784,11 @@ impl Config {
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
         };
-        let config: Self =
+        let mut config: Self =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let table: toml::Table =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        config.set = Changes::set_in(&config, &table);
         if let Some(percent) = config.charge_limit
             && !(10..=100).contains(&percent)
         {
@@ -982,6 +1155,36 @@ mod tests {
         let twice = "[[keyboard.profiles]]\nname = \"p\"\neffect = \"cycle\"\n";
         assert!(load(&twice.repeat(2)).is_err());
         assert!(load(&format!("{twice}[keyboard.scenarios]\nloud = \"p\"\n")).is_err());
+    }
+
+    #[test]
+    fn knows_what_it_sets_of_what_the_window_changes() {
+        let config = load("charge_limit = 80\n[fans]\nadaptive = false\n").unwrap();
+        let set = &config.set;
+        assert_eq!(set.charge_limit, Some(80));
+        assert_eq!(set.fans.adaptive, Some(false));
+        assert_eq!(set.fans.gpu_follows_cpu, None);
+        assert_eq!(set.cooler_boost.auto, None);
+        let window = Changes {
+            charge_limit: Some(60),
+            webcam: Some(true),
+            fans: FanChanges {
+                adaptive: Some(true),
+                gpu_follows_cpu: Some(true),
+                ..FanChanges::default()
+            },
+            ..Changes::default()
+        };
+        let kept = window.without(set);
+        assert_eq!(kept.charge_limit, None);
+        assert_eq!(kept.webcam, Some(true));
+        assert_eq!(kept.fans.adaptive, None);
+        assert_eq!(kept.fans.gpu_follows_cpu, Some(true));
+        // Written in the config's shape, only what's there.
+        assert_eq!(
+            toml::to_string(&kept).unwrap(),
+            "webcam = true\n\n[fans]\ngpu_follows_cpu = true\n"
+        );
     }
 
     #[test]
