@@ -44,7 +44,8 @@ one. The power button, which the effects pass by, stays still in `color`.
 Its `zones` give keys an effect of their own beside its own: each zone a
 list of `keys`, by name or group, and an effect with what it takes, a later
 zone over an earlier one. There may be eight; the controller holds nine
-effects at once. Still colours go in `keys` instead.
+effects at once. Still colours go in `keys` instead. The window's editor
+makes them as layers over the keyboard's.
 
 Keys: `a` to `z`, `0` to `9`, `f1` to `f12`, `esc`, `tab`, `capslock`,
 `enter`, `backspace`, `space`, `minus`, `equal`, `lbracket`, `rbracket`,

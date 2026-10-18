@@ -65,8 +65,10 @@ keeps it with the profiles under its name, on the disk (see
 [saved profiles](keyboard.md#saved-profiles)), or for a standard one or the
 config's, which stay as they are, a copy of it under a name of its own;
 Delete forgets a saved one again. Copy as Nix puts it on the clipboard as
-a profile for `services.ryukaze.settings.keyboard.profiles`. A profile's
-zones it keeps as they are.
+a profile for `services.ryukaze.settings.keyboard.profiles`. Its zones are layers over
+the keyboard's, in the Effect panel: in one, the keys clicked on the
+picture go in the zone or out of it, and the panels give it its own
+effect.
 
 ## The tray
 
