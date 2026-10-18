@@ -38,14 +38,20 @@
             rust-analyzer
           ];
 
-          # winit opens these at run time; the package sets an rpath instead.
+          # winit and wgpu open these at run time; the package sets an rpath
+          # instead.
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
             with pkgs;
             [
+              vulkan-loader
               wayland
               libxkbcommon
             ]
           );
+
+          # The tests draw in software: wgpu, off screen, takes the fastest
+          # GPU, a sleeping discrete one too.
+          ICED_TEST_BACKEND = "tiny-skia";
 
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         };
