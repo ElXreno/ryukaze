@@ -686,8 +686,7 @@ impl App {
         // In the config's order; none picked while the modes make none.
         if let Some(scenarios) = &status.scenarios {
             let current = status.scenario.as_deref().unwrap_or_default();
-            let mut scenario =
-                column![modes_row(current, scenarios, &[], Message::Scenario)].spacing(10);
+            let mut scenario = column![grid(current, scenarios, 3, Message::Scenario)].spacing(10);
             let sources = [
                 ("ac", "On AC", &status.ac_scenario),
                 ("battery", "On battery", &status.battery_scenario),
@@ -697,11 +696,13 @@ impl App {
                 .filter(|(source, ..)| config_sets(status, &format!("profiles.{source}")))
                 .map(|(_, label, _)| *label)
                 .collect();
-            for (source, label, picked) in sources {
-                if let Some(picked) = picked {
-                    scenario = scenario.push(source_row(source, label, picked, scenarios));
-                }
-            }
+            let picks: Vec<Element<'_, Message>> = sources
+                .into_iter()
+                .filter_map(|(source, label, picked)| {
+                    Some(source_pick(source, label, picked.as_deref()?, scenarios))
+                })
+                .collect();
+            scenario = scenario.push(cells(picks, 2));
             if !from_config.is_empty() {
                 scenario = scenario.push(
                     text(format!(
@@ -806,13 +807,13 @@ impl App {
                     small_button("Edit", Message::EditLights),
                 ]
                 .align_y(Alignment::Center),
-                profile_grid(current, &standard),
+                grid(current, &standard, 5, Message::KeyboardProfile),
             ]
             .spacing(8);
             if !saved.is_empty() {
                 light = light
                     .push(text("Saved here").size(12).style(theme::muted))
-                    .push(profile_grid(current, &saved));
+                    .push(grid(current, &saved, 5, Message::KeyboardProfile));
             }
             if let (Some(scenarios), Some(own)) = (&status.scenarios, &status.keyboard_scenarios) {
                 light = light.push(scenario_lights(scenarios, own, &standard, &saved));
@@ -1152,39 +1153,33 @@ fn scenario_lights<'a>(
     standard: &[String],
     saved: &[String],
 ) -> Element<'a, Message> {
-    const PICKED: &str = "the picked one";
-    let options: Vec<String> = std::iter::once(PICKED.to_owned())
-        .chain(standard.iter().chain(saved).cloned())
+    let picked = Choice::new("the picked one", "");
+    let options: Vec<Choice> = std::iter::once(picked.clone())
+        .chain(
+            standard
+                .iter()
+                .chain(saved)
+                .map(|profile| Choice::new(profile, profile)),
+        )
         .collect();
-    let mut lists = row![].spacing(8);
-    for scenario in scenarios {
-        let picked = own
-            .get(scenario)
-            .cloned()
-            .unwrap_or_else(|| PICKED.to_owned());
-        let scenario = scenario.clone();
-        lists = lists.push(
-            column![
-                text(capitalize(&scenario)).size(12).style(theme::muted),
-                pick_list(options.clone(), Some(picked), move |profile: String| {
-                    let profile = if profile == PICKED {
-                        String::new()
-                    } else {
-                        profile
-                    };
+    let lists = scenarios
+        .iter()
+        .map(|scenario| {
+            let shown = own
+                .get(scenario)
+                .and_then(|profile| options.iter().find(|choice| choice.value == *profile))
+                .unwrap_or(&picked)
+                .clone();
+            let scenario = scenario.clone();
+            labelled(
+                capitalize(&scenario),
+                pick(options.clone(), shown, move |profile| {
                     Message::ScenarioLight(scenario.clone(), profile)
-                })
-                .text_size(13)
-                .padding([4, 8])
-                .width(Length::Fill)
-                .style(theme::pick)
-                .menu_style(theme::menu),
-            ]
-            .spacing(4)
-            .width(Length::Fill),
-        );
-    }
-    column![text("In the scenarios").size(13), lists,]
+                }),
+            )
+        })
+        .collect();
+    column![text("In the scenarios").size(13), cells(lists, 2)]
         .spacing(6)
         .into()
 }
@@ -1235,40 +1230,95 @@ fn config_sets(status: &Status, key: &str) -> bool {
 
 /// What a power source applies: a scenario, nothing, or the config's own
 /// modes, which only the config changes.
-fn source_row<'a>(
+fn source_pick<'a>(
     source: &'static str,
     label: &'a str,
     picked: &str,
     scenarios: &[String],
 ) -> Element<'a, Message> {
-    let choice = |name: String, value: String, chosen: bool| -> Element<'a, Message> {
-        button(text(name).size(13).width(Length::Fill).center())
-            .on_press_maybe((!chosen).then(|| Message::SourceScenario(source, value)))
-            .padding([4, 4])
-            .width(Length::Fill)
-            .style(theme::segment(chosen))
-            .into()
+    let options: Vec<Choice> = std::iter::once(Choice::new("Nothing", ""))
+        .chain(
+            scenarios
+                .iter()
+                .map(|scenario| Choice::new(&capitalize(scenario), scenario)),
+        )
+        .collect();
+    // The config's own modes: shown, not to pick.
+    let shown = match picked {
+        "*" => Choice::new("Own modes", "*"),
+        _ => options
+            .iter()
+            .find(|choice| choice.value == picked)
+            .cloned()
+            .unwrap_or_else(|| options[0].clone()),
     };
-    let mut choices = row![text(label).size(13).width(84)]
+    labelled(
+        label.to_owned(),
+        pick(options, shown, move |scenario| {
+            Message::SourceScenario(source, scenario)
+        }),
+    )
+}
+
+/// A pick list's choice: what it shows, and what it stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Choice {
+    label: String,
+    value: String,
+}
+
+impl Choice {
+    fn new(label: &str, value: &str) -> Self {
+        Self {
+            label: label.to_owned(),
+            value: value.to_owned(),
+        }
+    }
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+fn pick<'a>(
+    options: Vec<Choice>,
+    shown: Choice,
+    on: impl Fn(String) -> Message + 'a,
+) -> Element<'a, Message> {
+    pick_list(options, Some(shown), move |choice: Choice| on(choice.value))
+        .text_size(13)
+        .padding([4, 8])
+        .width(Length::Fill)
+        .style(theme::pick)
+        .menu_style(theme::menu)
+        .into()
+}
+
+/// A muted label over what it names.
+fn labelled<'a>(label: String, what: Element<'a, Message>) -> Element<'a, Message> {
+    column![text(label).size(12).style(theme::muted), what]
         .spacing(4)
-        .align_y(Alignment::Center);
-    choices = choices.push(choice("Nothing".into(), String::new(), picked.is_empty()));
-    for scenario in scenarios {
-        choices = choices.push(choice(
-            capitalize(scenario),
-            scenario.clone(),
-            scenario == picked,
-        ));
+        .width(Length::Fill)
+        .into()
+}
+
+/// In rows of `across`, each as wide.
+fn cells<'a>(cells: Vec<Element<'a, Message>>, across: usize) -> Element<'a, Message> {
+    let mut rows = column![].spacing(8);
+    let mut cells = cells.into_iter().peekable();
+    while cells.peek().is_some() {
+        let mut line = row![].spacing(8);
+        for _ in 0..across {
+            line = match cells.next() {
+                Some(cell) => line.push(cell),
+                None => line.push(space().width(Length::Fill)),
+            };
+        }
+        rows = rows.push(line);
     }
-    if picked == "*" {
-        choices = choices.push(
-            button(text("Own modes").size(13).width(Length::Fill).center())
-                .padding([4, 4])
-                .width(Length::Fill)
-                .style(theme::segment(true)),
-        );
-    }
-    choices.into()
+    rows.into()
 }
 
 /// The keyboard light's profiles: those saved in the window, and the
@@ -1283,27 +1333,27 @@ pub fn keyboard_profiles(status: &Status) -> (Vec<String>, Vec<String>) {
         .partition(|name| saved.contains(name))
 }
 
-/// Keyboard light profiles to pick, five a row, every button as wide.
-fn profile_grid<'a>(current: &str, names: &[String]) -> Element<'a, Message> {
-    const ACROSS: usize = 5;
-    let rows = names.chunks(ACROSS).map(|names| {
-        let mut buttons = row![].spacing(6);
-        for name in names {
+/// Choices in rows of `across`, every button as wide; the chosen one is
+/// filled and does nothing.
+fn grid<'a>(
+    current: &str,
+    names: &[String],
+    across: usize,
+    pick: fn(String) -> Message,
+) -> Element<'a, Message> {
+    let buttons = names
+        .iter()
+        .map(|name| {
             let chosen = name == current;
-            buttons = buttons.push(
-                button(text(capitalize(name)).width(Length::Fill).center())
-                    .on_press_maybe((!chosen).then(|| Message::KeyboardProfile(name.clone())))
-                    .padding([8, 4])
-                    .width(Length::Fill)
-                    .style(theme::segment(chosen)),
-            );
-        }
-        for _ in names.len()..ACROSS {
-            buttons = buttons.push(space().width(Length::Fill));
-        }
-        buttons.into()
-    });
-    column(rows).spacing(6).into()
+            button(text(capitalize(name)).width(Length::Fill).center())
+                .on_press_maybe((!chosen).then(|| pick(name.clone())))
+                .padding([8, 4])
+                .width(Length::Fill)
+                .style(theme::segment(chosen))
+                .into()
+        })
+        .collect();
+    cells(buttons, across)
 }
 
 /// One of a row of choices; the chosen one is filled and does nothing.

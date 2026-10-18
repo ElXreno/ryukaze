@@ -997,7 +997,7 @@ impl Editor {
         } else {
             ""
         };
-        let header = row![
+        let title = row![
             text("Keyboard light").size(20),
             space().width(8),
             text("Profile").size(13).style(theme::muted),
@@ -1007,7 +1007,12 @@ impl Editor {
                 .size(13)
                 .width(180),
             text(note).size(12).style(theme::muted),
-            space::horizontal(),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .wrap()
+        .vertical_spacing(6);
+        let actions = row![
             button(text("Save").size(13))
                 .on_press_maybe(saving)
                 .padding([4, 10])
@@ -1019,8 +1024,15 @@ impl Editor {
             small("Copy as Nix", Msg::Copy),
             small("Done", Msg::Done),
         ]
-        .spacing(8)
-        .align_y(Alignment::Center);
+        .spacing(8);
+        // The buttons on a line of their own in a narrow window.
+        let header: Element<'a, Msg> = if width >= 1000.0 {
+            row![title, space::horizontal(), actions]
+                .align_y(Alignment::Center)
+                .into()
+        } else {
+            column![title, actions].spacing(8).into()
+        };
 
         // The profiles there are, to open one instead.
         let chip = |profile: &String| -> Element<'a, Msg> {
