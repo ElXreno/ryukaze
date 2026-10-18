@@ -205,6 +205,7 @@ keys = { wasd = "#ff0000", arrows = "#ffffff" }
 name = "breathe"
 effect = "breathe"
 color = "#ff6000"
+fade_to = "#0040ff"
 period_ms = 4000
 
 [[keyboard.profiles]]
@@ -218,6 +219,22 @@ effect = "reactive"
 color = "#301000"
 flash = "#ffffff"
 flash_ms = 500
+
+# Zones: keys with an effect of their own beside the profile's.
+[[keyboard.profiles]]
+name = "split"
+color = "#ff6000"
+
+[[keyboard.profiles.zones]]
+keys = ["numpad"]
+effect = "breathe"
+color = "#0040ff"
+
+[[keyboard.profiles.zones]]
+keys = ["letters"]
+effect = "wave"
+colors = ["#ff0000", "#0000ff"]
+origin = "left"
 
 # The advanced fan mode, below. These are the defaults.
 [fans]
@@ -298,19 +315,29 @@ its modes, and the one `NextKeyboardProfile` or `SetKeyboardProfile`
 picked until the scenario changes. A profile's effect is one of:
 
 - `static`: the keys still in `color`;
-- `breathe`: `color` fading out and back, a breath every `period_ms`;
-- `cycle`: every key through the rainbow together, a round every
-  `period_ms`;
-- `wave`: the rainbow as a wave out of the middle of the board;
+- `breathe`: `color` fading to `fade_to`, black unless told, and back, a
+  breath every `period_ms`;
+- `cycle`: every key through `colors` together, the rainbow unless told
+  (2 to 8 of them), a round every `period_ms`;
+- `wave`: `colors` as a wave across the board, out of its `origin`
+  (`middle`, the default, `left`, `right`, `top` or `bottom`) or, with
+  `direction = "in"`, into it; `wavelength` is how wide a round of the
+  colours lies, 1 to 100 percent of the board (25 unless told);
 - `reactive`: the keys still in `color`, each flashing `flash` for
   `flash_ms` when pressed.
 
-The effects are the controller's own: ryukazed sends one, and the
-controller runs it by itself, flashes included, so the computer has no
+A profile's `zones` give keys an effect of their own beside its own: each
+zone a list of `keys`, by name or group, and an effect with what it takes,
+a later zone over an earlier one. There may be eight; the controller holds
+nine effects at once. Still colours go in `keys` instead.
+
+The effects are the controller's own: ryukazed sends them, and the
+controller runs them by itself, flashes included, so the computer has no
 part in them and the daemon never sees a key press. `period_ms` goes from
-2000 to 60000, `flash_ms` from 100 to 5000. The keys a profile gives
-colours of their own stay still over any effect, and so does the power
-button, which the effects pass by, in `color`.
+2000 to 60000, and with more than six colours from 330 a colour;
+`flash_ms` goes from 100 to 5000. The keys a profile gives colours of
+their own stay still over any effect, and so does the power button, which
+the effects pass by, in `color`.
 
 With `numpad_follows_numlock` the numpad goes dark while NumLock is off,
 NumLock itself aside. ryukazed reads the laptop keyboard's events for it

@@ -1672,11 +1672,17 @@ mod tests {
             effect: Effect::Static,
             color: Some(hex.parse().unwrap()),
             keys: Vec::new(),
+            zones: Vec::new(),
         };
         let wave = Lighting {
-            effect: Effect::Wave { period_ms: 3000 },
+            effect: Effect::Wave {
+                period_ms: 3000,
+                colors: keyboard::RAINBOW.to_vec(),
+                wave: keyboard::Wave::default(),
+            },
             color: None,
             keys: Vec::new(),
+            zones: Vec::new(),
         };
         let profiles = vec![
             ("orange".to_owned(), still("#ff6000")),

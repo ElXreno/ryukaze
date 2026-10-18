@@ -160,40 +160,115 @@ fn patiently(mut send: impl FnMut() -> io::Result<()>) -> io::Result<()> {
 
 /// What the controller does with the keys that have no colour of their own.
 /// All but `Static` are its own effects, which it runs by itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     /// Still, in the colour.
     Static,
-    /// The colour fading out and back.
-    Breathe { period_ms: u32 },
-    /// All of them through the rainbow together.
-    Cycle { period_ms: u32 },
-    /// The rainbow, as a wave out of the middle.
-    Wave { period_ms: u32 },
+    /// The colour fading to `fade_to`, black to breathe out, and back.
+    Breathe { period_ms: u32, fade_to: Color },
+    /// All of them through `colors` together, and round to the first.
+    Cycle { period_ms: u32, colors: Vec<Color> },
+    /// `colors` as a wave across the board.
+    Wave {
+        period_ms: u32,
+        colors: Vec<Color>,
+        wave: Wave,
+    },
     /// Still in the colour, a key flashing `flash` when pressed: the
     /// controller sees the presses, the computer has no part in it.
     Reactive { flash: Color, flash_ms: u32 },
 }
 
-/// The shortest period an effect takes: a full swing of a channel is at
-/// most 127 steps of 1/16 per tick, and the rainbow has six of them.
+/// Where a wave comes from, and which way it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wave {
+    pub origin: Origin,
+    /// Into the origin rather than out of it.
+    pub inward: bool,
+    /// How wide a round of the colours lies across the keys, in percent.
+    pub wavelength: u8,
+}
+
+impl Default for Wave {
+    fn default() -> Self {
+        Self {
+            origin: Origin::Middle,
+            inward: false,
+            wavelength: 25,
+        }
+    }
+}
+
+/// A wave's origin: out of the middle it spreads both ways, from an edge
+/// it runs straight across or down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Middle,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// The colours a cycle or a wave goes through unless told others.
+pub const RAINBOW: [Color; 6] = [
+    Color([255, 0, 0]),
+    Color([255, 255, 0]),
+    Color([0, 255, 0]),
+    Color([0, 255, 255]),
+    Color([0, 0, 255]),
+    Color([255, 0, 255]),
+];
+
+/// How long a breath or a round of the colours may take. The shortest
+/// also depends on how many colours there are: see `shortest_period_ms`.
 pub const PERIODS_MS: std::ops::RangeInclusive<u32> = 2000..=60000;
+
+/// How many colours a cycle or a wave goes through.
+pub const COLORS: std::ops::RangeInclusive<usize> = 2..=8;
+
+/// How wide a wave may be, in percent of the board.
+pub const WAVELENGTHS: std::ops::RangeInclusive<u8> = 1..=100;
 
 /// How long a key's flash lasts.
 pub const FLASHES_MS: std::ops::RangeInclusive<u32> = 100..=5000;
+
+/// How many zones a profile may have: the controller holds nine effects,
+/// and the profile's own is one.
+pub const ZONES: usize = 8;
+
+/// The shortest round through `colors` colours: going from one to the
+/// next, a channel moves at most 127/16 a tick, so a full swing takes 33
+/// ticks of 10 ms.
+pub fn shortest_period_ms(colors: usize) -> u32 {
+    (colors as u32 * 33 * TICK_MS).max(*PERIODS_MS.start())
+}
+
+/// Part of the board with an effect of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Zone {
+    pub keys: Vec<u8>,
+    /// Any but `Static`: still keys go in the profile's `keys`.
+    pub effect: Effect,
+    /// As a profile's: breathing, or between flashes.
+    pub color: Option<Color>,
+}
 
 /// A keyboard's worth of light, as a profile has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lighting {
     pub effect: Effect,
     /// The keys without one of their own: still, breathing, or between
-    /// flashes. Cycles and waves have their own colours.
+    /// flashes; with a cycle or a wave, the power button's.
     pub color: Option<Color>,
-    /// Keys with their own colours, still whatever the effect.
+    /// Keys with their own colours, still whatever the effects.
     pub keys: Vec<(Vec<u8>, Color)>,
+    /// Parts of the board with effects of their own, a later one over an
+    /// earlier.
+    pub zones: Vec<Zone>,
 }
 
-/// What goes to the controller: an effect's packets, then still colours.
+/// What goes to the controller: the effects' packets, then still colours.
 #[derive(Debug, Default, PartialEq)]
 struct Plan {
     effect: Option<Vec<[u8; REPORT_LEN]>>,
@@ -206,12 +281,17 @@ const POWER: u8 = 0x66;
 fn plan(lighting: Option<&Lighting>, numpad_dark: bool) -> Plan {
     let mut plan = match lighting {
         None => Plan::default(),
-        Some(lighting) if lighting.effect == Effect::Static => Plan {
+        Some(lighting) if lighting.effect == Effect::Static && lighting.zones.is_empty() => Plan {
             effect: None,
             still: paint(lighting.color, &lighting.keys),
         },
+        // Still with zones: the still colour goes in as an effect that
+        // holds it, so the zones can run beside it.
         Some(lighting) => {
-            let mut packets = vec![effect_packet(lighting)];
+            let mut packets = vec![effect_packet(0, &lighting.effect, lighting.color)];
+            for (i, zone) in lighting.zones.iter().enumerate() {
+                packets.push(effect_packet(i as u8 + 1, &zone.effect, zone.color));
+            }
             packets.extend(region_packets(lighting));
             let mut still = paint(None, &lighting.keys);
             if let Some(color) = lighting.color
@@ -239,62 +319,52 @@ fn plan(lighting: Option<&Lighting>, numpad_dark: bool) -> Plan {
 /// The effects' time unit.
 const TICK_MS: u32 = 10;
 
-const RAINBOW: [[u8; 3]; 7] = [
-    [255, 0, 0],
-    [255, 255, 0],
-    [0, 255, 0],
-    [0, 255, 255],
-    [0, 0, 255],
-    [255, 0, 255],
-    [255, 0, 0],
-];
-
-/// Where waves start, the middle of the board in the controller's units
-/// (0x105c across, 0x040d down), and how wide they are.
-const MIDDLE: (u16, u16) = (0x082e, 0x0206);
-const WAVELENGTH: u16 = 0x0111;
+/// Wave origins in the controller's units: 0x105c across, 0x040d down.
+const ACROSS: u16 = 0x105c;
+const DOWN: u16 = 0x040d;
 
 /// One step of an effect: each channel's change per tick, in 1/16, and
 /// how many ticks it lasts.
 type Step = ([i8; 3], u16);
 
+/// The controller holds 16 steps an effect.
+const STEPS: usize = 16;
+
 fn ticks(ms: u32) -> u16 {
     (ms / TICK_MS).clamp(1, u16::MAX.into()) as u16
 }
 
-/// Effect 0, which every key without a colour of its own follows: a
-/// packet `0b 00`, then up to 16 steps of `[n] 00 [r] [g] [b] 00 [ticks]`
-/// (n the effect's number first, then the step's), the start colour at
-/// 0x84 in 1/16, the wave at 0x8c, the steps' count at 0x96 and their
-/// length at 0x98.
-fn effect_packet(lighting: &Lighting) -> [u8; REPORT_LEN] {
-    let color = lighting.color.unwrap_or(Color::OFF).0;
-    let rainbow = |period_ms: u32| -> Vec<Step> {
-        let leg = ticks(period_ms / 6);
-        RAINBOW
-            .windows(2)
-            .flat_map(|pair| ramp(pair[0], pair[1], leg))
-            .collect()
-    };
-    let (start, steps, wave) = match lighting.effect {
-        Effect::Breathe { period_ms } => {
+/// Effect `id`: a packet `0b 00`, then up to 16 steps of `[n] 00 [r] [g]
+/// [b] 00 [ticks]` (n the effect's number first, then the step's), the
+/// start colour at 0x84 in 1/16, the wave at 0x8c, the steps' count at
+/// 0x96 and their length at 0x98, which the controller runs round and
+/// round, from the start colour each time.
+fn effect_packet(id: u8, effect: &Effect, color: Option<Color>) -> [u8; REPORT_LEN] {
+    let color = color.unwrap_or(Color::OFF).0;
+    let (start, steps, wave) = match effect {
+        Effect::Breathe { period_ms, fade_to } => {
             let half = ticks(period_ms / 2);
-            let mut steps = ramp(color, [0; 3], half);
-            steps.extend(ramp([0; 3], color, half));
-            (color, steps, false)
+            let mut steps = ramp(color, fade_to.0, half);
+            steps.extend(ramp(fade_to.0, color, half));
+            (color, steps, None)
         }
-        Effect::Cycle { period_ms } => (RAINBOW[0], rainbow(period_ms), false),
-        Effect::Wave { period_ms } => (RAINBOW[0], rainbow(period_ms), true),
-        // Still between flashes: one long step that changes nothing.
-        Effect::Static | Effect::Reactive { .. } => (color, vec![([0; 3], 100)], false),
+        Effect::Cycle { period_ms, colors } => (colors[0].0, round(colors, *period_ms), None),
+        Effect::Wave {
+            period_ms,
+            colors,
+            wave,
+        } => (colors[0].0, round(colors, *period_ms), Some(*wave)),
+        // Still, or still between flashes: one long step that changes
+        // nothing.
+        Effect::Static | Effect::Reactive { .. } => (color, vec![([0; 3], 100)], None),
     };
-    debug_assert!(steps.len() <= 16);
+    debug_assert!(steps.len() <= STEPS);
 
     let mut packet = [0; REPORT_LEN];
     packet[0] = 0x0b;
     for (i, &([r, g, b], length)) in steps.iter().enumerate() {
         let at = 2 + 8 * i;
-        packet[at] = i as u8;
+        packet[at] = if i == 0 { id } else { i as u8 };
         packet[at + 2..at + 5].copy_from_slice(&[r as u8, g as u8, b as u8]);
         packet[at + 6..at + 8].copy_from_slice(&length.to_le_bytes());
     }
@@ -303,16 +373,23 @@ fn effect_packet(lighting: &Lighting) -> [u8; REPORT_LEN] {
         packet[at..at + 2].copy_from_slice(&(u16::from(value) << 4).to_le_bytes());
     }
     packet[0x8a] = 0xff;
-    if wave {
-        let (x, y) = MIDDLE;
+    if let Some(wave) = wave {
+        let (x, y, across, down) = match wave.origin {
+            Origin::Middle => (ACROSS / 2, DOWN / 2, 1, 1),
+            Origin::Left => (0, DOWN / 2, 1, 0),
+            Origin::Right => (ACROSS, DOWN / 2, 1, 0),
+            Origin::Top => (ACROSS / 2, 0, 0, 1),
+            Origin::Bottom => (ACROSS / 2, DOWN, 0, 1),
+        };
         packet[0x8c..0x8e].copy_from_slice(&x.to_le_bytes());
         packet[0x8e..0x90].copy_from_slice(&y.to_le_bytes());
-        // Spreading across and down.
-        packet[0x90] = 1;
-        packet[0x92] = 1;
-        packet[0x94..0x96].copy_from_slice(&WAVELENGTH.to_le_bytes());
-        // Out of the middle; 0 runs into it.
-        packet[0x9a] = 1;
+        packet[0x90] = across;
+        packet[0x92] = down;
+        // 31 to 1001, as the vendor's app had it.
+        let wavelength = (31 + u32::from(wave.wavelength) * 970 / 100) as u16;
+        packet[0x94..0x96].copy_from_slice(&wavelength.to_le_bytes());
+        // 1 runs out of the origin, 0 into it.
+        packet[0x9a] = u8::from(!wave.inward);
     }
     packet[0x96] = steps.len() as u8;
     let length: u16 = steps.iter().map(|&(_, length)| length).sum();
@@ -320,9 +397,54 @@ fn effect_packet(lighting: &Lighting) -> [u8; REPORT_LEN] {
     packet
 }
 
+/// Through `colors` and back to the first in `period_ms`: exact ramps if
+/// they fit in the steps there are. Or else one step a colour, each aimed
+/// from where the last one really ended so the error doesn't pile up, and
+/// a short last one back onto the first colour, where the next round
+/// starts.
+fn round(colors: &[Color], period_ms: u32) -> Vec<Step> {
+    let leg = ticks(period_ms / colors.len() as u32);
+    let stops: Vec<[u8; 3]> = colors.iter().chain(&colors[..1]).map(|c| c.0).collect();
+    let exact: Vec<Step> = stops
+        .windows(2)
+        .flat_map(|pair| ramp(pair[0], pair[1], leg))
+        .collect();
+    if exact.len() <= STEPS {
+        return exact;
+    }
+    let start = stops[0].map(|value| i32::from(value) * 16);
+    let mut at = start;
+    let mut steps: Vec<Step> = stops[1..]
+        .iter()
+        .map(|stop| {
+            let rates = std::array::from_fn(|c| {
+                let change = i32::from(stop[c]) * 16 - at[c];
+                (change as f32 / f32::from(leg))
+                    .round()
+                    .clamp(-127.0, 127.0) as i32
+            });
+            for c in 0..3 {
+                at[c] += rates[c] * i32::from(leg);
+            }
+            (rates.map(|rate| rate as i8), leg)
+        })
+        .collect();
+    let off: [i32; 3] = std::array::from_fn(|c| start[c] - at[c]);
+    let length = off
+        .iter()
+        .map(|off| off.unsigned_abs().div_ceil(127))
+        .max()
+        .unwrap_or(0);
+    if length > 0 {
+        let rates = off.map(|off| (off as f32 / length as f32).round() as i8);
+        steps.push((rates, length as u16));
+    }
+    steps
+}
+
 /// A straight change from one colour to another over `length` ticks,
 /// exact: each channel moves at r or r + 1 sixteenths a tick, the faster
-/// first, so it ends where it should and the effect doesn't drift.
+/// first, so it ends where it should.
 fn ramp(from: [u8; 3], to: [u8; 3], length: u16) -> Vec<Step> {
     let length = i32::from(length);
     // Per channel: the slower rate, and the ticks at one more.
@@ -367,15 +489,19 @@ fn regions() -> [(u8, Vec<u8>); 4] {
     ]
 }
 
-/// Every key on effect 0, a packet a region: `0e 00 [region] 00`, then 42
-/// slots of `[colour] [flash colour] [flash ticks] [effect] [mode] 00
-/// [key]` (mode 0 follows the effect, 8 flashes on presses), and `08 39`
-/// at the end.
+/// Every key on its effect, the profile's (0) or its zone's, a packet a
+/// region: `0e 00 [region] 00`, then 42 slots of `[colour] [flash colour]
+/// [flash ticks] [effect] [mode] 00 [key]` (mode 0 follows the effect, 8
+/// flashes on presses), and `08 39` at the end.
 fn region_packets(lighting: &Lighting) -> Vec<[u8; REPORT_LEN]> {
-    let color = lighting.color.unwrap_or(Color::OFF).0;
-    let (mode, flash, flash_ticks) = match lighting.effect {
-        Effect::Reactive { flash, flash_ms } => (8, flash.0, ticks(flash_ms)),
-        _ => (0, [0; 3], 0),
+    let slot = |id: u8, effect: &Effect, color: Option<Color>, key: u8| -> [u8; 12] {
+        let [r, g, b] = color.unwrap_or(Color::OFF).0;
+        let (mode, [fr, fg, fb], flash_ticks) = match effect {
+            Effect::Reactive { flash, flash_ms } => (8, flash.0, ticks(*flash_ms)),
+            _ => (0, [0; 3], 0),
+        };
+        let [ticks_low, ticks_high] = flash_ticks.to_le_bytes();
+        [r, g, b, fr, fg, fb, ticks_low, ticks_high, id, mode, 0, key]
     };
     regions()
         .into_iter()
@@ -383,11 +509,17 @@ fn region_packets(lighting: &Lighting) -> Vec<[u8; REPORT_LEN]> {
             let mut packet = [0; REPORT_LEN];
             packet[..4].copy_from_slice(&[0x0e, 0x00, region, 0x00]);
             let (slots, _) = packet[4..4 + 42 * 12].as_chunks_mut::<12>();
-            for (slot, key) in slots.iter_mut().zip(keys) {
-                let [ticks_low, ticks_high] = flash_ticks.to_le_bytes();
-                let [r, g, b] = color;
-                let [fr, fg, fb] = flash;
-                *slot = [r, g, b, fr, fg, fb, ticks_low, ticks_high, 0, mode, 0, key];
+            for (place, key) in slots.iter_mut().zip(keys) {
+                let zone = lighting
+                    .zones
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, zone)| zone.keys.contains(&key));
+                *place = match zone {
+                    Some((i, zone)) => slot(i as u8 + 1, &zone.effect, zone.color, key),
+                    None => slot(0, &lighting.effect, lighting.color, key),
+                };
             }
             packet[REPORT_LEN - 2..].copy_from_slice(&[0x08, 0x39]);
             packet
@@ -615,12 +747,13 @@ mod tests {
             .sum()
     }
 
-    /// The steps an effect packet holds, checking they're numbered in turn.
-    fn steps(packet: &[u8; REPORT_LEN]) -> Vec<Step> {
+    /// The steps effect `id`'s packet holds, checking they're numbered:
+    /// the effect's number first, then the steps'.
+    fn steps(packet: &[u8; REPORT_LEN], id: u8) -> Vec<Step> {
         (0..usize::from(packet[0x96]))
             .map(|i| {
                 let at = 2 + 8 * i;
-                assert_eq!(packet[at], i as u8);
+                assert_eq!(packet[at], if i == 0 { id } else { i as u8 });
                 let rates = [packet[at + 2], packet[at + 3], packet[at + 4]].map(|r| r as i8);
                 (rates, u16::from_le_bytes([packet[at + 6], packet[at + 7]]))
             })
@@ -681,42 +814,138 @@ mod tests {
             effect,
             color,
             keys: Vec::new(),
+            zones: Vec::new(),
         }
     }
 
     const ORANGE: Color = Color([0xff, 0x60, 0x00]);
+    const BLUE: Color = Color([0x00, 0x40, 0xff]);
+
+    fn breathe(period_ms: u32) -> Effect {
+        Effect::Breathe {
+            period_ms,
+            fade_to: Color::OFF,
+        }
+    }
+
+    fn rainbow_wave(period_ms: u32, wave: Wave) -> Effect {
+        Effect::Wave {
+            period_ms,
+            colors: RAINBOW.to_vec(),
+            wave,
+        }
+    }
 
     #[test]
     fn breathes_out_and_back_in_its_period() {
-        let packet = effect_packet(&lighting(Effect::Breathe { period_ms: 4000 }, Some(ORANGE)));
+        let packet = effect_packet(0, &breathe(4000), Some(ORANGE));
         assert_eq!(&packet[..2], &[0x0b, 0x00]);
         // The start colour in 1/16.
         assert_eq!(&packet[0x84..0x8a], &[0xf0, 0x0f, 0x00, 0x06, 0x00, 0x00]);
         assert_eq!(packet[0x8a], 0xff);
         // 400 ticks of 10 ms; out and back, so nowhere in the end.
         assert_eq!(u16::from_le_bytes([packet[0x98], packet[0x99]]), 400);
-        let steps = steps(&packet);
-        assert!((0..3).all(|channel| moved(&steps, channel) == 0));
+        let breath = steps(&packet, 0);
+        assert!((0..3).all(|channel| moved(&breath, channel) == 0));
         // All keys alike: no wave.
         assert_eq!(&packet[0x8c..0x96], &[0; 10]);
         assert_eq!(packet[0x9a], 0);
+
+        // Between two colours: out to blue at half time.
+        let two = Effect::Breathe {
+            period_ms: 4000,
+            fade_to: BLUE,
+        };
+        let packet = effect_packet(0, &two, Some(ORANGE));
+        let steps = steps(&packet, 0);
+        let half: Vec<Step> = {
+            let mut at = 0;
+            steps
+                .iter()
+                .copied()
+                .take_while(|&(_, length)| {
+                    at += length;
+                    at <= 200
+                })
+                .collect()
+        };
+        for channel in 0..3 {
+            let change = (i32::from(BLUE.0[channel]) - i32::from(ORANGE.0[channel])) * 16;
+            assert_eq!(moved(&half, channel), change);
+            assert_eq!(moved(&steps, channel), 0);
+        }
     }
 
     #[test]
-    fn the_rainbow_goes_round_and_waves_out_of_the_middle() {
-        let cycle = effect_packet(&lighting(Effect::Cycle { period_ms: 6000 }, None));
-        assert_eq!(cycle[0x96], 12);
-        assert_eq!(u16::from_le_bytes([cycle[0x98], cycle[0x99]]), 600);
-        assert_eq!(&cycle[0x84..0x8a], &[0xf0, 0x0f, 0, 0, 0, 0]);
-        assert_eq!(&cycle[0x8c..0x96], &[0; 10]);
+    fn colours_go_round_exactly_or_near_enough() {
+        let cycle = |colors: &[Color], period_ms| Effect::Cycle {
+            period_ms,
+            colors: colors.to_vec(),
+        };
+        let rainbow = effect_packet(0, &cycle(&RAINBOW, 6000), None);
+        assert_eq!(rainbow[0x96], 12);
+        assert_eq!(u16::from_le_bytes([rainbow[0x98], rainbow[0x99]]), 600);
+        assert_eq!(&rainbow[0x84..0x8a], &[0xf0, 0x0f, 0, 0, 0, 0]);
+        assert_eq!(&rainbow[0x8c..0x96], &[0; 10]);
+        let steps_of = |packet: &[u8; REPORT_LEN]| steps(packet, 0);
+        assert!((0..3).all(|channel| moved(&steps_of(&rainbow), channel) == 0));
 
-        let wave = effect_packet(&lighting(Effect::Wave { period_ms: 3000 }, None));
-        assert_eq!(u16::from_le_bytes([wave[0x98], wave[0x99]]), 300);
+        // Two colours of all three channels: exact, in up to eight steps.
+        let two = effect_packet(0, &cycle(&[ORANGE, BLUE], 4000), None);
+        assert!(two[0x96] <= 8);
+        assert!((0..3).all(|channel| moved(&steps_of(&two), channel) == 0));
+
+        // Eight such: too many steps to be exact, so one a colour, close.
+        let eight: Vec<Color> = (0..8u8)
+            .map(|i| Color([i * 31 + 7, 255 - i * 29, i * 17 + 3]))
+            .collect();
+        let shortest = shortest_period_ms(8);
+        assert_eq!(shortest, 2640);
+        let packet = effect_packet(0, &cycle(&eight, shortest), None);
+        let steps = steps_of(&packet);
+        assert!((8..=9).contains(&steps.len()), "{steps:?}");
+        assert!(steps[..8].iter().all(|&(_, length)| length == 33));
+        // Back on the start colour, but for a sixteenth or so; a long
+        // round too, where rounding a colour's step errs most.
+        let slow = effect_packet(0, &cycle(&eight, 60000), None);
+        for steps in [steps, steps_of(&slow)] {
+            assert!(steps.len() <= 16);
+            for channel in 0..3 {
+                let off = moved(&steps, channel);
+                assert!(off.abs() <= 2, "{off}");
+            }
+        }
+        assert_eq!(shortest_period_ms(6), 2000);
+    }
+
+    #[test]
+    fn waves_from_where_they_are_told() {
+        let middle = effect_packet(0, &rainbow_wave(3000, Wave::default()), None);
+        assert_eq!(u16::from_le_bytes([middle[0x98], middle[0x99]]), 300);
         assert_eq!(
-            &wave[0x8c..0x96],
+            &middle[0x8c..0x96],
             &[0x2e, 0x08, 0x06, 0x02, 1, 0, 1, 0, 0x11, 0x01]
         );
-        assert_eq!(wave[0x9a], 1);
+        assert_eq!(middle[0x9a], 1);
+
+        // From the left edge into it, straight across, as wide as can be.
+        let left = Wave {
+            origin: Origin::Left,
+            inward: true,
+            wavelength: 100,
+        };
+        let packet = effect_packet(0, &rainbow_wave(3000, left), None);
+        assert_eq!(
+            &packet[0x8c..0x96],
+            &[0, 0, 0x06, 0x02, 1, 0, 0, 0, 0xe9, 0x03]
+        );
+        assert_eq!(packet[0x9a], 0);
+        let bottom = Wave {
+            origin: Origin::Bottom,
+            ..Wave::default()
+        };
+        let packet = effect_packet(0, &rainbow_wave(3000, bottom), None);
+        assert_eq!(&packet[0x8c..0x94], &[0x2e, 0x08, 0x0d, 0x04, 0, 0, 1, 0]);
     }
 
     #[test]
@@ -737,7 +966,7 @@ mod tests {
         );
         assert_eq!(&alphanum[REPORT_LEN - 2..], &[0x08, 0x39]);
 
-        let waving = region_packets(&lighting(Effect::Wave { period_ms: 3000 }, None));
+        let waving = region_packets(&lighting(rainbow_wave(3000, Wave::default()), None));
         assert_eq!(&waving[0][4..16], &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04]);
         // Every key there may be but Power, once.
         let mut keys: Vec<u8> = regions().into_iter().flat_map(|(_, keys)| keys).collect();
@@ -747,6 +976,44 @@ mod tests {
             .collect();
         all.sort_unstable();
         assert_eq!(keys, all);
+    }
+
+    #[test]
+    fn zones_run_effects_of_their_own() {
+        // Still orange, the numpad breathing blue, its 5 waving over that.
+        let breathing = Zone {
+            keys: named("numpad").unwrap(),
+            effect: breathe(3000),
+            color: Some(BLUE),
+        };
+        let waving = Zone {
+            keys: named("kp5").unwrap(),
+            effect: rainbow_wave(3000, Wave::default()),
+            color: None,
+        };
+        let split = Lighting {
+            zones: vec![breathing, waving],
+            ..lighting(Effect::Static, Some(ORANGE))
+        };
+        let plan = plan(Some(&split), false);
+        let packets = plan.effect.unwrap();
+        // Three effects, numbered in turn, then the four regions.
+        assert_eq!(packets.len(), 3 + 4);
+        for (id, packet) in packets[..3].iter().enumerate() {
+            assert_eq!(packet[0], 0x0b);
+            assert_eq!(packet[2], id as u8);
+        }
+        // Still orange: one step that holds it.
+        assert_eq!(packets[0][0x96], 1);
+        assert_eq!(&steps(&packets[0], 0), &[([0; 3], 100)]);
+        let numpad = &packets[3 + 3];
+        assert_eq!(numpad[2], 0x24);
+        let (slots, _) = numpad[4..4 + 42 * 12].as_chunks::<12>();
+        let effect_of = |key: u8| slots.iter().find(|slot| slot[11] == key).unwrap()[8];
+        assert_eq!(effect_of(0x40), 0, "F7");
+        assert_eq!(effect_of(0x59), 1, "numpad 1");
+        assert_eq!(effect_of(0x5d), 2, "numpad 5");
+        assert_eq!(plan.still, [(POWER, ORANGE)]);
     }
 
     #[test]
@@ -761,16 +1028,13 @@ mod tests {
         // A wave, WASD still over it.
         let wave = Lighting {
             keys: wasd.clone(),
-            ..lighting(Effect::Wave { period_ms: 3000 }, None)
+            ..lighting(rainbow_wave(3000, Wave::default()), None)
         };
         let waving = plan(Some(&wave), false);
         assert_eq!(waving.effect.as_ref().map(Vec::len), Some(5));
         assert_eq!(waving.still.len(), 4);
         // Breathing: Power, which no effect reaches, in the colour.
-        let breathing = plan(
-            Some(&lighting(Effect::Breathe { period_ms: 4000 }, Some(ORANGE))),
-            false,
-        );
+        let breathing = plan(Some(&lighting(breathe(4000), Some(ORANGE))), false);
         assert_eq!(breathing.still, [(POWER, ORANGE)]);
 
         // NumLock off: the numpad dark over all of it, but NumLock.
