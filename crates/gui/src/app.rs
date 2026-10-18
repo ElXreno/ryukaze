@@ -62,8 +62,10 @@ pub struct App {
     curve_draft: Option<Curve>,
     /// The settings went to the clipboard since the last change.
     copied: bool,
-    /// The keyboard light's editor, while it's open.
+    /// The keyboard light's editor: what it has, kept while it's closed
+    /// unsaved, and whether it's open.
     lights: Option<lights::Editor>,
+    editing_lights: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -104,7 +106,10 @@ pub enum Message {
     KeyboardProfile(String),
     /// Open the keyboard light's editor.
     EditLights,
+    /// The profile shown, in TOML, for the editor to start from.
+    LightsRead(Result<String, String>),
     Lights(lights::Msg),
+    LightsSaved(Result<(), String>),
 }
 
 impl App {
@@ -125,6 +130,7 @@ impl App {
             curve_draft: None,
             copied: false,
             lights: None,
+            editing_lights: false,
         };
         let connect = Task::perform(client::connect(session), Message::Connected);
         if hidden {
@@ -215,8 +221,10 @@ impl App {
                     self.charge_limit = None;
                     self.boost_marks = None;
                     self.curve_draft = None;
-                    // The keyboard back to its profile.
-                    if self.lights.take().is_some() {
+                    // The keyboard back to its profile, what was left
+                    // unsaved kept for the next time.
+                    if self.editing_lights {
+                        self.editing_lights = false;
                         return self.preview(String::new());
                     }
                 }
@@ -272,11 +280,46 @@ impl App {
             Message::KeyboardProfile(name) => {
                 self.call(move |client| async move { client.set_keyboard_profile(&name).await })
             }
+            // Back to what was left unsaved, or else from the profile shown.
             Message::EditLights => {
-                let editor = lights::Editor::new();
-                let profile = editor.preview();
-                self.lights = Some(editor);
-                self.preview(profile)
+                if let Some(editor) = &self.lights
+                    && editor.unsaved()
+                {
+                    self.editing_lights = true;
+                    return self.preview(editor.preview());
+                }
+                let shown = match &self.status {
+                    Some(Ok(status)) => status.keyboard_profile.clone(),
+                    _ => None,
+                };
+                match (shown, self.client.clone()) {
+                    (Some(name), Some(client)) => Task::perform(
+                        async move {
+                            client
+                                .read_keyboard_profile(&name)
+                                .await
+                                .map_err(client::describe)
+                        },
+                        Message::LightsRead,
+                    ),
+                    _ => self.update(Message::LightsRead(Err(String::new()))),
+                }
+            }
+            Message::LightsRead(read) => {
+                self.editing_lights = true;
+                match read.and_then(|profile| lights::Editor::from_toml(&profile)) {
+                    // What the keyboard shows already.
+                    Ok(editor) => {
+                        self.lights = Some(editor);
+                        Task::none()
+                    }
+                    Err(_) => {
+                        let editor = lights::Editor::new();
+                        let profile = editor.preview();
+                        self.lights = Some(editor);
+                        self.preview(profile)
+                    }
+                }
             }
             Message::Lights(msg) => {
                 let Some(editor) = &mut self.lights else {
@@ -285,12 +328,38 @@ impl App {
                 match editor.update(msg) {
                     lights::Outcome::Nothing => Task::none(),
                     lights::Outcome::Preview(profile) => self.preview(profile),
+                    lights::Outcome::Save(profile) => {
+                        let Some(client) = self.client.clone() else {
+                            return Task::none();
+                        };
+                        Task::perform(
+                            async move {
+                                client
+                                    .save_keyboard_profile(&profile)
+                                    .await
+                                    .map_err(client::describe)
+                            },
+                            Message::LightsSaved,
+                        )
+                    }
                     lights::Outcome::Copy(nix) => iced::clipboard::write(nix),
                     lights::Outcome::Done => {
-                        self.lights = None;
+                        self.editing_lights = false;
                         self.preview(String::new())
                     }
                 }
+            }
+            Message::LightsSaved(saved) => {
+                match saved {
+                    Ok(()) => {
+                        if let Some(editor) = &mut self.lights {
+                            editor.saved();
+                        }
+                        self.error = None;
+                    }
+                    Err(err) => self.error = Some(err),
+                }
+                self.refresh()
             }
             Message::AutoCoolerBoost(on) => {
                 self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
@@ -391,10 +460,17 @@ impl App {
         ]
         .align_y(Alignment::Center);
 
+        let max_width = columns as f32 * (COLUMN_MAX + GAP) - GAP;
         let body: Element<'_, Message> = match &self.status {
             None => text("Connecting…").style(theme::muted).into(),
             Some(Err(err)) => banner(err),
-            Some(Ok(_)) if let Some(editor) = &self.lights => editor.view().map(Message::Lights),
+            Some(Ok(_))
+                if self.editing_lights
+                    && let Some(editor) = &self.lights =>
+            {
+                let inside = (width - 2.0 * PAGE_PADDING).min(max_width);
+                editor.view(inside).map(Message::Lights)
+            }
             Some(Ok(status)) => self.sections(status, columns),
         };
 
@@ -402,7 +478,6 @@ impl App {
         if let Some(err) = &self.error {
             page = page.push(banner(err));
         }
-        let max_width = columns as f32 * (COLUMN_MAX + GAP) - GAP;
         scrollable(
             container(container(page).max_width(max_width))
                 .padding(PAGE_PADDING)
@@ -983,6 +1058,7 @@ mod tests {
             curve_draft: None,
             copied: false,
             lights: None,
+            editing_lights: false,
         }
     }
 

@@ -35,6 +35,8 @@ pub trait Ryukaze {
     fn set_keyboard_profile(&self, name: &str) -> zbus::Result<()>;
     fn next_keyboard_profile(&self) -> zbus::Result<String>;
     fn preview_keyboard_profile(&self, profile: &str) -> zbus::Result<()>;
+    fn read_keyboard_profile(&self, name: &str) -> zbus::Result<String>;
+    fn save_keyboard_profile(&self, profile: &str) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn modes_changed(&self, modes: Status) -> zbus::Result<()>;

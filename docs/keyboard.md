@@ -7,7 +7,7 @@ C7VG, ryukazed lights the keys in profiles (see the [config](config.md)):
 `NextKeyboardProfile` or `SetKeyboardProfile` picked until the scenario
 changes. The tray, the window, `ryukaze --next-keyboard-profile` and, with
 a hwdb entry, Fn+F9 pick them (see [using ryukaze](usage.md#the-fn-keys)).
-The window's editor makes new ones (see
+The window's editor changes them and makes new ones (see
 [using ryukaze](usage.md#the-window)).
 
 ## Effects
