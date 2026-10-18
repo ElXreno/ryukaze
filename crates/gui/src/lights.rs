@@ -834,13 +834,20 @@ impl Editor {
         let saving = (!self.name.trim().is_empty()).then_some(Msg::Save);
         let header = row![
             text("Keyboard light").size(20),
-            text_input("Name", &self.name)
+            space().width(8),
+            text("Profile").size(13).style(theme::muted),
+            text_input("a name to save it by", &self.name)
                 .on_input(Msg::Name)
                 .on_submit_maybe(saving.clone())
+                .size(13)
                 .width(180),
-            text(if self.unsaved { "Not saved" } else { "" })
-                .size(12)
-                .style(theme::muted),
+            text(if self.unsaved {
+                "changed, not saved"
+            } else {
+                ""
+            })
+            .size(12)
+            .style(theme::muted),
             space::horizontal(),
             button(text("Save").size(13))
                 .on_press_maybe(saving)
