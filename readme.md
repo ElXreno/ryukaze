@@ -185,19 +185,19 @@ sync = true
 # set at start, after sleep and when its controller comes back.
 [keyboard]
 # The one shown outside the scenarios with their own; the first if unset.
-profile = "orange"
+profile = "static"
 # The numpad dark while NumLock is off, but for NumLock itself.
 numpad_follows_numlock = true
 
 # A profile by scenario, shown while the EC is in its modes.
 [keyboard.scenarios]
-games = "rainbow"
+games = "wave"
 
 # What NextKeyboardProfile steps through, in this order. The effect is
 # static (the default), breathe, cycle, wave or reactive; keys and groups of
 # keys can have colours of their own, still whatever the effect.
 [[keyboard.profiles]]
-name = "orange"
+name = "static"
 color = "#ff6000"
 keys = { wasd = "#ff0000", arrows = "#ffffff" }
 
@@ -208,12 +208,12 @@ color = "#ff6000"
 period_ms = 4000
 
 [[keyboard.profiles]]
-name = "rainbow"
+name = "wave"
 effect = "wave"
 period_ms = 3000
 
 [[keyboard.profiles]]
-name = "typing"
+name = "reactive"
 effect = "reactive"
 color = "#301000"
 flash = "#ffffff"
@@ -315,8 +315,10 @@ button, which the effects pass by, in `color`.
 With `numpad_follows_numlock` the numpad goes dark while NumLock is off,
 NumLock itself aside. ryukazed reads the laptop keyboard's events for it
 with the kernel holding back all but its lights' changes (`EVIOCSMASK`),
-so no key press reaches the daemon this way either. When NumLock comes
-back on, the effect starts over.
+so no key press reaches the daemon this way either. Going dark leaves an
+effect running; coming back on starts it over on every key, a blink: the
+controller takes keys back into an effect only with the refresh, which
+restarts it.
 
 The colours go to the LEDs as they are, and they show light shades nearly
 white and blue strong: a `#fab387` peach on screen is about `#ff6000`

@@ -445,7 +445,17 @@ impl Service {
             return Ok(());
         }
         self.numlock = Some(on);
-        self.keyboard_back()
+        let Some(klc) = self.keyboard() else {
+            return Ok(());
+        };
+        // Back on, the numpad rejoins the effect: only the refresh that
+        // takes it does, and that starts every key's effect over.
+        if on {
+            self.light(&klc)
+        } else {
+            klc.darken_numpad()
+                .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
+        }
     }
 
     fn light(&self, klc: &Klc) -> fdo::Result<()> {

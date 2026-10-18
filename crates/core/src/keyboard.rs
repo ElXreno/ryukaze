@@ -101,6 +101,17 @@ impl Klc {
         &self.node
     }
 
+    /// The numpad dark but for NumLock, a still report over whatever runs:
+    /// an effect goes on undisturbed.
+    pub fn darken_numpad(&self) -> io::Result<()> {
+        let node = OpenOptions::new().read(true).write(true).open(&self.node)?;
+        let dark: Vec<(u8, Color)> = numpad_but_numlock().map(|key| (key, Color::OFF)).collect();
+        for report in reports(&dark) {
+            set_feature(&node, &report)?;
+        }
+        Ok(())
+    }
+
     /// The keys as `lighting` has them, or as they are without one; with
     /// `numpad_dark`, the numpad dark but for NumLock.
     pub fn show(&self, lighting: Option<&Lighting>, numpad_dark: bool) -> io::Result<()> {
