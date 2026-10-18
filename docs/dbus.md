@@ -24,7 +24,8 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `NextKeyboardProfile` | | shows the keyboard profile after the one shown, and names it: for a key binding |
 | `PreviewKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, shown until another is picked or the scenario changes; empty, the one picked again |
 | `ReadKeyboardProfile` | `s` | one of `keyboard_profiles` as the config writes it, in TOML (`s`): for an editor to start from |
-| `SaveKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, kept with the others (in place of the one of its name) until the daemon restarts, and shown until the scenario changes |
+| `SaveKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, kept with the others, in place of the one of its name, and on the disk (see [saved profiles](keyboard.md#saved-profiles)); shown until the scenario changes |
+| `DeleteKeyboardProfile` | `s` | one of `keyboard_saved_profiles` gone, the config's of its name back if there is one |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |

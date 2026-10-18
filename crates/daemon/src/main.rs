@@ -1,6 +1,7 @@
 //! ryukazed: the only process that touches the EC. Serves
 //! io.github.kontonkara.ryukaze on the system bus, or on the session bus
-//! with --session for development, and applies /etc/ryukaze/config.toml.
+//! with --session for development, and applies /etc/ryukaze/config.toml;
+//! keeps what's saved over D-Bus in its state directory.
 
 mod adaptive;
 mod boost;
@@ -8,6 +9,7 @@ mod config;
 mod numlock;
 mod power_profiles;
 mod profiles;
+mod saved;
 mod service;
 mod sleep;
 mod uevent;
@@ -38,12 +40,13 @@ use crate::{
 /// the modes, which the EC may change by itself (Fn+F8).
 const ADAPT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-const USAGE: &str = "usage: ryukazed [--session] [--sysfs <dir>] [--config <file>]";
+const USAGE: &str = "usage: ryukazed [--session] [--sysfs <dir>] [--config <file>] [--state <dir>]";
 
 struct Args {
     session: bool,
     sysfs: PathBuf,
     config: PathBuf,
+    state: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -51,6 +54,7 @@ fn parse_args() -> Result<Args> {
         session: false,
         sysfs: PathBuf::from("/sys"),
         config: PathBuf::from("/etc/ryukaze/config.toml"),
+        state: None,
     };
     let mut argv = std::env::args_os().skip(1);
     while let Some(arg) = argv.next() {
@@ -58,10 +62,32 @@ fn parse_args() -> Result<Args> {
             Some("--session") => args.session = true,
             Some("--sysfs") => args.sysfs = argv.next().context(USAGE)?.into(),
             Some("--config") => args.config = argv.next().context(USAGE)?.into(),
+            Some("--state") => args.state = Some(argv.next().context(USAGE)?.into()),
             _ => bail!("unknown argument {arg:?}\n{USAGE}"),
         }
     }
     Ok(args)
+}
+
+/// Where what's saved over D-Bus is kept: `--state`, or the one systemd made
+/// for the unit (its `StateDirectory=`), or /var/lib/ryukaze; on the
+/// session bus, the user's.
+fn state_dir(args: &Args) -> PathBuf {
+    if let Some(dir) = &args.state {
+        return dir.clone();
+    }
+    let env = |var: &str| std::env::var_os(var).filter(|value| !value.is_empty());
+    if args.session {
+        return env("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+            .unwrap_or_else(std::env::temp_dir)
+            .join("ryukaze");
+    }
+    // Several, colon-separated, when the unit asks for several.
+    env("STATE_DIRECTORY")
+        .and_then(|dirs| std::env::split_paths(&dirs).next())
+        .unwrap_or_else(|| PathBuf::from("/var/lib/ryukaze"))
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -106,6 +132,7 @@ async fn main() -> Result<()> {
         None
     };
     let mut service = Service::new(ec, fans, boost, scenarios);
+    service.keep_keyboard_profiles(saved::Store::new(&state_dir(&args)));
     if let Some(on) = numlock_now
         && let Err(err) = service.numlock(on)
     {

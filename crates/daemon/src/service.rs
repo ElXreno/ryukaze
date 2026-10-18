@@ -25,7 +25,7 @@ use crate::{
     adaptive::{self, Smoothed, Smoothing},
     boost::AutoBoost,
     config::{self, Profile, Scenario},
-    power_profiles,
+    power_profiles, saved,
 };
 
 pub struct Service {
@@ -47,12 +47,17 @@ pub struct Service {
     dgpu_seen: Option<(bool, Instant)>,
     /// Where its users are looked for.
     proc: PathBuf,
-    /// The keyboard's light profiles, in order: the config's, and those
-    /// saved over D-Bus since.
-    keyboard_profiles: Vec<config::KeyboardProfile>,
-    /// The saved ones, kept when the config is applied again.
+    /// The keyboard's light profiles in the config.
+    keyboard_config: Vec<config::KeyboardProfile>,
+    /// Those saved over D-Bus, kept on the disk, each over the config's of
+    /// its name.
     keyboard_saved: Vec<config::KeyboardProfile>,
-    /// The one shown outside the scenarios with one of their own.
+    /// Where they're kept; none in the tests.
+    keyboard_store: Option<saved::Store>,
+    /// The two together, in order: the config's, then the saved others.
+    keyboard_profiles: Vec<config::KeyboardProfile>,
+    /// The one the config names to show outside the scenarios with one of
+    /// their own.
     keyboard_default: Option<String>,
     /// (scenario, profile) pairs.
     keyboard_scenarios: Vec<(String, String)>,
@@ -230,8 +235,10 @@ impl Service {
             dgpu,
             dgpu_seen: None,
             proc: PathBuf::from("/proc"),
-            keyboard_profiles: Vec::new(),
+            keyboard_config: Vec::new(),
             keyboard_saved: Vec::new(),
+            keyboard_store: None,
+            keyboard_profiles: Vec::new(),
             keyboard_default: None,
             keyboard_scenarios: Vec::new(),
             keyboard_profile: None,
@@ -359,10 +366,18 @@ impl Service {
         Ok(Some(format!("shift mode {mode}")))
     }
 
+    /// The profiles saved before, read as the daemon starts, and where to
+    /// keep those saved from now on.
+    pub fn keep_keyboard_profiles(&mut self, store: saved::Store) {
+        self.keyboard_saved = store.load();
+        self.keyboard_store = Some(store);
+        self.merge_keyboard_profiles();
+    }
+
     /// From the config: the profiles, checked, the one shown outside the
     /// scenarios with their own (the first, if none is named), and theirs;
-    /// shown at once for `scenario`, the one the EC is in. Profiles saved
-    /// since the daemon started stay, over the config's of their names.
+    /// shown at once for `scenario`, the one the EC is in. The saved
+    /// profiles stay, over the config's of their names.
     pub fn configure_keyboard(
         &mut self,
         profiles: Vec<config::KeyboardProfile>,
@@ -370,11 +385,9 @@ impl Service {
         scenarios: Vec<(String, String)>,
         scenario: Option<&str>,
     ) -> fdo::Result<()> {
-        self.keyboard_default = default.or_else(|| profiles.first().map(|p| p.name.clone()));
-        self.keyboard_profiles = profiles;
-        for saved in self.keyboard_saved.clone() {
-            self.keep_keyboard_profile(saved);
-        }
+        self.keyboard_default = default;
+        self.keyboard_config = profiles;
+        self.merge_keyboard_profiles();
         self.keyboard_scenarios = scenarios;
         self.keyboard_profile = self.keyboard_profile_for(scenario);
         self.keyboard_preview = None;
@@ -430,18 +443,33 @@ impl Service {
                 .map(|(_, profile)| profile.clone())
         });
         own.or_else(|| self.keyboard_default.clone())
+            .or_else(|| self.keyboard_profiles.first().map(|p| p.name.clone()))
     }
 
-    /// In place of the one of its name, or after the others.
-    fn keep_keyboard_profile(&mut self, profile: config::KeyboardProfile) {
-        match self
-            .keyboard_profiles
-            .iter_mut()
-            .find(|known| known.name == profile.name)
-        {
-            Some(known) => *known = profile,
-            None => self.keyboard_profiles.push(profile),
+    /// The config's profiles with the saved ones, each in place of the
+    /// config's of its name or after them.
+    fn merge_keyboard_profiles(&mut self) {
+        let mut profiles = self.keyboard_config.clone();
+        for saved in &self.keyboard_saved {
+            match profiles.iter_mut().find(|known| known.name == saved.name) {
+                Some(known) => known.clone_from(saved),
+                None => profiles.push(saved.clone()),
+            }
         }
+        self.keyboard_profiles = profiles;
+    }
+
+    /// The saved profiles to the disk, if they have a place there.
+    fn store_keyboard_profiles(&self) -> fdo::Result<()> {
+        let Some(store) = &self.keyboard_store else {
+            return Ok(());
+        };
+        store.store(&self.keyboard_saved).map_err(|err| {
+            fdo::Error::IOError(format!(
+                "keyboard profiles: kept until ryukazed restarts, as {} can't be written: {err}",
+                store.path().display()
+            ))
+        })
     }
 
     fn find_keyboard_profile(&self, name: &str) -> fdo::Result<&config::KeyboardProfile> {
@@ -816,6 +844,12 @@ impl Service {
             fn_key: field("fn_key", ec.fn_key()),
             keyboard_profile: keyboard.and(self.keyboard_profile.clone()),
             keyboard_profiles: keyboard.and(self.keyboard_names()),
+            keyboard_saved_profiles: keyboard.map(|()| {
+                self.keyboard_saved
+                    .iter()
+                    .map(|profile| profile.name.clone())
+                    .collect()
+            }),
             usb_share: self
                 .usb_share
                 .as_ref()
@@ -1022,12 +1056,44 @@ impl Service {
             .iter_mut()
             .find(|saved| saved.name == name)
         {
-            Some(saved) => *saved = profile.clone(),
-            None => self.keyboard_saved.push(profile.clone()),
+            Some(saved) => *saved = profile,
+            None => self.keyboard_saved.push(profile),
         }
-        self.keep_keyboard_profile(profile);
+        self.merge_keyboard_profiles();
         info!("keyboard: {name} saved");
-        self.show_keyboard_profile(&name)
+        let stored = self.store_keyboard_profiles();
+        self.show_keyboard_profile(&name)?;
+        stored
+    }
+
+    /// A saved profile gone, from the disk too, and the config's of its
+    /// name back if there is one; the one shown, if it was that, the usual
+    /// one again.
+    pub fn delete_keyboard_profile(&mut self, name: &str) -> fdo::Result<()> {
+        let Some(at) = self
+            .keyboard_saved
+            .iter()
+            .position(|saved| saved.name == name)
+        else {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{name} is not a saved keyboard profile; the config's change in the config"
+            )));
+        };
+        self.keyboard_saved.remove(at);
+        self.merge_keyboard_profiles();
+        info!("keyboard: {name} deleted");
+        let stored = self.store_keyboard_profiles();
+        if self.keyboard_profile.as_deref() == Some(name)
+            && self
+                .keyboard_profiles
+                .iter()
+                .all(|known| known.name != name)
+        {
+            self.keyboard_profile = self.keyboard_profile_for(None);
+        }
+        self.poke.notify_one();
+        self.keyboard_back()?;
+        stored
     }
 
     /// Shows the keyboard profile after the one shown (the first, if none)
@@ -1861,12 +1927,18 @@ mod tests {
                 Err(fdo::Error::InvalidArgs(_))
             ));
         }
+        let state = tempfile::tempdir().unwrap();
+        service.keep_keyboard_profiles(saved::Store::new(state.path()));
         let _ = service.save_keyboard_profile(green);
         let _ = service.save_keyboard_profile("name = \"white\"\ncolor = \"#eeeeee\"\n");
         assert_eq!(shown(&service), "white");
         let names = ["orange", "rainbow", "white", "draft"];
         assert_eq!(service.status().keyboard_profiles.unwrap(), names);
-        let _ = service.configure_keyboard(profiles, None, Vec::new(), Some("balanced"));
+        assert_eq!(
+            service.status().keyboard_saved_profiles.unwrap(),
+            ["draft", "white"]
+        );
+        let _ = service.configure_keyboard(profiles.clone(), None, Vec::new(), Some("balanced"));
         assert_eq!(service.status().keyboard_profiles.unwrap(), names);
         assert!(
             service
@@ -1874,6 +1946,33 @@ mod tests {
                 .unwrap()
                 .contains("#eeeeee")
         );
+
+        // On the disk, for the next start.
+        let mut next = self::service(sysfs.path());
+        next.dev = service.dev.clone();
+        next.keep_keyboard_profiles(saved::Store::new(state.path()));
+        let _ = next.configure_keyboard(profiles, None, Vec::new(), Some("balanced"));
+        assert_eq!(next.status().keyboard_profiles.unwrap(), names);
+
+        // Deleted: the config's back in place of a saved one of its name,
+        // and the usual one shown for one gone.
+        assert!(matches!(
+            next.delete_keyboard_profile("orange"),
+            Err(fdo::Error::InvalidArgs(_))
+        ));
+        let _ = next.delete_keyboard_profile("white");
+        assert!(
+            next.read_keyboard_profile("white")
+                .unwrap()
+                .contains("#ffffff")
+        );
+        let _ = next.set_keyboard_profile("draft");
+        let _ = next.delete_keyboard_profile("draft");
+        assert_eq!(shown(&next), "orange");
+        assert_eq!(next.status().keyboard_saved_profiles.unwrap(), [""; 0]);
+        let mut again = self::service(sysfs.path());
+        again.keep_keyboard_profiles(saved::Store::new(state.path()));
+        assert!(again.keyboard_saved.is_empty());
     }
 
     #[test]

@@ -210,6 +210,8 @@ in
             BusName = "io.github.kontonkara.ryukaze";
             ExecStart = "${cfg.package}/bin/ryukazed";
             Restart = "on-failure";
+            # The keyboard light profiles saved in the window.
+            StateDirectory = "ryukaze";
 
             # Writes go to /sys, and to the keyboard backlight's hidraw node in
             # /dev; uevents come over netlink.

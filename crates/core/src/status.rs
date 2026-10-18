@@ -120,6 +120,11 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub keyboard_profiles: Option<Vec<String>>,
 
+    /// Those of them saved over D-Bus and kept on the disk, which
+    /// `DeleteKeyboardProfile` takes.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub keyboard_saved_profiles: Option<Vec<String>>,
+
     /// Where the panel hangs: `hybrid` (off the iGPU) or `discrete` (off
     /// the dGPU).
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]

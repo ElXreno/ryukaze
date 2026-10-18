@@ -58,6 +58,16 @@ Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
 Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
 (Ctrl, Shift, Alt, Win, Copilot, Fn) and `wasd`.
 
+## Saved profiles
+
+Profiles saved in the window's editor (`SaveKeyboardProfile`) are kept in
+`keyboard-profiles.toml` in ryukazed's state directory, /var/lib/ryukaze
+(`StateDirectory=` in its unit, or `--state`), as `[[profiles]]` written
+the way the config has them, and read back as it starts. They come after
+the config's, each in place of the config's of its name if there is one,
+until deleted there (`DeleteKeyboardProfile`), which brings the config's
+back.
+
 ## NumLock
 
 With `numpad_follows_numlock` the numpad goes dark while NumLock is off,
