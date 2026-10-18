@@ -51,6 +51,34 @@ on firmware checked (see the [hardware notes](docs/hardware.md)).
 The module doesn't install msi-ec: the driver has to be there and know
 your EC firmware.
 
+## On other distributions
+
+ryukaze needs systemd, the [msi-ec](https://github.com/BeardOverflow/msi-ec)
+driver for your EC firmware (often packaged for DKMS), and to build, Rust
+with cargo, a recent stable. In the tree:
+
+```sh
+make
+sudo make install USERS="$USER"
+sudo systemctl daemon-reload
+sudo systemctl reload dbus
+sudo systemctl enable --now ryukazed
+systemctl --user enable --now ryukaze ryukaze-osd
+```
+
+That's in /usr/local; `PREFIX=/usr` and `DESTDIR` are for packages, and
+`sudo make uninstall` takes it out again. `USERS` may change the EC, as
+everyone may read it. `ec_sys` loads with write support from the next
+boot, for the tachometers and the advanced fan mode (`sudo modprobe ec_sys`
+loads it now; where it's built into the kernel, it takes
+`ec_sys.write_support=1` on the kernel's command line).
+
+The window keeps what's changed in it, and `/etc/ryukaze/config.toml`
+(see the [config](docs/config.md)) is for what's to be set at every
+start. The tray icon and the card start with sessions that have
+`graphical-session.target`, as GNOME's and KDE's do; elsewhere, start
+`ryukaze --hidden` and `ryukaze --osd` at login.
+
 ## Documentation
 
 - [Using ryukaze](docs/usage.md): the window, the tray, the commands, the

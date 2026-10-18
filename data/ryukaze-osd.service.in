@@ -1,0 +1,13 @@
+# A card at the bottom of the screen whenever the modes change, a user
+# unit; it needs a compositor with the layer shell.
+[Unit]
+Description=ryukaze on-screen display
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=@bindir@/ryukaze --osd
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

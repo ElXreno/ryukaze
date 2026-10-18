@@ -1,0 +1,15 @@
+# The tray icon in graphical sessions, a user unit: it starts with the
+# session, hidden; a click or another start of ryukaze opens the window.
+[Unit]
+Description=ryukaze tray icon
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# No wait for the panel: the icon registers whenever a
+# StatusNotifierWatcher shows up.
+ExecStart=@bindir@/ryukaze --hidden
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

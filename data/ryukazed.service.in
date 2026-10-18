@@ -1,0 +1,29 @@
+# ryukazed for systemd distributions other than NixOS, as nix/module.nix
+# has it; `make install` puts the binary's directory in.
+[Unit]
+Description=MSI laptop EC daemon
+# A late msi-ec still gets its settings: the daemon reapplies them when the
+# driver binds.
+After=systemd-modules-load.service
+
+[Service]
+Type=dbus
+BusName=io.github.kontonkara.ryukaze
+ExecStart=@bindir@/ryukazed
+Restart=on-failure
+# What the window changed, and the keyboard light's profiles saved there.
+StateDirectory=ryukaze
+
+# Writes go to /sys, and to the keyboard backlight's hidraw node in /dev;
+# uevents come over netlink.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
