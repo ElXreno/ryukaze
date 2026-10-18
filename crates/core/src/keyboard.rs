@@ -265,7 +265,7 @@ pub struct Zone {
 pub struct Lighting {
     pub effect: Effect,
     /// The keys without one of their own: still, breathing, or between
-    /// flashes; with a cycle or a wave, the power button's.
+    /// flashes; a cycle or a wave goes through colours of its own.
     pub color: Option<Color>,
     /// Keys with their own colours, still whatever the effects.
     pub keys: Vec<(Vec<u8>, Color)>,
@@ -281,7 +281,7 @@ struct Plan {
     still: Vec<(u8, Color)>,
 }
 
-/// The power button's light, which the effects pass by.
+/// The power button's light, in the F keys' and the numpad's region.
 pub const POWER: u8 = 0x66;
 
 fn plan(lighting: Option<&Lighting>, numpad_dark: bool) -> Plan {
@@ -299,15 +299,9 @@ fn plan(lighting: Option<&Lighting>, numpad_dark: bool) -> Plan {
                 packets.push(effect_packet(i as u8 + 1, &zone.effect, zone.color));
             }
             packets.extend(region_packets(lighting));
-            let mut still = paint(None, &lighting.keys);
-            if let Some(color) = lighting.color
-                && !still.iter().any(|&(key, _)| key == POWER)
-            {
-                still.push((POWER, color));
-            }
             Plan {
                 effect: Some(packets),
-                still,
+                still: paint(None, &lighting.keys),
             }
         }
     };
@@ -491,7 +485,9 @@ fn regions() -> [(u8, Vec<u8>); 4] {
                 .chain([0xf0])
                 .collect(),
         ),
-        (0x24, (0x40..=0x63).collect()),
+        // The power button too, which msi-perkeyrgb's lists leave out: it
+        // takes the effects in this region, found by trying them all.
+        (0x24, (0x40..=0x63).chain([POWER]).collect()),
     ]
 }
 
@@ -974,12 +970,10 @@ mod tests {
 
         let waving = region_packets(&lighting(rainbow_wave(3000, Wave::default()), None));
         assert_eq!(&waving[0][4..16], &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04]);
-        // Every key there may be but Power, once.
+        // Every key there may be, once.
         let mut keys: Vec<u8> = regions().into_iter().flat_map(|(_, keys)| keys).collect();
         keys.sort_unstable();
-        let mut all: Vec<u8> = super::keys()
-            .filter(|&key| key != POWER && key != 0xe7)
-            .collect();
+        let mut all: Vec<u8> = super::keys().filter(|&key| key != 0xe7).collect();
         all.sort_unstable();
         assert_eq!(keys, all);
     }
@@ -1019,7 +1013,8 @@ mod tests {
         assert_eq!(effect_of(0x40), 0, "F7");
         assert_eq!(effect_of(0x59), 1, "numpad 1");
         assert_eq!(effect_of(0x5d), 2, "numpad 5");
-        assert_eq!(plan.still, [(POWER, ORANGE)]);
+        assert_eq!(effect_of(POWER), 0, "Power");
+        assert!(plan.still.is_empty());
     }
 
     #[test]
@@ -1039,9 +1034,9 @@ mod tests {
         let waving = plan(Some(&wave), false);
         assert_eq!(waving.effect.as_ref().map(Vec::len), Some(5));
         assert_eq!(waving.still.len(), 4);
-        // Breathing: Power, which no effect reaches, in the colour.
+        // Breathing, Power too: nothing still.
         let breathing = plan(Some(&lighting(breathe(4000), Some(ORANGE))), false);
-        assert_eq!(breathing.still, [(POWER, ORANGE)]);
+        assert!(breathing.still.is_empty());
 
         // NumLock off: the numpad dark over all of it, but NumLock.
         let dark = plan(Some(&wave), true);

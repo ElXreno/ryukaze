@@ -70,12 +70,12 @@ pub struct Keyboard {
     /// The numpad dark while NumLock is off, but for NumLock itself.
     pub numpad_follows_numlock: bool,
 
-    /// The power button's light, which the effects pass by.
+    /// The power button's light: the profile's, or what it shows instead.
     pub power: PowerLight,
 }
 
-/// What the power button's light shows: the profile's colour, or, over it,
-/// the shift mode's or whether the dGPU is awake.
+/// What the power button's light shows: the profile's, effect and all, or,
+/// still over it, the shift mode's colour or whether the dGPU is awake.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PowerLight {
@@ -154,8 +154,8 @@ pub struct KeyboardProfile {
     #[serde(default)]
     pub effect: EffectName,
 
-    /// The keys without their own: still, breathing, or between flashes;
-    /// with a cycle or a wave, the power button, which they pass by.
+    /// The keys without their own: still, breathing, or between flashes; a
+    /// cycle or a wave goes through `colors`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<KeyboardColor>,
 

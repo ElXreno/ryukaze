@@ -54,6 +54,11 @@ report then stops the keys it lists. While it sets up an effect the
 controller may turn the next report down (EPIPE); ryukazed waits a little
 and sends it again.
 
+The regions' lists of keys came from msi-perkeyrgb, which leaves the power
+button out; it takes the effects in region `0x24`, with the F keys from F7,
+the navigation keys and the numpad (found by trying every region number
+and every free key code, 2026-10-19).
+
 A key flashes on its press and again on its release, and no setting of a
 key's slot makes it stay lit while held instead: of its mode byte's bits
 only `0x08`, flashing, did anything (each bit tried, and 26 values in

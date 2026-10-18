@@ -39,7 +39,8 @@ part in them and the daemon never sees a key press. `period_ms` goes from
 
 A profile's `keys` give keys and groups of keys colours of their own, still
 over any effect: a single key over a group, a smaller group over a larger
-one. The power button, which the effects pass by, stays still in `color`.
+one. The power button takes the effects too, and its own colour or a
+zone's.
 
 Its `zones` give keys an effect of their own beside its own: each zone a
 list of `keys`, by name or group, and an effect with what it takes, a later
@@ -62,12 +63,14 @@ Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
 
 ## The power button
 
-The power button's light takes no effect, but it can show something of
-its own over the profile's colour (`keyboard.power` in the
+The power button's light goes with the profile, its effect too, unless it
+shows something of its own instead (`keyboard.power` in the
 [config](config.md), or its choice under the profiles in the window): the
-shift mode, a colour each, or whether the dGPU is awake. It changes
-within two seconds of what it follows, a still report on that key alone,
-so an effect on the others runs on undisturbed.
+shift mode, a colour each, or whether the dGPU is awake. Then it's still,
+a report on that key alone, so an effect on the others runs on
+undisturbed, and it changes within two seconds of what it follows. Back on
+the profile, the keyboard is lit again, as the refresh alone takes a key
+back into an effect.
 
 ## Saved profiles
 

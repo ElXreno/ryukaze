@@ -966,7 +966,7 @@ impl Service {
         if lighting.is_some() || numpad_dark {
             klc.show(lighting.as_ref(), numpad_dark)
                 .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))?;
-            self.power_shown(lighting.as_ref().and_then(power_in));
+            self.power_shown(lighting.as_ref().and_then(power_still));
         }
         self.show_power(klc)
     }
@@ -1804,15 +1804,11 @@ impl Service {
             })?;
         info!("power button: {}", follows.name());
         self.power_follows = follows;
-        // The profile's again first, so a change back is shown.
         self.power_shown(None);
         if let Some(klc) = self.keyboard() {
-            let profile = self.lighting()?.as_ref().and_then(power_in);
-            if follows == config::PowerFollows::Profile
-                && let Some(color) = profile
-            {
-                klc.light_keys(&[(keyboard::POWER, color)])
-                    .map_err(|err| fdo::Error::IOError(format!("keyboard: power button: {err}")))?;
+            // Back on the profile's effect: only the refresh puts it there.
+            if follows == config::PowerFollows::Profile {
+                self.light(&klc)?;
             } else {
                 self.show_power(&klc)?;
             }
@@ -1895,13 +1891,31 @@ fn error(name: &str, err: io::Error) -> fdo::Error {
     }
 }
 
-/// The colour `lighting` gives the power button, if any.
+/// The colour `lighting` gives the power button, still or under its
+/// effect: what it shows where what it follows has none.
 fn power_in(lighting: &Lighting) -> Option<Color> {
     keyboard::paint(lighting.color, &lighting.keys)
         .into_iter()
         .rev()
         .find(|&(key, _)| key == keyboard::POWER)
         .map(|(_, color)| color)
+}
+
+/// The colour the power button stays still in under `lighting`; none while
+/// it's on an effect.
+fn power_still(lighting: &Lighting) -> Option<Color> {
+    let own = keyboard::paint(None, &lighting.keys)
+        .into_iter()
+        .rev()
+        .find(|&(key, _)| key == keyboard::POWER)
+        .map(|(_, color)| color);
+    let zoned = lighting
+        .zones
+        .iter()
+        .any(|zone| zone.keys.contains(&keyboard::POWER));
+    own.or(lighting
+        .color
+        .filter(|_| lighting.effect == keyboard::Effect::Static && !zoned))
 }
 
 /// Where a state file is, for a warning.

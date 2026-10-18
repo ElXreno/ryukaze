@@ -21,9 +21,6 @@ use ryukaze_core::keyboard::{self, Color, Origin};
 
 use crate::{nix, theme};
 
-/// The power button's light, which the effects pass by.
-const POWER: u8 = 0x66;
-
 /// A key on the picture: its HID usage, a label, and where it sits, in key
 /// widths.
 struct Key {
@@ -234,7 +231,7 @@ pub enum Slot {
     /// The picked keys' own.
     Keys,
     /// The effect's: the keys without their own, still, breathing or
-    /// between flashes, and the power button, which the effects pass by.
+    /// between flashes.
     Color,
     FadeTo,
     Flash,
@@ -275,8 +272,8 @@ impl Look {
         }
     }
 
-    /// As a profile or a zone has it in TOML; a cycle or a wave leaves
-    /// the profile's power button dark without a colour.
+    /// As a profile or a zone has it in TOML; a cycle or a wave has no
+    /// colour of the keys' unless told.
     fn read(table: &toml::Table) -> Result<Self, String> {
         let word = |key: &str| table.get(key).and_then(toml::Value::as_str);
         let number = |key: &str| table.get(key).and_then(toml::Value::as_integer);
@@ -336,16 +333,12 @@ impl Look {
         self.period_ms.clamp(shortest, *keyboard::PERIODS_MS.end())
     }
 
-    /// Its colours, as the picker sets them; a zone's cycle or wave has no
-    /// power button to light.
-    fn slots(&self, profile: bool) -> Vec<Slot> {
+    /// Its colours, as the picker sets them.
+    fn slots(&self) -> Vec<Slot> {
         match self.effect {
             Effect::Static => vec![Slot::Color],
             Effect::Breathe => vec![Slot::Color, Slot::FadeTo],
-            Effect::Cycle | Effect::Wave => (0..self.round().len())
-                .map(Slot::Round)
-                .chain(profile.then_some(Slot::Color))
-                .collect(),
+            Effect::Cycle | Effect::Wave => (0..self.round().len()).map(Slot::Round).collect(),
             Effect::Reactive => vec![Slot::Color, Slot::Flash],
         }
     }
@@ -376,7 +369,7 @@ impl Look {
     }
 
     /// As the config takes it, field by field: a profile's, or a zone's,
-    /// which is never still and lights no power button.
+    /// which is never still.
     fn fields(&self, profile: bool) -> Vec<(&'static str, Field)> {
         let hex = |color: Color| Field::Str(color.to_string());
         let mut fields = Vec::new();
@@ -393,7 +386,7 @@ impl Look {
                 fields.push(("period_ms", Field::Int(self.period())));
             }
             Effect::Cycle | Effect::Wave => {
-                // The power button's.
+                // As it was read, though a cycle or a wave goes without.
                 if profile && self.color != Color::OFF {
                     fields.push(("color", hex(self.color)));
                 }
@@ -688,7 +681,7 @@ impl Editor {
             Msg::Layer(layer) => {
                 self.layer = layer.min(self.zones.len());
                 self.picked.clear();
-                self.slot = self.look().slots(self.layer == 0)[0];
+                self.slot = self.look().slots()[0];
                 self.hex = self.slot_color().to_string();
                 return Outcome::Nothing;
             }
@@ -712,7 +705,7 @@ impl Editor {
                 }
                 self.zones.remove(self.layer - 1);
                 self.layer -= 1;
-                self.slot = self.look().slots(self.layer == 0)[0];
+                self.slot = self.look().slots()[0];
                 self.hex = self.slot_color().to_string();
             }
             Msg::Slot(slot) => {
@@ -754,10 +747,8 @@ impl Editor {
                     return Outcome::Nothing;
                 }
                 self.look_mut().effect = effect;
-                if self.slot != Slot::Keys
-                    && !self.look().slots(self.layer == 0).contains(&self.slot)
-                {
-                    self.slot = self.look().slots(self.layer == 0)[0];
+                if self.slot != Slot::Keys && !self.look().slots().contains(&self.slot) {
+                    self.slot = self.look().slots()[0];
                 }
                 self.hex = self.slot_color().to_string();
             }
@@ -966,9 +957,6 @@ impl Editor {
     fn shown(&self, key: &Key) -> Color {
         if let Some(&color) = self.keys.get(&key.code) {
             return color;
-        }
-        if key.code == POWER {
-            return self.look.color;
         }
         let at = key.rect.center();
         match self
@@ -1214,9 +1202,6 @@ impl Editor {
                     .push(colors.wrap().vertical_spacing(6))
                     .push(tools)
                     .push(period);
-                if self.layer == 0 {
-                    controls = controls.push(self.slot("The power button", Slot::Color));
-                }
                 if look.effect == Effect::Wave {
                     let origins = row(ORIGINS.map(|(origin, name)| {
                         choice(
@@ -1327,7 +1312,6 @@ impl Editor {
             Slot::Keys if self.picked.len() == 1 => "The picked key's own".to_owned(),
             Slot::Keys => format!("The {} picked keys' own", self.picked.len()),
             Slot::Color => match self.look().effect {
-                Effect::Cycle | Effect::Wave => "The power button's".to_owned(),
                 Effect::Breathe => "Breathing".to_owned(),
                 _ => "The keys'".to_owned(),
             },

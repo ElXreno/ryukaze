@@ -80,8 +80,8 @@ numpad_follows_numlock = true
 [keyboard.scenarios]
 games = "wave"
 
-# The power button's light, which the effects pass by: the profile's colour
-# (`profile`, the default), the shift mode's (`shift_mode`: eco green,
+# The power button's light: the profile's, effect and all (`profile`, the
+# default), or still in a colour the shift mode's (`shift_mode`: eco green,
 # comfort white, sport orange and turbo red unless told), or the dGPU's
 # (`dgpu`: red while it's awake unless `dgpu_awake` says otherwise, the
 # profile's while it sleeps unless `dgpu_asleep` does).
