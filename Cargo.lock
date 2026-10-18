@@ -2333,7 +2333,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "ryukaze"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "iced",
  "iced_runtime",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "ryukaze-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rustix 1.1.5",
  "serde",
@@ -2362,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "ryukazed"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "futures-util",
