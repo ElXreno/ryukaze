@@ -113,7 +113,7 @@ impl Klc {
             // The refresh, an output report: report ID 0 and 64 bytes.
             let mut refresh = [0; 65];
             refresh[1] = 0x09;
-            node.write_all(&refresh)?;
+            patiently(|| node.write_all(&refresh))?;
         }
         for report in reports(&plan.still) {
             set_feature(&node, &report)?;
@@ -125,10 +125,26 @@ impl Klc {
 fn set_feature(node: &File, report: &[u8; REPORT_LEN]) -> io::Result<()> {
     let mut data = [0; REPORT_LEN + 1];
     data[1..].copy_from_slice(report);
-    // SAFETY: HIDIOCSFEATURE reads the report from `data`, which is as long
-    // as its opcode says, and writes nothing past it.
-    unsafe { ioctl(node, Updater::<SET_FEATURE, _>::new(&mut data)) }?;
-    Ok(())
+    patiently(|| {
+        // SAFETY: HIDIOCSFEATURE reads the report from `data`, which is as
+        // long as its opcode says, and writes nothing past it.
+        unsafe { ioctl(node, Updater::<SET_FEATURE, _>::new(&mut data)) }?;
+        Ok(())
+    })
+}
+
+/// While the controller sets up an effect, a wave more slowly than the
+/// others, it stalls what comes next: EPIPE. A little later it takes it.
+fn patiently(mut send: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    const TRIES: u32 = 10;
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
+    for _ in 1..TRIES {
+        match send() {
+            Err(err) if err.kind() == io::ErrorKind::BrokenPipe => std::thread::sleep(PAUSE),
+            done => return done,
+        }
+    }
+    send()
 }
 
 /// What the controller does with the keys that have no colour of their own.
@@ -598,6 +614,37 @@ mod tests {
                 (rates, u16::from_le_bytes([packet[at + 6], packet[at + 7]]))
             })
             .collect()
+    }
+
+    #[test]
+    fn waits_out_a_busy_controller() {
+        let mut stalls = 3;
+        let mut tries = 0;
+        let sent = patiently(|| {
+            tries += 1;
+            if stalls > 0 {
+                stalls -= 1;
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            Ok(())
+        });
+        assert!(sent.is_ok());
+        assert_eq!(tries, 4);
+        // Gone for good, or never coming back: said so.
+        let mut tries = 0;
+        let stalled = patiently(|| {
+            tries += 1;
+            Err(io::ErrorKind::BrokenPipe.into())
+        });
+        assert_eq!(stalled.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(tries, 10);
+        let mut tries = 0;
+        let gone = patiently(|| {
+            tries += 1;
+            Err(io::ErrorKind::NotFound.into())
+        });
+        assert!(gone.is_err());
+        assert_eq!(tries, 1);
     }
 
     #[test]
