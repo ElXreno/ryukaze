@@ -1416,7 +1416,11 @@ mod tests {
         let ec = MsiEc::new(sysfs);
         let firmware = ec.firmware().ok();
         let fans = Fans::open(sysfs, firmware.as_deref(), curves);
-        Service::new(ec, fans, AutoBoost::default(), Vec::new())
+        let mut service = Service::new(ec, fans, AutoBoost::default(), Vec::new());
+        // Never the machine's own /dev: a keyboard found in a made-up sysfs
+        // would get the test's colours on the real one.
+        service.dev = sysfs.join("dev");
+        service
     }
 
     fn ram(sysfs: &Path) -> Vec<u8> {
