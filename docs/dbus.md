@@ -30,6 +30,8 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `DeleteKeyboardProfile` | `s` | one of `keyboard_saved_profiles` gone |
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
+| `ReadScenarios` | | the scenarios, `[[scenarios]]` in TOML as the config writes them (`s`): for an editor to start from |
+| `SetScenarios` | `s` | all of them, in order, the same way; one the config names for AC, battery or a keyboard light has to stay |
 | `SetScenarioKeyboardProfile` | `s s` | one of `scenarios`, and one of `keyboard_profiles` it lights, or `""` for the one picked |
 | `SetSourceScenario` | `s s` | `ac` or `battery`, and one of `scenarios` to apply on it, or `""` for nothing; applied at once while on it |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |
@@ -42,8 +44,8 @@ Every setter reads the value back and fails if the EC didn't take it.
 What `SetChargeLimit`, `SetWebcam`, `SetFnKey`, `SetUsbShare`,
 `SetFanCurve` (and `ResetFanCurve`), `SetAdaptiveFans`,
 `SetGpuFanFollowsCpu`, `SetAutoCoolerBoost`, `SetCoolerBoostMarks`,
-`SetNumpadFollowsNumlock`, `SetPowerProfilesSync`, `SetSourceScenario` and
-`SetScenarioKeyboardProfile` set is kept for the next start but for what the config sets (see
+`SetNumpadFollowsNumlock`, `SetPowerProfilesSync`, `SetSourceScenario`,
+`SetScenarioKeyboardProfile` and `SetScenarios` set is kept for the next start but for what the config sets (see
 [using ryukaze](usage.md#the-window)).
 The signal `ModesChanged` (`a{sv}`) carries `shift_mode`, `fan_mode`,
 `super_battery`, `cooler_boost`, `scenario` and `keyboard_profile`, with
@@ -52,5 +54,5 @@ whatever changed them: a call (at once), a power profile, the automatic
 boost or the EC itself on Fn+F8 (within two seconds). The window, the tray and the on-screen card take it as it comes.
 
 [data/io.github.kontonkara.ryukaze.conf](../data/io.github.kontonkara.ryukaze.conf)
-lets everyone call `Status` and `ReadKeyboardProfile` and only root call the
-setters; the NixOS module adds the users in `services.ryukaze.users`.
+lets everyone call `Status`, `ReadScenarios` and `ReadKeyboardProfile`
+and only root call the setters; the NixOS module adds the users in `services.ryukaze.users`.

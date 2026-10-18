@@ -428,6 +428,12 @@ impl Service {
         if let Some(on) = boost.auto {
             report(self.put_auto_cooler_boost(on));
         }
+        if let Some(scenarios) = self.changes.scenarios.clone() {
+            match self.check_scenarios(&scenarios) {
+                Ok(()) => self.scenarios = scenarios,
+                Err(err) => warn!("{}: scenarios: {err}", file_path(&self.changes_file)),
+            }
+        }
         for source in [Source::Ac, Source::Battery] {
             if let Some(profile) = self.changes.profiles.get(source) {
                 *self.source_profiles.get_mut(source) = Some(profile.clone());
@@ -509,6 +515,48 @@ impl Service {
             if on { "on" } else { "off" }
         );
         self.poke.notify_one();
+    }
+
+    /// Scenarios as the EC takes them: named, each name once, in modes it
+    /// has, and with every one the config names for AC, battery or a
+    /// keyboard light, which stay as they are.
+    fn check_scenarios(&self, scenarios: &[Scenario]) -> Result<(), String> {
+        let shift_modes = self.ec.shift_modes().ok();
+        let fan_modes = self.ec.fan_modes().ok();
+        let super_battery = self.ec.super_battery().is_ok();
+        for (i, scenario) in scenarios.iter().enumerate() {
+            let name = &scenario.name;
+            if name.trim().is_empty() {
+                return Err(format!("scenario {} has no name", i + 1));
+            }
+            if scenarios[..i].iter().any(|other| other.name == *name) {
+                return Err(format!("two scenarios are called {name:?}"));
+            }
+            let known = |mode: &Option<String>, modes: &Option<Vec<String>>| {
+                mode.as_ref()
+                    .zip(modes.as_ref())
+                    .is_none_or(|(mode, modes)| modes.contains(mode))
+            };
+            if !known(&scenario.shift_mode, &shift_modes) || !known(&scenario.fan_mode, &fan_modes)
+            {
+                return Err(format!("{name}: a mode this EC doesn't have"));
+            }
+            if scenario.super_battery.is_some() && !super_battery {
+                return Err(format!("{name}: this EC has no super battery"));
+            }
+        }
+        let set = &self.config_set;
+        let named = [&set.profiles.ac, &set.profiles.battery]
+            .into_iter()
+            .flatten()
+            .filter_map(|profile| profile.scenario.as_ref())
+            .chain(set.keyboard.scenarios.keys());
+        for name in named {
+            if scenarios.iter().all(|scenario| scenario.name != *name) {
+                return Err(format!("the config names {name:?}, which has to stay"));
+            }
+        }
+        Ok(())
     }
 
     /// From the config: what to apply on AC and on battery.
@@ -1531,6 +1579,63 @@ impl Service {
         )
     }
 
+    /// The scenarios, `[[scenarios]]` in TOML as the config writes them:
+    /// for an editor to start from.
+    pub fn read_scenarios(&self) -> fdo::Result<String> {
+        #[derive(serde::Serialize)]
+        struct Written<'a> {
+            scenarios: &'a [Scenario],
+        }
+        toml::to_string(&Written {
+            scenarios: &self.scenarios,
+        })
+        .map_err(|err| fdo::Error::Failed(format!("scenarios: {err}")))
+    }
+
+    /// All the scenarios, in order, `[[scenarios]]` in TOML as the config
+    /// writes them. What AC, battery or a keyboard light took from the
+    /// window and loses its scenario goes back to nothing.
+    pub fn set_scenarios(&mut self, scenarios: &str) -> fdo::Result<()> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Read {
+            #[serde(default)]
+            scenarios: Vec<Scenario>,
+        }
+        let Read { scenarios } = toml::from_str(scenarios)
+            .map_err(|err| fdo::Error::InvalidArgs(format!("scenarios: {err}")))?;
+        self.check_scenarios(&scenarios)
+            .map_err(|err| fdo::Error::InvalidArgs(format!("scenarios: {err}")))?;
+        let gone = |name: &str| scenarios.iter().all(|scenario| scenario.name != name);
+        let mut changes = self.changes.clone();
+        for source in [Source::Ac, Source::Battery] {
+            let lost = self
+                .source_profiles
+                .get(source)
+                .and_then(|profile| profile.scenario.as_deref())
+                .is_some_and(gone);
+            if lost {
+                *self.source_profiles.get_mut(source) = Some(config::Profile::default());
+                *changes.profiles.get_mut(source) = Some(config::Profile::default());
+            }
+        }
+        changes
+            .keyboard
+            .scenarios
+            .retain(|scenario, _| !gone(scenario));
+        let names: Vec<&str> = scenarios
+            .iter()
+            .map(|scenario| scenario.name.as_str())
+            .collect();
+        info!("scenarios: {}", names.join(", "));
+        changes.scenarios = Some(scenarios.clone());
+        self.scenarios = scenarios;
+        let kept = self.remember(|kept| *kept = changes);
+        self.merge_keyboard_scenarios();
+        self.poke.notify_one();
+        kept
+    }
+
     /// The scenario to apply when the laptop goes on `source`, `ac` or
     /// `battery`, or nothing for `""`; applied at once on that source.
     pub fn set_source_scenario(&mut self, source: &str, scenario: &str) -> fdo::Result<()> {
@@ -1688,6 +1793,12 @@ fn error(name: &str, err: io::Error) -> fdo::Error {
         }
         _ => fdo::Error::IOError(format!("{name}: {err}")),
     }
+}
+
+/// Where a state file is, for a warning.
+fn file_path(file: &Option<state::File>) -> String {
+    file.as_ref()
+        .map_or_else(String::new, |file| file.path().display().to_string())
 }
 
 /// A keyboard profile sent over D-Bus, in TOML; errors for `whose`.
@@ -2508,6 +2619,54 @@ mod tests {
         assert_eq!(next.changes().charge_limit, None);
         assert!(next.boost.config.auto);
         assert_eq!((next.boost.config.cpu_c, next.boost.config.gpu_c), (90, 80));
+    }
+
+    #[test]
+    fn edits_the_scenarios() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let state = tempfile::tempdir().unwrap();
+        let file = || state::File::new(state.path(), "settings.toml");
+        // The config's AC takes performance, which has to stay.
+        let set = config::Changes {
+            profiles: config::Profiles {
+                ac: Some(config::Profile {
+                    scenario: Some("performance".into()),
+                    ..config::Profile::default()
+                }),
+                battery: None,
+            },
+            ..config::Changes::default()
+        };
+        let mut service = service(sysfs.path());
+        service.keep_changes(file(), set.clone());
+        assert!(service.read_scenarios().unwrap().contains(
+            "[[scenarios]]\nname = \"silent\"\nshift_mode = \"eco\"\nfan_mode = \"silent\"\n"
+        ));
+        let performance = "[[scenarios]]\nname = \"performance\"\nshift_mode = \"turbo\"\n";
+        for bad in [
+            "[[scenarios]]\nname = \"silent\"\nshift_mode = \"eco\"\n".to_owned(),
+            format!("{performance}[[scenarios]]\nname = \"warp\"\nshift_mode = \"warp\"\n"),
+            format!("{performance}{performance}"),
+            format!("{performance}[[scenarios]]\nname = \" \"\n"),
+        ] {
+            assert!(service.set_scenarios(&bad).is_err(), "{bad}");
+        }
+
+        // The window's battery loses its scenario: nothing again.
+        service.set_source_scenario("battery", "silent").unwrap();
+        let quiet =
+            "[[scenarios]]\nname = \"quiet\"\nshift_mode = \"eco\"\nfan_mode = \"silent\"\n";
+        service
+            .set_scenarios(&format!("{performance}{quiet}"))
+            .unwrap();
+        let status = service.status();
+        assert_eq!(status.scenarios.unwrap(), ["performance", "quiet"]);
+        assert_eq!(status.battery_scenario.as_deref(), Some(""));
+
+        // Kept for the next start.
+        let mut next = self::service(sysfs.path());
+        next.keep_changes(file(), set);
+        assert_eq!(next.status().scenarios.unwrap(), ["performance", "quiet"]);
     }
 
     #[test]

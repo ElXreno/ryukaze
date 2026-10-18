@@ -34,7 +34,8 @@ super_battery = true
 # What NextScenario steps through, in this order: from the one whose modes
 # the EC is in, to the first if it's in none. Each sets any of the three
 # above. Without any: silent (eco, silent fans), balanced (comfort, auto)
-# and performance (turbo, auto), super battery off, those this EC has.
+# and performance (turbo, auto), super battery off, those this EC has. The
+# window edits them too, unless they're set here.
 [[scenarios]]
 name = "quiet"
 shift_mode = "eco"

@@ -12,6 +12,7 @@ mod nix;
 mod osd;
 mod renderer;
 mod report;
+mod scenarios;
 mod theme;
 mod tray;
 

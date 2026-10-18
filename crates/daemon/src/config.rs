@@ -595,6 +595,9 @@ pub struct Changes {
     /// A profile a power source, a scenario's or none.
     #[serde(skip_serializing_if = "Profiles::is_empty")]
     pub profiles: Profiles,
+    /// All of them, in order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scenarios: Option<Vec<Scenario>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -711,6 +714,7 @@ impl Changes {
                     .then_some(config.keyboard.numpad_follows_numlock),
                 scenarios: config.keyboard.scenarios.clone(),
             },
+            scenarios: has("scenarios").then(|| config.scenarios.clone()),
             profiles: Profiles {
                 ac: has("profiles.ac").then(|| config.profiles.ac.clone().unwrap_or_default()),
                 battery: has("profiles.battery")
@@ -744,6 +748,7 @@ impl Changes {
             ),
             ("profiles.ac", self.profiles.ac.is_some()),
             ("profiles.battery", self.profiles.battery.is_some()),
+            ("scenarios", self.scenarios.is_some()),
         ]
         .into_iter()
         .filter(|&(_, set)| set)
@@ -801,6 +806,7 @@ impl Changes {
                 ac: unless(self.profiles.ac, &set.profiles.ac),
                 battery: unless(self.profiles.battery, &set.profiles.battery),
             },
+            scenarios: unless(self.scenarios, &set.scenarios),
         }
     }
 
@@ -862,12 +868,15 @@ pub struct Profile {
 
 /// A [`Profile`] with a name, written out in full in the config: serde
 /// can't flatten one into a struct that denies unknown fields.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub shift_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fan_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub super_battery: Option<bool>,
 }
 

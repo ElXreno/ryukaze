@@ -21,7 +21,7 @@ use crate::{
     appearance,
     client::{self, Client},
     history::{self, History, Series},
-    icon, instance, lights, report, theme, tray,
+    icon, instance, lights, report, scenarios, theme, tray,
 };
 
 /// Picks the EC makes on its own (Fn keys, the daemon's power profiles)
@@ -67,6 +67,9 @@ pub struct App {
     /// unsaved, and whether it's open.
     lights: Option<lights::Editor>,
     editing_lights: bool,
+    /// The scenarios' editor, the same way.
+    scenarios: Option<scenarios::Editor>,
+    editing_scenarios: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +121,11 @@ pub enum Message {
     Lights(lights::Msg),
     LightsSaved(Result<(), String>),
     LightsDeleted(Result<(), String>),
+    /// Open the scenarios' editor.
+    EditScenarios,
+    ScenariosRead(Result<String, String>),
+    Scenarios(scenarios::Msg),
+    ScenariosSaved(Result<(), String>),
 }
 
 impl App {
@@ -139,6 +147,8 @@ impl App {
             copied: false,
             lights: None,
             editing_lights: false,
+            scenarios: None,
+            editing_scenarios: false,
         };
         let connect = Task::perform(client::connect(session), Message::Connected);
         if hidden {
@@ -229,6 +239,7 @@ impl App {
                     self.charge_limit = None;
                     self.boost_marks = None;
                     self.curve_draft = None;
+                    self.editing_scenarios = false;
                     // The keyboard back to its profile, what was left
                     // unsaved kept for the next time.
                     if self.editing_lights {
@@ -397,6 +408,67 @@ impl App {
                     }
                 }
             }
+            // Back to what was left unsaved, or else from the daemon's.
+            Message::EditScenarios => {
+                if self
+                    .scenarios
+                    .as_ref()
+                    .is_some_and(scenarios::Editor::unsaved)
+                {
+                    self.editing_scenarios = true;
+                    return Task::none();
+                }
+                let Some(client) = self.client.clone() else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move { client.read_scenarios().await.map_err(client::describe) },
+                    Message::ScenariosRead,
+                )
+            }
+            Message::ScenariosRead(read) => {
+                match read.and_then(|text| scenarios::Editor::from_toml(&text)) {
+                    Ok(editor) => {
+                        self.scenarios = Some(editor);
+                        self.editing_scenarios = true;
+                    }
+                    Err(err) => self.error = Some(err),
+                }
+                Task::none()
+            }
+            Message::Scenarios(msg) => {
+                let Some(editor) = &mut self.scenarios else {
+                    return Task::none();
+                };
+                match editor.update(msg) {
+                    scenarios::Outcome::Nothing => Task::none(),
+                    scenarios::Outcome::Save(list) => {
+                        let Some(client) = self.client.clone() else {
+                            return Task::none();
+                        };
+                        Task::perform(
+                            async move { client.set_scenarios(&list).await.map_err(client::describe) },
+                            Message::ScenariosSaved,
+                        )
+                    }
+                    scenarios::Outcome::Done => {
+                        self.editing_scenarios = false;
+                        Task::none()
+                    }
+                }
+            }
+            Message::ScenariosSaved(saved) => {
+                match saved {
+                    Ok(()) => {
+                        if let Some(editor) = &mut self.scenarios {
+                            editor.saved();
+                        }
+                        self.error = None;
+                    }
+                    Err(err) => self.error = Some(err),
+                }
+                self.refresh()
+            }
             Message::LightsDeleted(deleted) => {
                 match deleted {
                     Ok(()) => {
@@ -533,6 +605,18 @@ impl App {
                 let known = lights::Known { standard, saved };
                 editor.view(inside, &known).map(Message::Lights)
             }
+            Some(Ok(status))
+                if self.editing_scenarios
+                    && let Some(editor) = &self.scenarios =>
+            {
+                let modes = scenarios::Modes {
+                    shift: status.shift_modes.as_deref().unwrap_or_default(),
+                    fan: status.fan_modes.as_deref().unwrap_or_default(),
+                    super_battery: status.super_battery.is_some(),
+                };
+                let inside = (width - 2.0 * PAGE_PADDING).min(max_width);
+                editor.view(inside, &modes).map(Message::Scenarios)
+            }
             Some(Ok(status)) => self.sections(status, columns),
         };
 
@@ -623,6 +707,10 @@ impl App {
                     .style(theme::muted),
                 );
             }
+            scenario = scenario.push(row![
+                space::horizontal(),
+                small_button("Edit the scenarios", Message::EditScenarios),
+            ]);
             put([0, 0], section("Scenario", scenario));
         }
 
@@ -1344,6 +1432,8 @@ mod tests {
             copied: false,
             lights: None,
             editing_lights: false,
+            scenarios: None,
+            editing_scenarios: false,
         }
     }
 
