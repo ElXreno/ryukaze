@@ -750,4 +750,28 @@ mod tests {
         argb(&[1, 2, 3, 4], &mut canvas);
         assert_eq!(canvas, [3, 2, 1, 4]);
     }
+    /// The readme's card, into target/shots: `cargo test -p ryukaze
+    /// screenshots -- --ignored`, with `XDG_CONFIG_HOME` and
+    /// `XDG_CONFIG_DIRS` at an empty directory for the built-in colours.
+    #[test]
+    #[ignore]
+    fn screenshots() {
+        use resvg::tiny_skia::{IntSize, Pixmap};
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/shots");
+        std::fs::create_dir_all(&out).unwrap();
+        let mut renderer = software_renderer().unwrap();
+        let card = Card::Choice {
+            heading: "Scenario",
+            name: "performance".into(),
+            all: ["silent", "balanced", "performance"].map(Into::into).into(),
+        };
+        for (theme, mode) in [(Theme::Light, "light"), (Theme::Dark, "dark")] {
+            let pixels = render(&mut renderer, &card, &theme, 1.0, 2);
+            let size = IntSize::from_wh(SIZE.0 * 2, SIZE.1 * 2).unwrap();
+            Pixmap::from_vec(pixels, size)
+                .unwrap()
+                .save_png(out.join(format!("osd-{mode}.png")))
+                .unwrap();
+        }
+    }
 }
