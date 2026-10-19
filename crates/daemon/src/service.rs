@@ -934,6 +934,20 @@ impl Service {
         self.light(&klc)
     }
 
+    /// What the keyboard shows, kept in the controller's flash for it to
+    /// show from power-on, before ryukazed starts: as the laptop goes off
+    /// or to sleep, where the blink that saving brings goes unseen, and
+    /// not so often as to wear the flash.
+    pub fn save_keyboard(&self) -> fdo::Result<()> {
+        let Some(klc) = self.keyboard() else {
+            return Ok(());
+        };
+        klc.save()
+            .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))?;
+        info!("keyboard: saved in the controller");
+        Ok(())
+    }
+
     /// NumLock went on or off: for a numpad that follows it, dark while
     /// it's off, but for NumLock itself.
     pub fn numlock(&mut self, on: bool) -> fdo::Result<()> {

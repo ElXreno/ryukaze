@@ -85,6 +85,12 @@ of its own: the standard ones and the config's can't be saved over or
 deleted (`DeleteKeyboardProfile` takes only the saved), and one saved
 before the config took its name waits in the file, unshown.
 
+As the laptop goes off or to sleep, ryukazed saves what the keyboard shows
+to the controller's flash, which it shows from power-on until ryukazed
+starts. Only then, where the blink that saving brings goes unseen, and
+not so often as to wear the flash: not as profiles are picked, nor when
+ryukazed is only restarted.
+
 ## NumLock
 
 With `numpad_follows_numlock`, or its switch in the window's Devices,
@@ -92,7 +98,7 @@ the numpad goes dark while NumLock is off, NumLock itself aside. ryukazed
 reads the laptop keyboard's events for it with the kernel holding back all
 but its lights' changes (`EVIOCSMASK`), so no key press reaches the daemon
 this way either. Going dark leaves an
-effect running; coming back on starts it over on every key, a blink: the
+effect running; coming back on starts it over on every key: the
 controller takes keys back into an effect only with the refresh, which
 restarts it.
 

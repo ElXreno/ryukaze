@@ -123,6 +123,15 @@ impl Klc {
         Ok(())
     }
 
+    /// What it shows now, saved to the controller's flash, which it shows
+    /// from at power-on: `09`, which starts the effects over too, and blinks.
+    pub fn save(&self) -> io::Result<()> {
+        let mut node = OpenOptions::new().read(true).write(true).open(&self.node)?;
+        let mut save = [0; 65];
+        save[1] = 0x09;
+        patiently(|| node.write_all(&save))
+    }
+
     /// Only `over` changed: its keys still at once, and in the tables, so
     /// they stay so, without the refresh that would start every effect over.
     /// The power button's colour goes in its effect alone, which shows at
@@ -1131,7 +1140,7 @@ mod tests {
         let red = Color([255, 0, 0]);
         let wasd = vec![(named("wasd").unwrap(), red)];
 
-        // All still: the tables and still reports, no refresh to blink.
+        // All still: the tables and still reports, no refresh.
         let still = plan(
             Some(&lighting(Effect::Static, Some(ORANGE))),
             Over::default(),

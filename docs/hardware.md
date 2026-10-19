@@ -49,7 +49,8 @@ encrypts its device descriptions; they were read for this and aren't
 kept here. Commands go on the output report and answer on the input
 report: `10 00` reads the firmware version (minor, then major: 1.14 on the
 Alpha 17), `0d 00 00` restarts the lighting, and `09 00` saves it to the
-controller's flash, which ryukazed never sends. There's no command to read
+controller's flash, which ryukazed sends only as the laptop goes off or to
+sleep, so it shows from power-on. There's no command to read
 the keyboard light's brightness: the EC passes the brightness keys on to
 the controller, which keeps the level to itself (the EC sends it every
 key's state over SPI, the brightness keys as F13 and F14).

@@ -163,12 +163,48 @@ impl Profiles {
     }
 
     /// Hands the fans back to the EC's own stepping before the daemon exits.
+    /// Stopping: the keyboard's light saved too where the laptop is going
+    /// off, not where ryukazed is only restarted, as in an update.
     pub async fn stop(&self) {
-        self.service().await.get_mut().await.stop();
+        let going_off = self.system_stopping().await;
+        let service = self.service().await;
+        let mut service = service.get_mut().await;
+        service.stop();
+        if going_off {
+            report(service.save_keyboard());
+        }
     }
 
     pub async fn sleeping(&mut self) {
-        self.before_sleep = Some(self.service().await.get().await.snapshot());
+        let service = self.service().await;
+        let service = service.get().await;
+        self.before_sleep = Some(service.snapshot());
+        report(service.save_keyboard());
+    }
+
+    /// systemd's SystemState is `stopping`: the laptop is going off.
+    async fn system_stopping(&self) -> bool {
+        let reply = self
+            .connection
+            .call_method(
+                Some("org.freedesktop.systemd1"),
+                "/org/freedesktop/systemd1",
+                Some("org.freedesktop.DBus.Properties"),
+                "Get",
+                &("org.freedesktop.systemd1.Manager", "SystemState"),
+            )
+            .await;
+        let state = reply.and_then(|reply| {
+            let value: zbus::zvariant::OwnedValue = reply.body().deserialize()?;
+            Ok(String::try_from(value)?)
+        });
+        match state {
+            Ok(state) => state == "stopping",
+            Err(err) => {
+                warn!("systemd's state: {err}");
+                false
+            }
+        }
     }
 
     /// Through S3 the EC resets: back to how it was, then the profile if
