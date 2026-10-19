@@ -111,9 +111,10 @@ impl Klc {
             set_feature(&node, packet)?;
         }
         if plan.refresh {
-            // The refresh, an output report: report ID 0 and 64 bytes.
+            // The refresh, an output report: report ID 0 and 64 bytes,
+            // `0d 00 00`. Not `09`, which saves to the controller's flash.
             let mut refresh = [0; 65];
-            refresh[1] = 0x09;
+            refresh[1] = 0x0d;
             patiently(|| node.write_all(&refresh))?;
         }
         for report in reports(&plan.still) {
@@ -124,22 +125,32 @@ impl Klc {
 
     /// Only `over` changed: its keys still at once, and in the tables, so
     /// they stay so, without the refresh that would start every effect over.
-    /// The power button's colour goes in its effect too, which shows at once.
+    /// The power button's colour goes in its effect alone, which shows at
+    /// once.
     pub fn overlay(&self, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
         let node = OpenOptions::new().read(true).write(true).open(&self.node)?;
         if let Some(lighting) = lighting {
             if over.power.is_some() {
                 set_feature(&node, &power_packet(lighting, over))?;
             }
-            for packet in region_packets(lighting, over) {
+            for packet in table_packets(lighting, over) {
                 set_feature(&node, &packet)?;
             }
         }
-        for report in reports(&over.keys()) {
+        for report in reports(&without_power(lighting, over.keys())) {
             set_feature(&node, &report)?;
         }
         Ok(())
     }
+}
+
+/// Still keys but the power button where it has its effect: a still report
+/// would hold it, and the refresh doesn't let it go, unlike the others.
+fn without_power(lighting: Option<&Lighting>, keys: Vec<(u8, Color)>) -> Vec<(u8, Color)> {
+    if lighting.is_none() {
+        return keys;
+    }
+    keys.into_iter().filter(|&(key, _)| key != POWER).collect()
 }
 
 fn set_feature(node: &File, report: &[u8; REPORT_LEN]) -> io::Result<()> {
@@ -281,7 +292,7 @@ pub struct Lighting {
 /// What goes to the controller: the effects' packets, then still colours.
 #[derive(Debug, Default, PartialEq)]
 struct Plan {
-    /// The effects, then the regions' tables, which the controller draws
+    /// The effects, then the keys' tables, which the controller draws
     /// the keys from again whenever it redraws them, as on a brightness key.
     packets: Vec<[u8; REPORT_LEN]>,
     /// A refresh after them, which starts the effects.
@@ -311,12 +322,12 @@ impl Over {
     }
 }
 
-/// The power button's light, in the F keys' and the numpad's region.
+/// The power button's light, in the F keys' and the numpad's block.
 pub const POWER: u8 = 0x66;
 
-/// The power button's effect: the controller lights it by effect 0 alone,
-/// whatever its slot says, so effect 0 is its own, the profile's is 1 and
-/// the zones' come after.
+/// The power button's effect, its own so its colour changes at once and
+/// with the others' running on, without a still report or a refresh; the
+/// profile's is 1 and the zones' come after.
 const POWER_EFFECT: u8 = 0;
 const PROFILE_EFFECT: u8 = 1;
 
@@ -351,8 +362,8 @@ fn plan(lighting: Option<&Lighting>, over: Over) -> Plan {
         };
     };
     // All still: in the tables for the next redraw, and still reports to
-    // show it now, without a refresh to blink. The power button's effect
-    // shows at once.
+    // show it now, without a refresh: no effect runs. The power button's
+    // effect shows at once.
     if lighting.effect == Effect::Static && lighting.zones.is_empty() {
         let mut still = paint(lighting.color, &lighting.keys);
         for (key, color) in over.keys() {
@@ -362,11 +373,11 @@ fn plan(lighting: Option<&Lighting>, over: Over) -> Plan {
             }
         }
         let mut packets = vec![power_packet(lighting, over)];
-        packets.extend(region_packets(lighting, over));
+        packets.extend(table_packets(lighting, over));
         return Plan {
             packets,
             refresh: false,
-            still,
+            still: without_power(Some(lighting), still),
         };
     }
     let mut packets = vec![
@@ -376,7 +387,7 @@ fn plan(lighting: Option<&Lighting>, over: Over) -> Plan {
     for (i, zone) in lighting.zones.iter().enumerate() {
         packets.push(effect_packet(zone_effect(i), &zone.effect, zone.color));
     }
-    packets.extend(region_packets(lighting, over));
+    packets.extend(table_packets(lighting, over));
     Plan {
         packets,
         refresh: true,
@@ -539,23 +550,19 @@ fn ramp(from: [u8; 3], to: [u8; 3], length: u16) -> Vec<Step> {
     steps
 }
 
-/// The old protocol's regions, with the keys each holds; Power is in none.
-fn regions() -> [(u8, Vec<u8>); 4] {
+/// The keys, in blocks of up to 42, a table each: any key may go in any
+/// block, as each slot names its key.
+fn blocks() -> [Vec<u8>; 4] {
     [
-        (0x2a, (0x04..=0x27).chain(0x3a..=0x3f).collect()),
-        (0x0b, vec![0x28, 0x31, 0x32, 0x64]),
-        (
-            0x18,
-            (0x29..=0x30)
-                .chain(0x33..=0x39)
-                .chain([0x65])
-                .chain(0xe0..=0xe6)
-                .chain([0xf0])
-                .collect(),
-        ),
-        // The power button too, which msi-perkeyrgb's lists leave out: lit
-        // by effect 0 in this region, found by trying them all.
-        (0x24, (0x40..=0x63).chain([POWER]).collect()),
+        (0x04..=0x27).chain(0x3a..=0x3f).collect(),
+        vec![0x28, 0x31, 0x32, 0x64],
+        (0x29..=0x30)
+            .chain(0x33..=0x39)
+            .chain([0x65])
+            .chain(0xe0..=0xe6)
+            .chain([0xf0])
+            .collect(),
+        (0x40..=0x63).chain([POWER]).collect(),
     ]
 }
 
@@ -565,11 +572,11 @@ fn zone_effect(i: usize) -> u8 {
 }
 
 /// Every key on its effect, the profile's or its zone's, or still in a
-/// colour of its own or `over`'s, a packet a region: `0e 00 [region] 00`,
+/// colour of its own or `over`'s, a packet a block: `0e 00 [slots] 00`,
 /// then 42 slots of `[colour] [flash colour] [flash ticks] [effect] [mode]
 /// 00 [key]` (mode 0 follows the effect, 1 is still in the colour, 8
 /// flashes on presses), and `08 39` at the end.
-fn region_packets(lighting: &Lighting, over: Over) -> Vec<[u8; REPORT_LEN]> {
+fn table_packets(lighting: &Lighting, over: Over) -> Vec<[u8; REPORT_LEN]> {
     let slot = |id: u8, effect: &Effect, color: Option<Color>, key: u8| -> [u8; 12] {
         let [r, g, b] = color.unwrap_or(Color::OFF).0;
         let (mode, [fr, fg, fb], flash_ticks) = match effect {
@@ -583,11 +590,12 @@ fn region_packets(lighting: &Lighting, over: Over) -> Vec<[u8; REPORT_LEN]> {
     // Keys of their own colours, and `over`'s: still in them.
     let mut still: BTreeMap<u8, Color> = paint(None, &lighting.keys).into_iter().collect();
     still.extend(over.keys());
-    regions()
+    blocks()
         .into_iter()
-        .map(|(region, keys)| {
+        .map(|keys| {
             let mut packet = [0; REPORT_LEN];
-            packet[..4].copy_from_slice(&[0x0e, 0x00, region, 0x00]);
+            // The controller reads as many slots as this says.
+            packet[..4].copy_from_slice(&[0x0e, 0x00, keys.len() as u8, 0x00]);
             let (slots, _) = packet[4..4 + 42 * 12].as_chunks_mut::<12>();
             for (place, key) in slots.iter_mut().zip(keys) {
                 let zone = lighting
@@ -1038,7 +1046,7 @@ mod tests {
             flash,
             flash_ms: 500,
         };
-        let packets = region_packets(&lighting(reactive, Some(ORANGE)), Over::default());
+        let packets = table_packets(&lighting(reactive, Some(ORANGE)), Over::default());
         assert_eq!(packets.len(), 4);
         let alphanum = &packets[0];
         assert_eq!(&alphanum[..4], &[0x0e, 0x00, 0x2a, 0x00]);
@@ -1049,13 +1057,13 @@ mod tests {
         );
         assert_eq!(&alphanum[REPORT_LEN - 2..], &[0x08, 0x39]);
 
-        let waving = region_packets(
+        let waving = table_packets(
             &lighting(rainbow_wave(3000, Wave::default()), None),
             Over::default(),
         );
         assert_eq!(&waving[0][4..16], &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0x04]);
         // Every key there may be, once.
-        let mut keys: Vec<u8> = regions().into_iter().flat_map(|(_, keys)| keys).collect();
+        let mut keys: Vec<u8> = blocks().into_iter().flatten().collect();
         keys.sort_unstable();
         let mut all: Vec<u8> = super::keys().filter(|&key| key != 0xe7).collect();
         all.sort_unstable();
@@ -1083,7 +1091,7 @@ mod tests {
         assert!(plan.refresh);
         let packets = plan.packets;
         // Four effects, the power button's, the profile's and the zones',
-        // numbered in turn, then the four regions.
+        // numbered in turn, then the four tables.
         assert_eq!(packets.len(), 4 + 4);
         for (id, packet) in packets[..4].iter().enumerate() {
             assert_eq!(packet[0], 0x0b);
@@ -1093,7 +1101,8 @@ mod tests {
         assert_eq!(packets[1][0x96], 1);
         assert_eq!(&steps(&packets[1], 1), &[([0; 3], 100)]);
         let numpad = &packets[4 + 3];
-        assert_eq!(numpad[2], 0x24);
+        // As many slots as it has keys: F7 on, the numpad and Power.
+        assert_eq!(numpad[2], 37);
         let (slots, _) = numpad[4..4 + 42 * 12].as_chunks::<12>();
         let effect_of = |key: u8| slots.iter().find(|slot| slot[11] == key).unwrap()[8];
         // Still in the tables: mode 1.
@@ -1130,7 +1139,9 @@ mod tests {
         assert!(!still.refresh);
         assert_eq!(still.packets.len(), 1 + 4);
         assert_eq!(slot_of(&still.packets, 0x04), (1, ORANGE.0));
-        assert_eq!(still.still.len(), keys().count());
+        // All but the power button, which its effect holds.
+        assert_eq!(still.still.len(), keys().count() - 1);
+        assert!(!still.still.iter().any(|&(key, _)| key == POWER));
 
         // A wave, WASD still red in the tables over it.
         let wave = Lighting {
@@ -1153,8 +1164,8 @@ mod tests {
         assert_eq!(slot_of(&dark.packets, 0x53).0, 0, "NumLock");
         let still_dark = plan(Some(&lighting(Effect::Static, Some(ORANGE))), over);
         assert!(still_dark.still.contains(&(0x5d, Color::OFF)));
-        assert!(still_dark.still.contains(&(POWER, red)));
-        // Without a profile, still reports alone.
+        assert!(!still_dark.still.iter().any(|&(key, _)| key == POWER));
+        // Without a profile, still reports alone, the power button's too.
         let bare = plan(None, over);
         assert!(bare.packets.is_empty());
         assert_eq!(bare.still.len(), 16 + 1);

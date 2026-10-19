@@ -43,35 +43,52 @@ interface: `0c 00 66 00`, then (key, red, green, blue) for up to about a
 hundred keys, each key its HID usage. A report changes the keys it lists
 and leaves the others.
 
+SteelSeries GG's description of the controller (`ss-klc-base`, where this
+one is "KLC496", 1038:113a, its bootloader 113b) names the commands. GG
+encrypts its device descriptions; they were read for this and aren't
+kept here. Commands go on the output report and answer on the input
+report: `10 00` reads the firmware version (minor, then major: 1.14 on the
+Alpha 17), `0d 00 00` restarts the lighting, and `09 00` saves it to the
+controller's flash, which ryukazed never sends. There's no command to read
+the keyboard light's brightness: the EC passes the brightness keys on to
+the controller, which keeps the level to itself (the EC sends it every
+key's state over SPI, the brightness keys as F13 and F14).
+
 The effects go in the older protocol msi-perkeyrgb found on earlier MSI
 laptops: a `0b` report sets out an effect as a start colour and up to
 sixteen steps (each channel's change per 10 ms tick, in sixteenths, and
 the step's length in ticks), and a wave if it has one, which the
-controller runs round and round, from the start colour each time. `0e`
-reports put each key of a region on an effect, still, following it or
-flashing when pressed, and an output report `09` starts them. A still
-report then stops the keys it lists. While it sets up an effect the
+controller runs round and round, from the start colour each time.
+`0e 00 [slots] 00` reports put up to 42 keys each on an effect, still,
+following it or flashing when pressed, a slot a key, and a restart
+(`0d 00 00`) starts them: msi-perkeyrgb, and ryukaze until 2026-10-19,
+sent `09` instead, which does it too but saves to flash as well and blinks
+the whole keyboard. A still report then stops the keys it lists. While it sets up an effect the
 controller may turn the next report down (EPIPE); ryukazed waits a little
 and sends it again.
 
 On a brightness key the controller draws every key again from the
-regions' tables, and what a still report alone painted goes: a still
+tables, and what a still report alone painted goes: a still
 profile over a reactive one, say, comes back reactive. So ryukazed keeps
 still keys in the tables too, mode 1 with their colour: a still profile's,
-a key's own, and the numpad dark for NumLock. A still profile goes there
-without the refresh, which would blink, and its still reports show it at
-once.
+a key's own, the numpad dark for NumLock and the power button's own. A
+still profile goes there without the restart, which has nothing to start,
+and its still reports show it at once.
 
-The regions' lists of keys came from msi-perkeyrgb, which leaves the power
-button out; it's in region `0x24`, with the F keys from F7, the navigation
-keys and the numpad (found by trying every region number and every free
-key code, 2026-10-19). Its slot there only has it lit: whatever the slot
-says, still in a colour or on another effect, the controller lights it by
-effect 0. So ryukazed keeps effect 0 for it, holding the button's colour
-or going as the effect it's with does, and puts the profile's effect and
-the zones' after it. An effect sent again shows at once, without a
-refresh, and stays through a redraw. Effects numbered up to 15 ran, 31
-didn't.
+The tables' third byte is how many slots the controller reads, not a
+region: msi-perkeyrgb's four lists of keys, with it as their numbers,
+happen to fit. Its lists leave the power button out; it goes in like any
+other key, in a table that counts it (found 2026-10-19: in one that
+didn't, it showed effect 0, whatever its slot said).
+
+The tables show only at the next redraw or restart, and the restart
+starts every effect over, so ryukazed keeps effect 0 for the power button:
+an effect sent again shows at once, with the others running on, and stays
+through a redraw. It never goes in a still report, which would hold it:
+the restart (`0d 00 00`) lets the other keys go again, but not the power
+button; `0d 00 02` does, starting the effects over too. A key on an effect
+in the tables, but held still by a still report, as the numpad is while
+NumLock is off, rejoins it only with a restart.
 
 A key flashes on its press and again on its release, and no setting of a
 key's slot makes it stay lit while held instead: of its mode byte's bits
