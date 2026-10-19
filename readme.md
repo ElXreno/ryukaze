@@ -42,10 +42,12 @@ The keyboard light's editor, shown on the keyboard as it goes:
 
 And the card on screen when the modes change, as on Fn+F7:
 
+<p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/osd-dark.png">
   <img alt="The card: the scenario, Performance among Silent and Balanced" src="docs/images/osd-light.png" width="480">
 </picture>
+</p>
 
 ## On NixOS
 
