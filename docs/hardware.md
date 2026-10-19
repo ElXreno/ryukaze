@@ -58,14 +58,20 @@ On a brightness key the controller draws every key again from the
 regions' tables, and what a still report alone painted goes: a still
 profile over a reactive one, say, comes back reactive. So ryukazed keeps
 still keys in the tables too, mode 1 with their colour: a still profile's,
-a key's own, the numpad dark for NumLock and the power button's own. A
-still profile goes there without the refresh, which would blink, and its
-still reports show it at once.
+a key's own, and the numpad dark for NumLock. A still profile goes there
+without the refresh, which would blink, and its still reports show it at
+once.
 
 The regions' lists of keys came from msi-perkeyrgb, which leaves the power
-button out; it takes the effects in region `0x24`, with the F keys from F7,
-the navigation keys and the numpad (found by trying every region number
-and every free key code, 2026-10-19).
+button out; it's in region `0x24`, with the F keys from F7, the navigation
+keys and the numpad (found by trying every region number and every free
+key code, 2026-10-19). Its slot there only has it lit: whatever the slot
+says, still in a colour or on another effect, the controller lights it by
+effect 0. So ryukazed keeps effect 0 for it, holding the button's colour
+or going as the effect it's with does, and puts the profile's effect and
+the zones' after it. An effect sent again shows at once, without a
+refresh, and stays through a redraw. Effects numbered up to 15 ran, 31
+didn't.
 
 A key flashes on its press and again on its release, and no setting of a
 key's slot makes it stay lit while held instead: of its mode byte's bits

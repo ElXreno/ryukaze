@@ -44,8 +44,8 @@ zone's.
 
 Its `zones` give keys an effect of their own beside its own: each zone a
 list of `keys`, by name or group, and an effect with what it takes, a later
-zone over an earlier one. There may be eight; the controller holds nine
-effects at once. Still colours go in `keys` instead. The window's editor
+zone over an earlier one. There may be eight. Still colours go in `keys`
+instead. The window's editor
 makes them as layers over the keyboard's.
 
 Keys: `a` to `z`, `0` to `9`, `f1` to `f12`, `esc`, `tab`, `capslock`,
@@ -68,10 +68,11 @@ shows something of its own instead (`keyboard.power` in the
 [config](config.md), or its choice under the profiles in the window): the
 shift mode, a colour each, and if asked the dGPU's colour for five seconds
 as it wakes, or whether the dGPU is awake, in colours the window changes
-too. Then it's still, a report on that key alone, so an effect on the
-others runs on undisturbed, and it changes within two seconds of what it
-follows. Back on the profile, the keyboard is lit again, as the refresh
-alone takes a key back into an effect.
+too. Then it holds that colour on an effect of its own, which changes
+with an effect on the others running on undisturbed and stays through a
+brightness key, within two seconds of what it follows. Back on the
+profile, the keyboard is lit again, which starts the button's effect with
+the others'.
 
 ## Saved profiles
 
