@@ -1,8 +1,15 @@
 # ryukaze
 
+[![check](https://github.com/kontonkara/ryukaze/actions/workflows/check.yml/badge.svg)](https://github.com/kontonkara/ryukaze/actions/workflows/check.yml)
+
 竜風, "dragon wind": control for MSI laptops on Linux, an alternative to
 [MControlCenter](https://github.com/dmitry-s93/MControlCenter) written
 from scratch in Rust.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/window-dark.png">
+  <img alt="The window, wide: sensors, scenario and performance, fans, battery, devices and graphics" src="docs/images/window-light.png">
+</picture>
 
 `ryukazed` is a small root daemon and the only process that touches the
 embedded controller. It works through the upstream
@@ -25,6 +32,20 @@ icon and a few commands.
 
 Tested on an MSI Alpha 17 C7VG; what goes beyond msi-ec, ryukaze does only
 on firmware checked (see the [hardware notes](docs/hardware.md)).
+
+The keyboard light's editor, shown on the keyboard as it goes:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/lights-dark.png">
+  <img alt="The keyboard light's editor: the keys in a wave's colours, with the effect and the colour beside them" src="docs/images/lights-light.png">
+</picture>
+
+And the card on screen when the modes change, as on Fn+F7:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/osd-dark.png">
+  <img alt="The card: the scenario, Performance among Silent and Balanced" src="docs/images/osd-light.png" width="480">
+</picture>
 
 ## On NixOS
 
