@@ -84,10 +84,13 @@ struct Table {
 pub struct Layout {
     cpu: Table,
     gpu: Table,
+    /// Divided by the tachometer's period, gives revolutions per minute.
+    rpm_per_period: u32,
 }
 
 /// Checked against the EC's own firmware and live: MSI Alpha 17 C7VG.
 static ALPHA_17: Layout = Layout {
+    rpm_per_period: 470_000,
     cpu: Table {
         temps: 0x6a,
         speeds: 0x72,
@@ -108,10 +111,36 @@ static ALPHA_17: Layout = Layout {
     },
 };
 
+/// Checked live against EC RAM and msi-wmi-platform's fan readings: MSI
+/// Titan 18 HX A2WJ (MS-1824). The tachometers sit where the Alpha's do,
+/// but msi-wmi-platform divides 480000 by the same period.
+static TITAN_18_HX: Layout = Layout {
+    rpm_per_period: 480_000,
+    cpu: Table {
+        temps: 0x6a,
+        speeds: 0x72,
+        tach: 0xc8,
+        factory: Curve {
+            temps: [58, 64, 70, 76, 82, 88],
+            speeds: [0, 25, 35, 44, 58, 70, 75],
+        },
+    },
+    gpu: Table {
+        temps: 0x82,
+        speeds: 0x8a,
+        tach: 0xca,
+        factory: Curve {
+            temps: [52, 58, 64, 70, 76, 82],
+            speeds: [0, 25, 35, 44, 58, 70, 75],
+        },
+    },
+};
+
 /// The layout for this EC firmware (msi-ec's `fw_version`), if known.
 pub fn layout(firmware: &str) -> Option<&'static Layout> {
     match firmware {
         "17KKIMS1.115" => Some(&ALPHA_17),
+        "1824EMS1.509" => Some(&TITAN_18_HX),
         _ => None,
     }
 }
@@ -145,15 +174,15 @@ impl Layout {
         ec.write(table.speeds, &curve.speeds)
     }
 
-    /// Revolutions per minute, 0 when the fan stands. The constant is the
-    /// one MControlCenter uses; the firmware doesn't say, but it lands on
-    /// plausible numbers (about 2800 rpm at 50%).
+    /// Revolutions per minute, 0 when the fan stands. On the Alpha the
+    /// constant is the one MControlCenter uses; the firmware doesn't say,
+    /// but it lands on plausible numbers (about 2800 rpm at 50%).
     pub fn rpm(&self, ec: &RawEc, fan: Fan) -> io::Result<u16> {
         let mut tach = [0; 2];
         ec.read(self.table(fan).tach, &mut tach)?;
         Ok(match u16::from_be_bytes(tach) {
             0 => 0,
-            period => (470_000 / u32::from(period)).min(u16::MAX.into()) as u16,
+            period => (self.rpm_per_period / u32::from(period)).min(u16::MAX.into()) as u16,
         })
     }
 }
@@ -208,6 +237,60 @@ mod tests {
                 .all(|&i| (0x6a..0x70).contains(&i) || (0x72..0x79).contains(&i))
         );
         assert_eq!(after[0xf3], 0x5a);
+    }
+
+    /// EC RAM as dumped on the Titan 18 HX: comfort, auto, fans at ~1550 rpm
+    /// by msi-wmi-platform. The tables past each curve (0x79, 0x91) belong to
+    /// the EC and stay as they are.
+    fn titan18() -> (tempfile::TempDir, RawEc) {
+        let sysfs = tempfile::tempdir().unwrap();
+        let io = sysfs.path().join("kernel/debug/ec/ec0/io");
+        fs::create_dir_all(io.parent().unwrap()).unwrap();
+        let mut ram = [0u8; 256];
+        ram[0x6a..0x70].copy_from_slice(&[58, 64, 70, 76, 82, 88]);
+        ram[0x72..0x79].copy_from_slice(&[0, 25, 35, 44, 58, 70, 75]);
+        ram[0x79..0x80].copy_from_slice(&[0, 51, 61, 67, 73, 79, 85]);
+        ram[0x82..0x88].copy_from_slice(&[52, 58, 64, 70, 76, 82]);
+        ram[0x8a..0x91].copy_from_slice(&[0, 25, 35, 44, 58, 70, 75]);
+        ram[0x91..0x98].copy_from_slice(&[0, 45, 55, 61, 67, 73, 79]);
+        ram[0xc8..0xcc].copy_from_slice(&[0x01, 0x35, 0x01, 0x3a]);
+        fs::write(&io, ram).unwrap();
+        let ec = RawEc::new(sysfs.path());
+        (sysfs, ec)
+    }
+
+    #[test]
+    fn the_titan_dump_is_its_factory_curve() {
+        let (_sysfs, ec) = titan18();
+        let layout = layout("1824EMS1.509").unwrap();
+        for fan in Fan::ALL {
+            assert_eq!(layout.read_curve(&ec, fan).unwrap(), layout.factory(fan));
+        }
+        assert_eq!(layout.rpm(&ec, Fan::Cpu).unwrap(), 1553);
+        assert_eq!(layout.rpm(&ec, Fan::Gpu).unwrap(), 1528);
+    }
+
+    #[test]
+    fn titan_writes_leave_the_neighbouring_tables() {
+        let (sysfs, ec) = titan18();
+        let layout = layout("1824EMS1.509").unwrap();
+        let before = fs::read(sysfs.path().join("kernel/debug/ec/ec0/io")).unwrap();
+        let quiet = Curve::new(&[50, 58, 66, 74, 82, 90], &[0, 20, 30, 40, 55, 70, 100]).unwrap();
+        for fan in Fan::ALL {
+            layout.write_curve(&ec, fan, &quiet).unwrap();
+            assert_eq!(layout.read_curve(&ec, fan).unwrap(), quiet);
+        }
+
+        let after = fs::read(sysfs.path().join("kernel/debug/ec/ec0/io")).unwrap();
+        let changed: Vec<usize> = (0..256).filter(|&i| before[i] != after[i]).collect();
+        assert!(changed.iter().all(|&i| {
+            (0x6a..0x70).contains(&i)
+                || (0x72..0x79).contains(&i)
+                || (0x82..0x88).contains(&i)
+                || (0x8a..0x91).contains(&i)
+        }));
+        assert_eq!(after[0x79..0x80], before[0x79..0x80]);
+        assert_eq!(after[0x91..0x98], before[0x91..0x98]);
     }
 
     #[test]
