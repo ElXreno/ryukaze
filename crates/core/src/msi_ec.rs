@@ -157,11 +157,17 @@ impl MsiEc {
     }
 
     /// The charge end threshold msi-ec adds to the battery; charging
-    /// resumes 10 points below it.
+    /// resumes 10 points below it. msi-ec reads 0 until something sets a
+    /// threshold (the EC byte holds only its enable bit, as on a Titan 18
+    /// HX fresh from the factory), and the EC then charges to full.
     pub fn charge_limit(&self) -> io::Result<u8> {
         let path = self.charge_limit_path()?;
         let text = fs::read_to_string(&path)?;
-        text.trim().parse().map_err(|_| invalid(&path, &text))
+        match text.trim().parse() {
+            Ok(0) => Ok(100),
+            Ok(percent) => Ok(percent),
+            Err(_) => Err(invalid(&path, &text)),
+        }
     }
 
     /// 10 to 100 percent. The EC keeps it across reboots.
@@ -289,6 +295,15 @@ mod tests {
         assert_eq!(ec.cpu_temp().unwrap(), 61);
         assert_eq!(ec.cpu_fan().unwrap(), 45);
         assert_eq!(ec.gpu_temp().unwrap(), 0);
+    }
+
+    #[test]
+    fn an_unset_charge_limit_is_full() {
+        let sysfs = alpha17();
+        let ec = MsiEc::new(sysfs.path());
+        let threshold = ec.charge_limit_path().unwrap();
+        fs::write(&threshold, "0\n").unwrap();
+        assert_eq!(ec.charge_limit().unwrap(), 100);
     }
 
     #[test]
