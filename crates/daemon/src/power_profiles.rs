@@ -33,7 +33,7 @@ pub fn profile_for(shift_mode: &str) -> Option<&'static str> {
     match shift_mode {
         "eco" => Some("power-saver"),
         "comfort" => Some("balanced"),
-        "sport" | "turbo" => Some("performance"),
+        "sport" | "turbo" | "apex" => Some("performance"),
         _ => None,
     }
 }

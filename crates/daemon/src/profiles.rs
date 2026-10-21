@@ -248,15 +248,17 @@ impl Profiles {
 
         let service = self.service().await;
         let mut service = service.get_mut().await;
-        let Some(profile) = service.source_profile(source) else {
-            info!("on {source}, no profile for it");
-            return;
-        };
-        match &profile.scenario {
-            Some(scenario) => info!("on {source}, applying its profile ({scenario})"),
-            None => info!("on {source}, applying its profile"),
+        match service.source_profile(source) {
+            Some(profile) => {
+                match &profile.scenario {
+                    Some(scenario) => info!("on {source}, applying its profile ({scenario})"),
+                    None => info!("on {source}, applying its profile"),
+                }
+                report(service.apply_profile(&profile));
+            }
+            None => info!("on {source}, no profile for it"),
         }
-        report(service.apply_profile(&profile));
+        report(service.follow_source());
     }
 
     /// Goes through the object server, so it waits for D-Bus calls in

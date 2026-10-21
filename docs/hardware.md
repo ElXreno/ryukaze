@@ -36,6 +36,16 @@ answer. It doesn't write the `MsiDCVarData` EFI variable, as other MUX
 switchers do: the firmware reads that one for the Win/Fn swap, not for
 the MUX.
 
+## Apex
+
+MSI Center's Apex is one more value of the shift mode byte, which msi-ec
+doesn't know and reads back as `unknown (197)`. On the Titan 18 HX A2WJ
+(1824EMS1.509) MSI Center writes 0xC5 into 0xD2, where turbo is 0xC4, and
+nothing else. The EC then puts 7 into the mode byte ACPI reads (`OEV1`,
+at 0xFC000701) instead of turbo's 4, and the ACPI table it picks for the
+dGPU (NVPCF) raises its limit from 150 to 175 W. MSI has it on AC only,
+and so does ryukazed: off AC it takes turbo instead.
+
 ## The keyboard's controller
 
 Still colours go in a HID feature report on the controller's first

@@ -32,6 +32,11 @@ pub struct Config {
     /// keeps it.
     pub usb_share: Option<bool>,
 
+    /// Turbo is Apex on AC, where the EC has it: by a power profile, a
+    /// scenario, at start and as the laptop goes on AC. Off AC Apex is
+    /// turbo either way.
+    pub apex_on_ac: bool,
+
     pub profiles: Profiles,
 
     /// Sets of modes to step through in this order (`NextScenario`, which
