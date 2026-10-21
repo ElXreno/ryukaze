@@ -129,6 +129,7 @@ async fn main() -> Result<()> {
         warn!("{err}");
     }
     service.put_power_profiles_sync(config.power_profiles_daemon.sync);
+    service.put_apex_on_ac(config.apex_on_ac);
     service.put_source_profiles(config.profiles.clone());
     service.put_power_light(config.keyboard.power.clone());
     let state = state_dir(&args);

@@ -20,6 +20,12 @@ fn_key = "left"
 # USB ports powered while the laptop is off (USB Power Share), set at start.
 usb_share = false
 
+# Turbo is Apex on AC, where the EC has it (see hardware.md): whenever a
+# power profile, a scenario, the start or plugging in picks turbo. Turbo
+# picked by hand stays turbo. Off AC Apex is turbo either way. Off by
+# default.
+apex_on_ac = false
+
 # Applied when the laptop goes on AC or on battery: a scenario by name
 # (below), the modes themselves, or both, the modes over the scenario's. A
 # mode switched over D-Bus in between stays until the next plug or unplug.
@@ -58,7 +64,7 @@ cpu_c = 95
 gpu_c = 85
 
 # power-profiles-daemon's profile and the shift mode in step, both ways:
-# eco is power-saver, comfort balanced, sport and turbo performance. A
+# eco is power-saver, comfort balanced, sport, turbo and apex performance. A
 # profile picked there (a desktop's power menu) applies the first scenario
 # with a shift mode for it, or the mode alone. On by default; without ppd
 # on the bus it does nothing.

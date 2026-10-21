@@ -9,6 +9,7 @@ use std::{
 
 use ryukaze_core::{
     COOLER_BOOST_MARKS, Status,
+    apex::{self, APEX, Apex},
     dgpu::{self, Dgpu},
     fans::{self, Curve, Fan, Layout},
     gpu_mux::{self, GpuMode, GpuMux},
@@ -37,6 +38,10 @@ pub struct Service {
     usb_share: Option<(RawEc, UsbShare)>,
     /// The GPU MUX, where the EC's map has it.
     gpu_mux: Option<(RawEc, GpuMux)>,
+    /// Apex, where the EC's map has it.
+    apex: Option<(RawEc, Apex)>,
+    /// Turbo is Apex on AC wherever a mode is picked for the user.
+    apex_on_ac: bool,
     /// The configured scenarios, or the built-in ones.
     scenarios: Vec<Scenario>,
     /// Told by the setters that may change the modes, so a change is
@@ -243,6 +248,7 @@ impl Service {
         let usb_share =
             usb_share::usb_share(&firmware).map(|share| (RawEc::new(ec.sysfs()), share));
         let gpu_mux = gpu_mux::gpu_mux(&firmware).map(|mux| (RawEc::new(ec.sysfs()), mux));
+        let apex = apex::apex(&firmware).map(|apex| (RawEc::new(ec.sysfs()), apex));
         let dgpu = dgpu::find(ec.sysfs());
         let scenarios = if scenarios.is_empty() {
             built_in_scenarios(&ec)
@@ -255,6 +261,8 @@ impl Service {
             boost,
             usb_share,
             gpu_mux,
+            apex,
+            apex_on_ac: false,
             scenarios,
             poke: Arc::new(Notify::new()),
             dgpu,
@@ -292,7 +300,7 @@ impl Service {
     /// goes up, and entered after it comes down. All are tried; the first
     /// failure is returned and the others logged.
     pub fn apply_profile(&mut self, profile: &Profile) -> fdo::Result<()> {
-        let profile = &self.resolve(profile)?;
+        let profile = &self.fit(self.resolve(profile)?);
         let super_battery = |service: &mut Self| {
             profile
                 .super_battery
@@ -376,34 +384,102 @@ impl Service {
     }
 
     /// Follows power-profiles-daemon to `profile`, unless the shift mode
-    /// is one for it already: the first scenario with a shift mode for it,
-    /// or the mode alone. Names what it applied.
+    /// is one for it already: the first of its shift modes this EC has, by
+    /// a scenario with it or alone. Names what it applied.
     pub fn follow_power_profile(&mut self, profile: &str) -> fdo::Result<Option<String>> {
-        let now = self.ec.shift_mode().map_err(|e| error("shift_mode", e))?;
-        if power_profiles::profile_for(&now) == Some(profile) {
+        let now = self.shift_mode_now().map_err(|e| error("shift_mode", e))?;
+        let modes = self
+            .shift_modes_here()
+            .map_err(|e| error("shift_mode", e))?;
+        let wanted: Vec<&str> = power_profiles::shift_modes_for(profile)
+            .iter()
+            .map(|mode| self.on_source(mode))
+            .filter(|mode| modes.iter().any(|known| known == mode))
+            .collect();
+        // Turbo on AC with Apex wanted there is not where it should be.
+        if power_profiles::profile_for(&now) == Some(profile) && wanted.contains(&now.as_str()) {
             return Ok(None);
         }
-        let wanted = power_profiles::shift_modes_for(profile);
-        if let Some(scenario) = self
-            .scenarios
-            .iter()
-            .find(|scenario| {
-                scenario
-                    .shift_mode
-                    .as_deref()
-                    .is_some_and(|mode| wanted.contains(&mode))
-            })
-            .cloned()
-        {
-            self.apply_profile(&scenario.modes())?;
-            return Ok(Some(format!("scenario {}", scenario.name)));
+        for mode in &wanted {
+            if let Some(scenario) = self
+                .scenarios
+                .iter()
+                .find(|scenario| {
+                    scenario.shift_mode.as_deref().map(|m| self.on_source(m)) == Some(*mode)
+                })
+                .cloned()
+            {
+                self.apply_profile(&scenario.modes())?;
+                return Ok(Some(format!("scenario {}", scenario.name)));
+            }
         }
-        let modes = self.ec.shift_modes().map_err(|e| error("shift_mode", e))?;
-        let Some(mode) = wanted.iter().find(|mode| modes.iter().any(|m| m == *mode)) else {
+        let Some(mode) = wanted.first() else {
             return Ok(None);
         };
         self.set_shift_mode(mode)?;
         Ok(Some(format!("shift mode {mode}")))
+    }
+
+    /// From the config: whether turbo is Apex on AC.
+    pub fn put_apex_on_ac(&mut self, on: bool) {
+        self.apex_on_ac = on;
+    }
+
+    /// The shift mode the EC is in: msi-ec's, or Apex, which it can't name.
+    fn shift_mode_now(&self) -> io::Result<String> {
+        let mode = self.ec.shift_mode()?;
+        if mode.starts_with("unknown")
+            && let Some((raw, apex)) = &self.apex
+            && apex.on(raw)?
+        {
+            return Ok(APEX.into());
+        }
+        Ok(mode)
+    }
+
+    /// msi-ec's shift modes, and Apex where the EC's map has it.
+    fn shift_modes_here(&self) -> io::Result<Vec<String>> {
+        let mut modes = self.ec.shift_modes()?;
+        if self.apex.is_some() {
+            modes.push(APEX.into());
+        }
+        Ok(modes)
+    }
+
+    fn on_ac(&self) -> bool {
+        power_supply::source(self.ec.sysfs()).ok().flatten() == Some(Source::Ac)
+    }
+
+    /// `mode` as the power source takes it: Apex is turbo off AC, and with
+    /// `apex_on_ac` turbo is Apex on it.
+    fn on_source<'a>(&self, mode: &'a str) -> &'a str {
+        match mode {
+            APEX if !self.on_ac() => "turbo",
+            "turbo" if self.apex_on_ac && self.apex.is_some() && self.on_ac() => APEX,
+            _ => mode,
+        }
+    }
+
+    /// `profile` with its shift mode as the power source takes it.
+    fn fit(&self, mut profile: Profile) -> Profile {
+        profile.shift_mode = profile
+            .shift_mode
+            .map(|mode| self.on_source(&mode).to_owned());
+        profile
+    }
+
+    /// As the laptop goes on AC or off it: out of Apex without AC, and
+    /// with `apex_on_ac` from turbo into it with AC.
+    pub fn follow_source(&mut self) -> fdo::Result<()> {
+        if self.apex.is_none() {
+            return Ok(());
+        }
+        let now = self.shift_mode_now().map_err(|e| error("shift_mode", e))?;
+        let fit = self.on_source(&now).to_owned();
+        if fit == now {
+            return Ok(());
+        }
+        self.set_shift_mode(&fit)
     }
 
     /// The settings changed in the window before, read as the daemon
@@ -543,7 +619,7 @@ impl Service {
     /// has, and with every one the config names for AC, battery or a
     /// keyboard light, which stay as they are.
     fn check_scenarios(&self, scenarios: &[Scenario]) -> Result<(), String> {
-        let shift_modes = self.ec.shift_modes().ok();
+        let shift_modes = self.shift_modes_here().ok();
         let fan_modes = self.ec.fan_modes().ok();
         let super_battery = self.ec.super_battery().is_ok();
         for (i, scenario) in scenarios.iter().enumerate() {
@@ -1063,10 +1139,13 @@ impl Service {
                 self.power_colors.get("dgpu").copied()
             }
             config::PowerFollows::ShiftMode => self
-                .ec
-                .shift_mode()
+                .shift_mode_now()
                 .ok()
-                .and_then(|mode| self.power_colors.get(&mode).copied())
+                .and_then(|mode| {
+                    let colors = &self.power_colors;
+                    let turbo = || colors.get("turbo").filter(|_| mode == APEX);
+                    colors.get(&mode).or_else(turbo).copied()
+                })
                 .or_else(profile),
             config::PowerFollows::Dgpu => {
                 let awake = self.dgpu_seen.is_some_and(|(awake, _)| awake);
@@ -1097,7 +1176,7 @@ impl Service {
     fn scenario(&self, now: &Snapshot) -> Option<String> {
         self.scenarios
             .iter()
-            .find(|scenario| now.has(&scenario.modes()))
+            .find(|scenario| now.has(&self.fit(scenario.modes())))
             .map(|scenario| scenario.name.clone())
     }
 
@@ -1145,21 +1224,24 @@ impl Service {
 
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            shift_mode: self.ec.shift_mode().ok(),
+            shift_mode: self.shift_mode_now().ok(),
             fan_mode: self.ec.fan_mode().ok(),
             super_battery: self.ec.super_battery().ok(),
             cooler_boost: self.ec.cooler_boost().ok(),
         }
     }
 
-    /// Puts back what was there before sleep; what's unchanged stays
-    /// unwritten. Failures go to the journal.
+    /// Puts back what was there before sleep, Apex only on AC; what's
+    /// unchanged stays unwritten. Failures go to the journal.
     pub fn restore(&mut self, snapshot: &Snapshot) {
         let results = [
-            snapshot
-                .shift_mode
-                .as_deref()
-                .map(|mode| self.set_shift_mode(mode)),
+            snapshot.shift_mode.as_deref().map(|mode| {
+                let mode = match mode {
+                    APEX if !self.on_ac() => "turbo",
+                    _ => mode,
+                };
+                self.set_shift_mode(mode)
+            }),
             snapshot
                 .fan_mode
                 .as_deref()
@@ -1337,7 +1419,7 @@ impl Service {
             .filter(|_| dgpu_awake == Some(true))
             .map(|dgpu| dgpu.users(&self.proc));
         let now = Snapshot {
-            shift_mode: field("shift_mode", ec.shift_mode()),
+            shift_mode: field("shift_mode", self.shift_mode_now()),
             fan_mode: field("fan_mode", ec.fan_mode()),
             super_battery: field("super_battery", ec.super_battery()),
             cooler_boost: field("cooler_boost", ec.cooler_boost()),
@@ -1361,7 +1443,7 @@ impl Service {
             firmware: field("fw_version", ec.firmware()),
             firmware_date: field("fw_release_date", ec.firmware_date()),
             shift_mode: now.shift_mode,
-            shift_modes: field("available_shift_modes", ec.shift_modes()),
+            shift_modes: field("available_shift_modes", self.shift_modes_here()),
             fan_mode: now.fan_mode,
             fan_modes: field("available_fan_modes", ec.fan_modes()),
             super_battery: now.super_battery,
@@ -1436,7 +1518,7 @@ impl Service {
         let next = self
             .scenarios
             .iter()
-            .position(|scenario| now.has(&scenario.modes()))
+            .position(|scenario| now.has(&self.fit(scenario.modes())))
             .map_or(0, |i| (i + 1) % self.scenarios.len());
         let scenario = self.scenarios[next].clone();
         info!("scenario: {}", scenario.name);
@@ -1451,16 +1533,24 @@ impl Service {
         self.apply_profile(&scenario.modes())
     }
 
-    /// One of the shift modes in Status.
+    /// One of the shift modes in Status; Apex only on AC.
     pub fn set_shift_mode(&mut self, mode: &str) -> fdo::Result<()> {
         self.poke.notify_one();
-        let modes = self.ec.shift_modes().map_err(|e| error("shift_mode", e))?;
+        let modes = self
+            .shift_modes_here()
+            .map_err(|e| error("shift_mode", e))?;
         check_mode(mode, &modes)?;
+        if mode == APEX && !self.on_ac() {
+            return Err(fdo::Error::Failed("shift_mode: apex only on AC".into()));
+        }
         apply(
             "shift_mode",
             mode.to_owned(),
-            || self.ec.shift_mode(),
-            |_| self.ec.set_shift_mode(mode),
+            || self.shift_mode_now(),
+            |_| match &self.apex {
+                Some((raw, apex)) if mode == APEX => apex.enter(raw),
+                _ => self.ec.set_shift_mode(mode),
+            },
         )
     }
 
@@ -1888,7 +1978,7 @@ impl Service {
     /// The power button's colour for `name`, a shift mode or `dgpu`, the
     /// dGPU's awake: `#rrggbb` or `off`.
     pub fn set_power_color(&mut self, name: &str, color: &str) -> fdo::Result<()> {
-        let modes = self.ec.shift_modes().unwrap_or_default();
+        let modes = self.shift_modes_here().unwrap_or_default();
         if name != "dgpu" && !modes.iter().any(|mode| mode == name) {
             return Err(fdo::Error::InvalidArgs(format!(
                 "{name}: a shift mode, or dgpu"
@@ -2918,6 +3008,110 @@ mod tests {
         assert_eq!(other.status().usb_share, None);
         assert!(other.set_usb_share(true).is_err());
         assert_eq!(ram(elsewhere.path())[0xbf], 0x08);
+    }
+
+    /// The Titan 18 HX with msi-ec reading `shift_mode` as `msi_ec`, its
+    /// byte at `d2`, on AC or not. msi-ec can't be made to follow the byte
+    /// here, so each test starts where its own direction can be read back.
+    fn titan18hx(msi_ec: &str, d2: u8, ac: bool) -> tempfile::TempDir {
+        let sysfs = alpha17("1824EMS1.509");
+        let device = sysfs.path().join("devices/platform/msi-ec");
+        fs::write(device.join("shift_mode"), format!("{msi_ec}\n")).unwrap();
+        let io = sysfs.path().join("kernel/debug/ec/ec0/io");
+        let mut bytes = fs::read(&io).unwrap();
+        bytes[0xd2] = d2;
+        fs::write(&io, bytes).unwrap();
+        plug(sysfs.path(), ac);
+        sysfs
+    }
+
+    fn plug(sysfs: &Path, ac: bool) {
+        let adapter = sysfs.join("class/power_supply/ADP1");
+        fs::create_dir_all(&adapter).unwrap();
+        fs::write(adapter.join("type"), "Mains\n").unwrap();
+        fs::write(adapter.join("online"), if ac { "1\n" } else { "0\n" }).unwrap();
+    }
+
+    #[test]
+    fn apex_where_the_map_has_it_and_on_ac() {
+        let sysfs = titan18hx("unknown (196)", 0xc4, true);
+        let mut titan = service(sysfs.path());
+        let modes = titan.status().shift_modes.unwrap();
+        assert_eq!(modes, ["eco", "comfort", "turbo", "apex"]);
+        titan.set_shift_mode("apex").unwrap();
+        assert_eq!(ram(sysfs.path())[0xd2], 0xc5);
+        assert_eq!(titan.status().shift_mode.as_deref(), Some("apex"));
+
+        let unplugged = titan18hx("unknown (196)", 0xc4, false);
+        let mut titan = service(unplugged.path());
+        assert!(titan.set_shift_mode("apex").is_err());
+        assert_eq!(ram(unplugged.path())[0xd2], 0xc4);
+
+        let elsewhere = alpha17("17KKIMS1.115");
+        plug(elsewhere.path(), true);
+        let mut alpha = service(elsewhere.path());
+        assert!(!alpha.status().shift_modes.unwrap().contains(&"apex".into()));
+        assert!(alpha.set_shift_mode("apex").is_err());
+    }
+
+    #[test]
+    fn turbo_is_apex_on_ac_when_asked() {
+        let sysfs = titan18hx("turbo", 0xc4, true);
+        let mut titan = service(sysfs.path());
+        assert_eq!(titan.on_source("turbo"), "turbo");
+        assert_eq!(titan.on_source("apex"), "apex");
+        titan.put_apex_on_ac(true);
+        assert_eq!(titan.on_source("turbo"), "apex");
+        assert_eq!(titan.on_source("comfort"), "comfort");
+        let performance = Scenario {
+            name: "performance".into(),
+            shift_mode: Some("turbo".into()),
+            fan_mode: None,
+            super_battery: None,
+        };
+        assert_eq!(
+            titan.fit(performance.modes()).shift_mode.as_deref(),
+            Some("apex")
+        );
+
+        plug(sysfs.path(), false);
+        assert_eq!(titan.on_source("turbo"), "turbo");
+        assert_eq!(titan.on_source("apex"), "turbo");
+
+        let elsewhere = alpha17("17KKIMS1.115");
+        plug(elsewhere.path(), true);
+        let mut alpha = service(elsewhere.path());
+        alpha.put_apex_on_ac(true);
+        assert_eq!(alpha.on_source("turbo"), "turbo");
+    }
+
+    #[test]
+    fn apex_goes_with_ac() {
+        let sysfs = titan18hx("unknown (197)", 0xc5, true);
+        let mut titan = service(sysfs.path());
+        titan.put_apex_on_ac(true);
+        titan.follow_source().unwrap();
+        assert_eq!(titan.status().shift_mode.as_deref(), Some("apex"));
+        assert_eq!(titan.follow_power_profile("performance").unwrap(), None);
+
+        plug(sysfs.path(), false);
+        titan.follow_source().unwrap();
+        assert_eq!(titan.status().shift_mode.as_deref(), Some("turbo"));
+    }
+
+    #[test]
+    fn performance_off_ac_is_turbo() {
+        let sysfs = titan18hx("unknown (197)", 0xc5, false);
+        let mut titan = service(sysfs.path());
+        titan.put_apex_on_ac(true);
+        assert_eq!(
+            titan
+                .follow_power_profile("performance")
+                .unwrap()
+                .as_deref(),
+            Some("scenario performance")
+        );
+        assert_eq!(titan.status().shift_mode.as_deref(), Some("turbo"));
     }
 
     /// The BIOS behind the EC, as far as the MUX goes: answers each ask in

@@ -1059,7 +1059,7 @@ impl App {
 }
 
 /// Modes in this order, whatever order the driver lists them in.
-pub const SHIFT_ORDER: &[&str] = &["eco", "comfort", "sport", "turbo"];
+pub const SHIFT_ORDER: &[&str] = &["eco", "comfort", "sport", "turbo", "apex"];
 pub const FAN_ORDER: &[&str] = &["auto", "silent", "basic", "advanced"];
 
 /// `modes` in `order`, unknown ones last.
