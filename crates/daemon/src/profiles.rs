@@ -134,6 +134,9 @@ impl Profiles {
         if let Some(on) = config.usb_share.or(kept.usb_share) {
             report(service.put_usb_share(on));
         }
+        if let Some(on) = config.local_dimming.or(kept.local_dimming) {
+            report(service.put_local_dimming(on));
+        }
         if let Some(side) = config.fn_key.as_ref().or(kept.fn_key.as_ref()) {
             report(service.put_fn_key(side));
         }

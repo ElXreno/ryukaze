@@ -84,6 +84,8 @@ temperatures in its tooltip, and opens the window on a click.
 [config](config.md)), prints its name and exits: for the key MSI Center had
 it on, Fn+F7. `ryukaze --next-keyboard-profile` does the same for the
 keyboard light's profiles, for the key MSI had lighting on, Fn+F9.
+`ryukaze --toggle-local-dimming` turns the panel's local dimming the other
+way round and prints `on` or `off`, where the EC has it.
 
 `ryukaze --osd` shows a card at the bottom of the screen for a moment
 whenever the modes change, whatever changed them: the scenario among the

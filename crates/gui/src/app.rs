@@ -108,6 +108,7 @@ pub enum Message {
     Webcam(bool),
     FnKey(String),
     UsbShare(bool),
+    LocalDimming(bool),
     NumpadFollowsNumlock(bool),
     /// What the power button's light follows.
     PowerLight(&'static str),
@@ -351,6 +352,9 @@ impl App {
             }
             Message::UsbShare(on) => {
                 self.call(move |client| async move { client.set_usb_share(on).await })
+            }
+            Message::LocalDimming(on) => {
+                self.call(move |client| async move { client.set_local_dimming(on).await })
             }
             Message::GpuMode(mode) => {
                 self.call(move |client| async move { client.set_gpu_mode(&mode).await })
@@ -841,6 +845,9 @@ impl App {
         if let Some(on) = status.usb_share {
             devices = devices.push(switch("Charge USB when off", on, Message::UsbShare));
         }
+        if let Some(on) = status.local_dimming {
+            devices = devices.push(switch("Local dimming", on, Message::LocalDimming));
+        }
         if status.keyboard_profiles.is_some() {
             let current = status.keyboard_profile.as_deref().unwrap_or_default();
             let (saved, standard) = keyboard_profiles(status);
@@ -895,6 +902,7 @@ impl App {
         if status.webcam.is_some()
             || status.fn_key.is_some()
             || status.usb_share.is_some()
+            || status.local_dimming.is_some()
             || status.keyboard_profiles.is_some()
         {
             put([2, 1], section("Devices", devices));
@@ -1337,6 +1345,7 @@ fn kept_hint(status: &Status) -> String {
             "webcam" => "the camera",
             "fn_key" => "the Fn key",
             "usb_share" => "USB Power Share",
+            "local_dimming" => "local dimming",
             "fans.cpu" | "fans.gpu" => "fan curves",
             "fans.adaptive" => "adaptive fans",
             "fans.gpu_follows_cpu" => "the GPU fan's help",

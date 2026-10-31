@@ -16,7 +16,7 @@ mod scenarios;
 mod theme;
 mod tray;
 
-const USAGE: &str = "usage: ryukaze [--hidden] [--session] [--next-scenario | --next-keyboard-profile | --osd | --status [--json]]";
+const USAGE: &str = "usage: ryukaze [--hidden] [--session] [--next-scenario | --next-keyboard-profile | --toggle-local-dimming | --osd | --status [--json]]";
 
 fn main() -> iced::Result {
     for (var, value) in renderer::choose() {
@@ -24,7 +24,7 @@ fn main() -> iced::Result {
         unsafe { std::env::set_var(var, value) };
     }
     let (mut session, mut hidden, mut next_scenario, mut osd) = (false, false, false, false);
-    let mut next_keyboard_profile = false;
+    let (mut next_keyboard_profile, mut toggle_local_dimming) = (false, false);
     let (mut status, mut json) = (false, false);
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
@@ -36,6 +36,8 @@ fn main() -> iced::Result {
             "--next-scenario" => next_scenario = true,
             // Step to the next keyboard light profile and exit, for Fn+F9.
             "--next-keyboard-profile" => next_keyboard_profile = true,
+            // Local dimming the other way round and exit, for a key binding.
+            "--toggle-local-dimming" => toggle_local_dimming = true,
             // The on-screen card for mode changes, a process of its own.
             "--osd" => osd = true,
             // Print what the window shows and exit; as JSON for scripts.
@@ -65,6 +67,12 @@ fn main() -> iced::Result {
     if next_keyboard_profile {
         exit_with(client::once(session, |client| async move {
             client.next_keyboard_profile().await
+        }));
+    }
+
+    if toggle_local_dimming {
+        exit_with(client::once(session, |client| async move {
+            client.toggle_local_dimming().await
         }));
     }
 

@@ -462,6 +462,11 @@ fn card(before: &Status, after: &Status) -> Option<Card> {
     {
         return Some(Card::Switch("Super battery", on));
     }
+    if after.local_dimming != before.local_dimming
+        && let Some(on) = after.local_dimming
+    {
+        return Some(Card::Switch("Local dimming", on));
+    }
     if after.shift_mode != before.shift_mode
         && let Some(mode) = &after.shift_mode
     {

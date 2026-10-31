@@ -14,6 +14,7 @@ use ryukaze_core::{
     fans::{self, Curve, Fan, Layout},
     gpu_mux::{self, GpuMode, GpuMux},
     keyboard::{self, Color, Klc, Lighting},
+    local_dimming::{self, LocalDimming},
     msi_ec::MsiEc,
     power_supply::{self, Source},
     raw_ec::RawEc,
@@ -40,6 +41,8 @@ pub struct Service {
     gpu_mux: Option<(RawEc, GpuMux)>,
     /// Apex, where the EC's map has it.
     apex: Option<(RawEc, Apex)>,
+    /// Local dimming, where the EC's map has it and the panel has zones.
+    local_dimming: Option<(RawEc, LocalDimming)>,
     /// Turbo is Apex on AC wherever a mode is picked for the user.
     apex_on_ac: bool,
     /// The configured scenarios, or the built-in ones.
@@ -207,6 +210,7 @@ pub struct Snapshot {
     fan_mode: Option<String>,
     super_battery: Option<bool>,
     cooler_boost: Option<bool>,
+    local_dimming: Option<bool>,
 }
 
 impl Snapshot {
@@ -249,6 +253,9 @@ impl Service {
             usb_share::usb_share(&firmware).map(|share| (RawEc::new(ec.sysfs()), share));
         let gpu_mux = gpu_mux::gpu_mux(&firmware).map(|mux| (RawEc::new(ec.sysfs()), mux));
         let apex = apex::apex(&firmware).map(|apex| (RawEc::new(ec.sysfs()), apex));
+        let local_dimming = local_dimming::local_dimming(&firmware)
+            .map(|dimming| (RawEc::new(ec.sysfs()), dimming))
+            .filter(|(raw, dimming)| dimming.supported(raw).unwrap_or(false));
         let dgpu = dgpu::find(ec.sysfs());
         let scenarios = if scenarios.is_empty() {
             built_in_scenarios(&ec)
@@ -262,6 +269,7 @@ impl Service {
             usb_share,
             gpu_mux,
             apex,
+            local_dimming,
             apex_on_ac: false,
             scenarios,
             poke: Arc::new(Notify::new()),
@@ -345,8 +353,15 @@ impl Service {
             fan_mode: now.fan_mode,
             super_battery: now.super_battery,
             cooler_boost: now.cooler_boost,
+            local_dimming: self.local_dimming_now(),
             ..Status::default()
         }
+    }
+
+    fn local_dimming_now(&self) -> Option<bool> {
+        self.local_dimming
+            .as_ref()
+            .and_then(|(raw, dimming)| dimming.get(raw).ok())
     }
 
     fn scenario_names(&self) -> Option<Vec<String>> {
@@ -773,6 +788,22 @@ impl Service {
             fdo::Error::NotSupported("usb_share: this EC's map doesn't have it".into())
         })?;
         apply("usb_share", on, || share.get(raw), |&on| share.set(raw, on))
+    }
+
+    pub fn put_local_dimming(&mut self, on: bool) -> fdo::Result<()> {
+        let (raw, dimming) = self.local_dimming.as_ref().ok_or_else(|| {
+            fdo::Error::NotSupported(
+                "local_dimming: this EC's map or this panel doesn't have it".into(),
+            )
+        })?;
+        apply(
+            "local_dimming",
+            on,
+            || dimming.get(raw),
+            |&on| dimming.set(raw, on),
+        )?;
+        self.poke.notify_one();
+        Ok(())
     }
 
     fn put_auto_cooler_boost(&mut self, on: bool) -> fdo::Result<()> {
@@ -1228,6 +1259,7 @@ impl Service {
             fan_mode: self.ec.fan_mode().ok(),
             super_battery: self.ec.super_battery().ok(),
             cooler_boost: self.ec.cooler_boost().ok(),
+            local_dimming: self.local_dimming_now(),
         }
     }
 
@@ -1248,6 +1280,7 @@ impl Service {
                 .map(|mode| self.set_fan_mode(mode)),
             snapshot.super_battery.map(|on| self.set_super_battery(on)),
             snapshot.cooler_boost.map(|on| self.set_cooler_boost(on)),
+            snapshot.local_dimming.map(|on| self.put_local_dimming(on)),
             Some(self.sync_curves()),
         ];
         for err in results.into_iter().flatten().filter_map(Result::err) {
@@ -1423,6 +1456,7 @@ impl Service {
             fan_mode: field("fan_mode", ec.fan_mode()),
             super_battery: field("super_battery", ec.super_battery()),
             cooler_boost: field("cooler_boost", ec.cooler_boost()),
+            local_dimming: self.local_dimming_now(),
         };
         let scenario = self.scenario(&now);
         let scenarios = self.scenario_names();
@@ -1487,6 +1521,7 @@ impl Service {
                 .usb_share
                 .as_ref()
                 .and_then(|(raw, share)| share.get(raw).ok()),
+            local_dimming: self.local_dimming_now(),
             gpu_mode: mux(GpuMux::now),
             gpu_mode_next: mux(GpuMux::next),
             dgpu_awake,
@@ -1736,6 +1771,24 @@ impl Service {
     pub fn set_usb_share(&mut self, on: bool) -> fdo::Result<()> {
         self.put_usb_share(on)?;
         self.remember(|changes| changes.usb_share = Some(on))
+    }
+
+    /// The panel's backlight zones dim behind dark parts of the picture.
+    pub fn set_local_dimming(&mut self, on: bool) -> fdo::Result<()> {
+        self.put_local_dimming(on)?;
+        self.remember(|changes| changes.local_dimming = Some(on))
+    }
+
+    /// Local dimming the other way round, for a key binding; `on` or
+    /// `off` after it.
+    pub fn toggle_local_dimming(&mut self) -> fdo::Result<String> {
+        let on = !self.local_dimming_now().ok_or_else(|| {
+            fdo::Error::NotSupported(
+                "local_dimming: this EC's map or this panel doesn't have it".into(),
+            )
+        })?;
+        self.set_local_dimming(on)?;
+        Ok(if on { "on" } else { "off" }.to_owned())
     }
 
     /// `hybrid` or `discrete` from the next restart on. Waits for the
@@ -3052,6 +3105,38 @@ mod tests {
         let mut alpha = service(elsewhere.path());
         assert!(!alpha.status().shift_modes.unwrap().contains(&"apex".into()));
         assert!(alpha.set_shift_mode("apex").is_err());
+    }
+
+    fn poke_ram(sysfs: &Path, address: usize, value: u8) {
+        let io = sysfs.join("kernel/debug/ec/ec0/io");
+        let mut bytes = fs::read(&io).unwrap();
+        bytes[address] = value;
+        fs::write(&io, bytes).unwrap();
+    }
+
+    #[test]
+    fn local_dimming_where_the_map_and_the_panel_have_it() {
+        let sysfs = titan18hx("turbo", 0xc4, true);
+        poke_ram(sysfs.path(), 0xd0, 0x02);
+        let mut titan = service(sysfs.path());
+        assert_eq!(titan.status().local_dimming, Some(false));
+        assert_eq!(titan.toggle_local_dimming().unwrap(), "on");
+        assert_eq!(ram(sysfs.path())[0xd0], 0x06);
+        assert_eq!(titan.modes().local_dimming, Some(true));
+        titan.set_local_dimming(false).unwrap();
+        assert_eq!(ram(sysfs.path())[0xd0], 0x02);
+
+        let no_zones = titan18hx("turbo", 0xc4, true);
+        poke_ram(no_zones.path(), 0xd0, 0x00);
+        let mut titan = service(no_zones.path());
+        assert_eq!(titan.status().local_dimming, None);
+        assert!(titan.toggle_local_dimming().is_err());
+        assert_eq!(ram(no_zones.path())[0xd0], 0x00);
+
+        let elsewhere = alpha17("17KKIMS1.115");
+        let mut alpha = service(elsewhere.path());
+        assert_eq!(alpha.status().local_dimming, None);
+        assert!(alpha.set_local_dimming(true).is_err());
     }
 
     #[test]

@@ -46,6 +46,16 @@ at 0xFC000701) instead of turbo's 4, and the ACPI table it picks for the
 dGPU (NVPCF) raises its limit from 150 to 175 W. MSI has it on AC only,
 and so does ryukazed: off AC it takes turbo instead.
 
+## Local dimming
+
+The Titan 18 HX's mini-LED panel dims its backlight zones behind dark parts
+of the picture only when the EC says so. On 1824EMS1.509 MSI Center's
+switch for it (`SDRpin`, `HDRpin` with Windows' HDR on) is bit 2 of 0xD0,
+and bit 1 of the same byte is set where the panel has zones; ryukazed shows
+the switch only then. The TCON's own registers over the DisplayPort AUX
+channel (Intel's segmented backlight bit) change nothing without it. Dark
+tinted backgrounds lose some of their colour with it on.
+
 ## The keyboard's controller
 
 Still colours go in a HID feature report on the controller's first

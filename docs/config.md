@@ -20,6 +20,10 @@ fn_key = "left"
 # USB ports powered while the laptop is off (USB Power Share), set at start.
 usb_share = false
 
+# The mini-LED panel's local dimming, where the EC has it (see hardware.md),
+# set at start and after sleep. Unset, the EC's own stands.
+local_dimming = false
+
 # Turbo is Apex on AC, where the EC has it (see hardware.md): whenever a
 # power profile, a scenario, the start or plugging in picks turbo. Turbo
 # picked by hand stays turbo. Off AC Apex is turbo either way. Off by

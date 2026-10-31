@@ -28,6 +28,8 @@ pub trait Ryukaze {
     fn set_webcam(&self, on: bool) -> zbus::Result<()>;
     fn set_fn_key(&self, side: &str) -> zbus::Result<()>;
     fn set_usb_share(&self, on: bool) -> zbus::Result<()>;
+    fn set_local_dimming(&self, on: bool) -> zbus::Result<()>;
+    fn toggle_local_dimming(&self) -> zbus::Result<String>;
     fn set_gpu_mode(&self, mode: &str) -> zbus::Result<()>;
     fn set_cooler_boost_marks(&self, cpu_c: u8, gpu_c: u8) -> zbus::Result<()>;
     fn next_scenario(&self) -> zbus::Result<String>;

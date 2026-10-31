@@ -101,6 +101,7 @@ pub fn text(status: &Status) -> String {
                 status.fn_key.as_ref().map(|side| format!("{side} of Win")),
             ),
             ("Charge USB when off", status.usb_share.map(on)),
+            ("Local dimming", status.local_dimming.map(on)),
             (
                 "Keyboard light",
                 choices(

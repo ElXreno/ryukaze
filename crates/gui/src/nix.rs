@@ -25,6 +25,11 @@ pub fn settings(status: &Status, curves: &[(Fan, Curve)]) -> String {
     put(&mut top, "webcam", status.webcam.map(Value::Bool));
     put(&mut top, "fn_key", status.fn_key.clone().map(Value::Str));
     put(&mut top, "usb_share", status.usb_share.map(Value::Bool));
+    put(
+        &mut top,
+        "local_dimming",
+        status.local_dimming.map(Value::Bool),
+    );
 
     let mut boost = Vec::new();
     put(

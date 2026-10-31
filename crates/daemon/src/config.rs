@@ -32,6 +32,10 @@ pub struct Config {
     /// keeps it.
     pub usb_share: Option<bool>,
 
+    /// The mini-LED panel's local dimming, set at start and after sleep,
+    /// where the EC has it.
+    pub local_dimming: Option<bool>,
+
     /// Turbo is Apex on AC, where the EC has it: by a power profile, a
     /// scenario, at start and as the laptop goes on AC. Off AC Apex is
     /// turbo either way.
@@ -685,6 +689,8 @@ pub struct Changes {
     pub fn_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usb_share: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_dimming: Option<bool>,
     #[serde(skip_serializing_if = "FanChanges::is_empty")]
     pub fans: FanChanges,
     #[serde(skip_serializing_if = "BoostChanges::is_empty")]
@@ -804,6 +810,7 @@ impl Changes {
             webcam: config.webcam,
             fn_key: config.fn_key.clone(),
             usb_share: config.usb_share,
+            local_dimming: config.local_dimming,
             fans: FanChanges {
                 cpu: fans.cpu,
                 gpu: fans.gpu,
@@ -858,6 +865,7 @@ impl Changes {
             ("webcam", self.webcam.is_some()),
             ("fn_key", self.fn_key.is_some()),
             ("usb_share", self.usb_share.is_some()),
+            ("local_dimming", self.local_dimming.is_some()),
             ("fans.cpu", fans.cpu.is_some()),
             ("fans.gpu", fans.gpu.is_some()),
             ("fans.adaptive", fans.adaptive.is_some()),
@@ -914,6 +922,7 @@ impl Changes {
             webcam: unless(self.webcam, &set.webcam),
             fn_key: unless(self.fn_key, &set.fn_key),
             usb_share: unless(self.usb_share, &set.usb_share),
+            local_dimming: unless(self.local_dimming, &set.local_dimming),
             fans: FanChanges {
                 cpu: unless(fans.cpu, &set.fans.cpu),
                 gpu: unless(fans.gpu, &set.fans.gpu),

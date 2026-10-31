@@ -113,6 +113,11 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub usb_share: Option<bool>,
 
+    /// The mini-LED panel dims its backlight zones behind dark parts of
+    /// the picture.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub local_dimming: Option<bool>,
+
     /// The keyboard light's profile shown, where ryukaze knows its
     /// controller and one is.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
@@ -226,6 +231,7 @@ impl Status {
             fan_mode: self.fan_mode.clone(),
             super_battery: self.super_battery,
             cooler_boost: self.cooler_boost,
+            local_dimming: self.local_dimming,
             scenario: self.scenario.clone(),
             scenarios: self.scenarios.clone(),
             keyboard_profile: self.keyboard_profile.clone(),

@@ -171,6 +171,9 @@ impl ksni::Tray for Tray {
                 if let Some(on) = status.usb_share {
                     items.push(check("Charge USB when off", on, Message::UsbShare));
                 }
+                if let Some(on) = status.local_dimming {
+                    items.push(check("Local dimming", on, Message::LocalDimming));
+                }
                 if let Some(profiles) = &status.keyboard_profiles {
                     let current = status.keyboard_profile.as_deref().unwrap_or_default();
                     items.push(modes_menu(

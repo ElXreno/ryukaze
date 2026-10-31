@@ -20,6 +20,8 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `SetWebcam` | `b` | the camera on or off |
 | `SetFnKey` | `s` | `left` or `right` of the Win key |
 | `SetUsbShare` | `b` | USB ports powered while the laptop is off |
+| `SetLocalDimming` | `b` | the mini-LED panel's backlight zones dim behind dark parts of the picture |
+| `ToggleLocalDimming` | | local dimming the other way round, as `SetLocalDimming` does, and `on` or `off` after it: for a key binding |
 | `SetNumpadFollowsNumlock` | `b` | the numpad dark while NumLock is off |
 | `SetPowerLight` | `s` | what the power button's light follows: `profile`, `shift_mode` or `dgpu` |
 | `SetPowerLightDgpu` | `b` | following the shift mode, the dGPU's colour for five seconds as it wakes |
@@ -45,7 +47,8 @@ it means; `ryukaze --status --json` prints the same dictionary.
 
 Every setter reads the value back and fails if the EC didn't take it.
 What `SetChargeLimit`, `SetWebcam`, `SetFnKey`, `SetUsbShare`,
-`SetFanCurve` (and `ResetFanCurve`), `SetAdaptiveFans`,
+`SetLocalDimming` (and `ToggleLocalDimming`), `SetFanCurve` (and
+`ResetFanCurve`), `SetAdaptiveFans`,
 `SetGpuFanFollowsCpu`, `SetAutoCoolerBoost`, `SetCoolerBoostMarks`,
 `SetNumpadFollowsNumlock`, `SetPowerLight`, `SetPowerLightDgpu`,
 `SetPowerColor`, `SetPowerProfilesSync`, `SetSourceScenario`,
