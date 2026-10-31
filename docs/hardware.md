@@ -8,17 +8,22 @@
   offer them there. Its keyboard's backlight is a SteelSeries KLC
   (1038:113a), and Fn+F9 needs a hwdb entry (see
   [using ryukaze](usage.md#the-fn-keys)).
+- MSI Titan 18 HX A2WJ (MS-1824), EC firmware 1824EMS1.509: the fan
+  curves and rpm, [Apex](#apex) and [local dimming](#local-dimming).
 
 ## The EC's RAM
 
 The fan curves, the speeds and the rpm are all in the EC's RAM, which
 msi-ec doesn't cover: ryukaze uses ec_sys, and only on EC firmware whose
-layout has been checked against the firmware itself, as a wrong address
-elsewhere could be anything. So far that's 17KKIMS1.115 (Alpha 17 C7VG),
+layout has been checked, as a wrong address elsewhere could be anything.
+So far that's 17KKIMS1.115 (Alpha 17 C7VG), against the firmware itself,
 where USB Power Share (0xBF bit 5) and the GPU MUX (below) come from the
-same map. Only the curve bytes, that bit and the MUX's request are ever
-written, and everything is read back; rpm comes from the tachometer
-(approximate: the constant is MControlCenter's).
+same map; and 1824EMS1.509 (Titan 18 HX), live against its EC RAM and
+msi-wmi-platform's fan readings, with Apex and local dimming. Only the
+curve bytes, those bits and the MUX's request are ever written, and
+everything is read back; rpm comes from the tachometer (approximate: the
+constant is MControlCenter's on the Alpha, msi-wmi-platform's on the
+Titan).
 
 ## The GPU MUX
 

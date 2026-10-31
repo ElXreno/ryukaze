@@ -30,8 +30,9 @@ icon and a few commands.
   minutes, a tray icon, a card on screen when the modes change, and
   `ryukaze --status` for a terminal.
 
-Tested on an MSI Alpha 17 C7VG; what goes beyond msi-ec, ryukaze does only
-on firmware checked (see the [hardware notes](docs/hardware.md)).
+Tested on an MSI Alpha 17 C7VG and a Titan 18 HX; what goes beyond
+msi-ec, ryukaze does only on firmware checked (see the
+[hardware notes](docs/hardware.md)).
 
 The keyboard light's editor, shown on the keyboard as it goes:
 
