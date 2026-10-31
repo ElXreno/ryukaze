@@ -80,7 +80,8 @@ sync = true
 [keyboard]
 # The one shown outside the scenarios with their own, unless another was
 # picked since; the first of the profiles below if unset. With neither, the
-# keyboard is left as it is until one is picked.
+# keyboard is left as it is until one is picked, the numpad and the power
+# button too.
 profile = "static"
 # The numpad dark while NumLock is off, but for NumLock itself.
 numpad_follows_numlock = true

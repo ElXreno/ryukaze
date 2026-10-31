@@ -1161,11 +1161,14 @@ impl Service {
         }
         let color = self.power_color();
         // Once, even if it fails: tried again at the next change.
-        if color.is_none() || self.power_shown(color) == color {
+        if self.power_shown(color) == color {
             return Ok(());
         }
         match self.keyboard() {
-            Some(klc) => self.overlay(&klc),
+            Some(klc) if color.is_some() => self.overlay(&klc),
+            // Its colour gone, back on the profile's effect, which only the
+            // refresh starts in step with the others.
+            Some(klc) => self.light(&klc),
             None => Ok(()),
         }
     }

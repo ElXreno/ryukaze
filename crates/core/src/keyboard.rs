@@ -102,8 +102,9 @@ impl Klc {
         &self.node
     }
 
-    /// The keys as `lighting` has them, and `over` it; or, without one, as
-    /// they are but for `over`.
+    /// The keys as `lighting` has them, and `over` it; without one, as they
+    /// are, `over` too: with no tables of ryukaze's to keep it in, nothing
+    /// would bring the numpad back or let the power button go.
     pub fn show(&self, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
         let mut node = OpenOptions::new().read(true).write(true).open(&self.node)?;
         let plan = plan(lighting, over);
@@ -137,28 +138,26 @@ impl Klc {
     /// The power button's colour goes in its effect alone, which shows at
     /// once.
     pub fn overlay(&self, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
+        let Some(lighting) = lighting else {
+            return Ok(());
+        };
         let node = OpenOptions::new().read(true).write(true).open(&self.node)?;
-        if let Some(lighting) = lighting {
-            if over.power.is_some() {
-                set_feature(&node, &power_packet(lighting, over))?;
-            }
-            for packet in table_packets(lighting, over) {
-                set_feature(&node, &packet)?;
-            }
+        if over.power.is_some() {
+            set_feature(&node, &power_packet(lighting, over))?;
         }
-        for report in reports(&without_power(lighting, over.keys())) {
+        for packet in table_packets(lighting, over) {
+            set_feature(&node, &packet)?;
+        }
+        for report in reports(&without_power(over.keys())) {
             set_feature(&node, &report)?;
         }
         Ok(())
     }
 }
 
-/// Still keys but the power button where it has its effect: a still report
+/// Still keys but the power button, which has its effect: a still report
 /// would hold it, and the refresh doesn't let it go, unlike the others.
-fn without_power(lighting: Option<&Lighting>, keys: Vec<(u8, Color)>) -> Vec<(u8, Color)> {
-    if lighting.is_none() {
-        return keys;
-    }
+fn without_power(keys: Vec<(u8, Color)>) -> Vec<(u8, Color)> {
     keys.into_iter().filter(|&(key, _)| key != POWER).collect()
 }
 
@@ -364,11 +363,7 @@ fn power_packet(lighting: &Lighting, over: Over) -> [u8; REPORT_LEN] {
 
 fn plan(lighting: Option<&Lighting>, over: Over) -> Plan {
     let Some(lighting) = lighting else {
-        // No tables of ours to keep it in.
-        return Plan {
-            still: over.keys(),
-            ..Plan::default()
-        };
+        return Plan::default();
     };
     // All still: in the tables for the next redraw, and still reports to
     // show it now, without a refresh: no effect runs. The power button's
@@ -386,7 +381,7 @@ fn plan(lighting: Option<&Lighting>, over: Over) -> Plan {
         return Plan {
             packets,
             refresh: false,
-            still: without_power(Some(lighting), still),
+            still: without_power(still),
         };
     }
     let mut packets = vec![
@@ -1174,11 +1169,8 @@ mod tests {
         let still_dark = plan(Some(&lighting(Effect::Static, Some(ORANGE))), over);
         assert!(still_dark.still.contains(&(0x5d, Color::OFF)));
         assert!(!still_dark.still.iter().any(|&(key, _)| key == POWER));
-        // Without a profile, still reports alone, the power button's too.
-        let bare = plan(None, over);
-        assert!(bare.packets.is_empty());
-        assert_eq!(bare.still.len(), 16 + 1);
-        assert_eq!(plan(None, Over::default()), Plan::default());
+        // Without a profile, nothing.
+        assert_eq!(plan(None, over), Plan::default());
     }
 
     /// Effect 0, the power button's, holding `color`.
