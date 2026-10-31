@@ -943,17 +943,21 @@ impl Service {
     }
 
     fn keyboard_profile_for(&self, scenario: Option<&str>) -> Option<String> {
-        let own = scenario.and_then(|name| {
-            self.keyboard_scenarios
-                .iter()
-                .find(|(known, _)| known == name)
-                .map(|(_, profile)| profile.clone())
-        });
-        let picked = self.keyboard_kept.picked.clone().filter(|name| {
+        let known = |name: &String| {
             self.keyboard_profiles
                 .iter()
                 .any(|profile| &profile.name == name)
-        });
+        };
+        // One deleted since stands for none.
+        let own = scenario
+            .and_then(|name| {
+                self.keyboard_scenarios
+                    .iter()
+                    .find(|(known, _)| known == name)
+                    .map(|(_, profile)| profile.clone())
+            })
+            .filter(known);
+        let picked = self.keyboard_kept.picked.clone().filter(known);
         own.or_else(|| self.keyboard_named.clone())
             .or(picked)
             .or_else(|| self.keyboard_first.clone())
@@ -1768,17 +1772,22 @@ impl Service {
         self.merge_keyboard_profiles();
         info!("keyboard: {name} deleted");
         let stored = self.store_keyboard_profiles();
+        // The scenarios the window gave it to take the one picked again.
+        let kept =
+            self.remember(|kept| kept.keyboard.scenarios.retain(|_, profile| profile != name));
+        self.merge_keyboard_scenarios();
         if self.keyboard_profile.as_deref() == Some(name)
             && self
                 .keyboard_profiles
                 .iter()
                 .all(|known| known.name != name)
         {
-            self.keyboard_profile = self.keyboard_profile_for(None);
+            let now = self.modes().scenario;
+            self.keyboard_profile = self.keyboard_profile_for(now.as_deref());
         }
         self.poke.notify_one();
         self.keyboard_back()?;
-        stored
+        stored.and(kept)
     }
 
     /// Shows the keyboard profile after the one shown (the first, if none)
@@ -2875,8 +2884,23 @@ mod tests {
             Err(fdo::Error::InvalidArgs(_))
         ));
         let _ = next.set_keyboard_profile("draft");
+        let _ = next.set_scenario_keyboard_profile("silent", "draft");
+        assert_eq!(
+            next.changes
+                .keyboard
+                .scenarios
+                .get("silent")
+                .map(String::as_str),
+            Some("draft")
+        );
         let _ = next.delete_keyboard_profile("draft");
         assert_eq!(shown(&next), "orange");
+        // Nor kept for a scenario, nor shown in it.
+        assert!(next.changes.keyboard.scenarios.is_empty());
+        assert_eq!(
+            next.keyboard_profile_for(Some("silent")).as_deref(),
+            Some("orange")
+        );
         assert_eq!(next.status().keyboard_saved_profiles.unwrap(), [""; 0]);
         let mut gone = self::service(sysfs.path());
         gone.keep_keyboard_profiles(saved::Store::new(state.path()));
