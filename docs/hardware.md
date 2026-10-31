@@ -41,6 +41,14 @@ answer. It doesn't write the `MsiDCVarData` EFI variable, as other MUX
 switchers do: the firmware reads that one for the Win/Fn swap, not for
 the MUX.
 
+## The BIOS's turbo
+
+The BIOS may start the laptop in turbo as 0xC0 in the shift mode byte,
+where MSI Center and msi-ec write 0xC4; msi-ec reads it as `unknown
+(192)`, and the Alpha's ACPI picks the dGPU's limits by 0xC1, 0xC2 and
+0xC4 alone. ryukazed writes turbo again whenever it reads 0xC0, so the
+modes, the scenario and power-profiles-daemon say turbo.
+
 ## Apex
 
 MSI Center's Apex is one more value of the shift mode byte, which msi-ec
@@ -49,7 +57,12 @@ doesn't know and reads back as `unknown (197)`. On the Titan 18 HX A2WJ
 nothing else. The EC then puts 7 into the mode byte ACPI reads (`OEV1`,
 at 0xFC000701) instead of turbo's 4, and the ACPI table it picks for the
 dGPU (NVPCF) raises its limit from 150 to 175 W. MSI has it on AC only,
-and so does ryukazed: off AC it takes turbo instead.
+and so does ryukazed: off AC it takes turbo instead, and doesn't offer it.
+
+The Titan's EC (an ENE one, its ACPI space at 0xF400 of its XRAM) ties
+super battery to the shift mode where the Alpha's doesn't: going into eco
+turns super battery on, and any other mode turns it off (its handler for
+the shift mode byte, read from E1824IMS.50E's EC image).
 
 ## Local dimming
 
