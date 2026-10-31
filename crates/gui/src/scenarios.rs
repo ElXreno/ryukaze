@@ -101,9 +101,12 @@ impl Editor {
             Msg::Up(i) if i > 0 => self.scenarios.swap(i - 1, i),
             Msg::Down(i) if i + 1 < count => self.scenarios.swap(i, i + 1),
             Msg::Up(_) | Msg::Down(_) => return Outcome::Nothing,
-            Msg::Remove(i) => {
+            // The last one stays: without any, the window has no scenarios
+            // to come back to this editor from.
+            Msg::Remove(i) if count > 1 => {
                 self.scenarios.remove(i);
             }
+            Msg::Remove(_) => return Outcome::Nothing,
             Msg::Add => {
                 let taken = |name: &String| self.scenarios.iter().any(|known| known.name == *name);
                 let name = (1..)
@@ -228,7 +231,10 @@ impl Editor {
                 .on_press_maybe((i < last).then_some(Msg::Down(i)))
                 .padding([4, 10])
                 .style(theme::segment(false)),
-            small("Delete", Msg::Remove(i)),
+            button(text("Delete").size(13))
+                .on_press_maybe((last > 0).then_some(Msg::Remove(i)))
+                .padding([4, 10])
+                .style(theme::segment(false)),
         ]
         .spacing(4);
         let card: Element<'a, Msg> = if wide {
@@ -318,5 +324,9 @@ mod tests {
         );
         let _ = editor.update(Msg::Remove(2));
         assert_eq!(editor.scenarios.len(), 2);
+        // The last one stays.
+        let _ = editor.update(Msg::Remove(1));
+        assert_eq!(editor.update(Msg::Remove(0)), Outcome::Nothing);
+        assert_eq!(editor.scenarios.len(), 1);
     }
 }

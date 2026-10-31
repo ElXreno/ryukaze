@@ -36,7 +36,7 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
 | `ReadScenarios` | | the scenarios, `[[scenarios]]` in TOML as the config writes them (`s`): for an editor to start from |
-| `SetScenarios` | `s` | all of them, in order, the same way; one the config names for AC, battery or a keyboard light has to stay |
+| `SetScenarios` | `s` | all of them, in order, the same way, at least one; one the config names for AC, battery or a keyboard light has to stay |
 | `SetScenarioKeyboardProfile` | `s s` | one of `scenarios`, and one of `keyboard_profiles` it lights, or `""` for the one picked |
 | `SetSourceScenario` | `s s` | `ac` or `battery`, and one of `scenarios` to apply on it, or `""` for nothing; applied at once while on it |
 | `NextScenario` | | applies the next scenario; returns its name (`s`) |

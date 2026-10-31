@@ -1933,6 +1933,11 @@ impl Service {
         }
         let Read { scenarios } = toml::from_str(scenarios)
             .map_err(|err| fdo::Error::InvalidArgs(format!("scenarios: {err}")))?;
+        if scenarios.is_empty() {
+            return Err(fdo::Error::InvalidArgs(
+                "scenarios: at least one, as the window edits them from there".into(),
+            ));
+        }
         self.check_scenarios(&scenarios)
             .map_err(|err| fdo::Error::InvalidArgs(format!("scenarios: {err}")))?;
         let gone = |name: &str| scenarios.iter().all(|scenario| scenario.name != name);
@@ -3071,6 +3076,8 @@ mod tests {
             format!("{performance}[[scenarios]]\nname = \"warp\"\nshift_mode = \"warp\"\n"),
             format!("{performance}{performance}"),
             format!("{performance}[[scenarios]]\nname = \" \"\n"),
+            // None at all.
+            String::new(),
         ] {
             assert!(service.set_scenarios(&bad).is_err(), "{bad}");
         }
