@@ -21,8 +21,9 @@ pub struct Profiles {
     connection: Connection,
     /// The source whose profile was applied last.
     applied: Option<Source>,
-    /// The EC's modes as they were when the laptop went to sleep.
-    before_sleep: Option<Snapshot>,
+    /// The EC's modes as they were when the laptop went to sleep, and the
+    /// power source then.
+    before_sleep: Option<(Snapshot, Option<Source>)>,
     /// The modes as last seen; none before the first look.
     announced: Option<Status>,
     /// power-profiles-daemon, kept in step with the shift mode.
@@ -181,7 +182,8 @@ impl Profiles {
     pub async fn sleeping(&mut self) {
         let service = self.service().await;
         let service = service.get().await;
-        self.before_sleep = Some(service.snapshot());
+        let source = power_supply::source(&self.sysfs).ok().flatten();
+        self.before_sleep = Some((service.snapshot(), source));
         report(service.save_keyboard());
     }
 
@@ -210,11 +212,19 @@ impl Profiles {
         }
     }
 
-    /// Through S3 the EC resets: back to how it was, then the profile if
-    /// the laptop was plugged or unplugged while it slept.
+    /// Through S3 the EC resets: back to how it was, or, if the laptop was
+    /// plugged or unplugged while it slept, the new source's profile where
+    /// it has one, which the kernel's event may have applied already.
     pub async fn woke(&mut self) {
-        if let Some(snapshot) = self.before_sleep.take() {
-            self.service().await.get_mut().await.restore(&snapshot);
+        if let Some((snapshot, slept_on)) = self.before_sleep.take() {
+            let now = power_supply::source(&self.sysfs).ok().flatten();
+            let service = self.service().await;
+            let mut service = service.get_mut().await;
+            if now != slept_on && now.and_then(|now| service.source_profile(now)).is_some() {
+                info!("the power source changed during sleep: its profile, not the modes before");
+            } else {
+                service.restore(&snapshot);
+            }
         }
         self.keyboard_back().await;
         self.power_changed().await;
