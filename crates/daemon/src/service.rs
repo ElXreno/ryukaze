@@ -132,6 +132,9 @@ struct Adaptive {
 /// Targets this close to the held speed aren't worth an EC write.
 const HYSTERESIS: u8 = 2;
 
+/// msi-ec's reading of 0xC0, the turbo the BIOS starts the laptop in.
+const BIOS_TURBO: &str = "unknown (192)";
+
 /// Every this many ticks the tables are checked even if nothing changed:
 /// something else may have written them.
 const VERIFY_EVERY: u32 = 15;
@@ -457,6 +460,15 @@ impl Service {
         let mut modes = self.ec.shift_modes()?;
         if self.apex.is_some() {
             modes.push(APEX.into());
+        }
+        Ok(modes)
+    }
+
+    /// The shift modes to pick from now: Apex only on AC, where it's taken.
+    fn shift_modes_offered(&self) -> io::Result<Vec<String>> {
+        let mut modes = self.shift_modes_here()?;
+        if !self.on_ac() {
+            modes.retain(|mode| mode != APEX);
         }
         Ok(modes)
     }
@@ -1217,7 +1229,27 @@ impl Service {
         let adapted = self.adapt();
         self.auto_boost();
         self.watch_dgpu();
+        self.name_bios_turbo();
         adapted
+    }
+
+    /// The BIOS starts the laptop in turbo as 0xC0, where MSI Center and
+    /// msi-ec write 0xC4, and msi-ec doesn't name it: turbo, written again
+    /// the usual way, so the modes, the scenario and the power profile all
+    /// say so, and ACPI picks the dGPU's limits for turbo.
+    fn name_bios_turbo(&mut self) {
+        if self.ec.shift_mode().is_ok_and(|mode| mode == BIOS_TURBO)
+            && self
+                .ec
+                .shift_modes()
+                .is_ok_and(|modes| modes.iter().any(|mode| mode == "turbo"))
+        {
+            info!("shift_mode: the BIOS's turbo (0xC0), set as turbo again");
+            let turbo = self.on_source("turbo").to_owned();
+            if let Err(err) = self.set_shift_mode(&turbo) {
+                warn!("{err}");
+            }
+        }
     }
 
     fn watch_dgpu(&mut self) {
@@ -1477,7 +1509,7 @@ impl Service {
             firmware: field("fw_version", ec.firmware()),
             firmware_date: field("fw_release_date", ec.firmware_date()),
             shift_mode: now.shift_mode,
-            shift_modes: field("available_shift_modes", self.shift_modes_here()),
+            shift_modes: field("available_shift_modes", self.shift_modes_offered()),
             fan_mode: now.fan_mode,
             fan_modes: field("available_fan_modes", ec.fan_modes()),
             super_battery: now.super_battery,
@@ -3095,8 +3127,11 @@ mod tests {
         assert_eq!(ram(sysfs.path())[0xd2], 0xc5);
         assert_eq!(titan.status().shift_mode.as_deref(), Some("apex"));
 
+        // Off AC it isn't offered, and isn't taken.
         let unplugged = titan18hx("unknown (196)", 0xc4, false);
         let mut titan = service(unplugged.path());
+        let modes = titan.status().shift_modes.unwrap();
+        assert_eq!(modes, ["eco", "comfort", "turbo"]);
         assert!(titan.set_shift_mode("apex").is_err());
         assert_eq!(ram(unplugged.path())[0xd2], 0xc4);
 
@@ -3105,6 +3140,25 @@ mod tests {
         let mut alpha = service(elsewhere.path());
         assert!(!alpha.status().shift_modes.unwrap().contains(&"apex".into()));
         assert!(alpha.set_shift_mode("apex").is_err());
+    }
+
+    /// The BIOS's turbo, 0xC0, which msi-ec doesn't name: turbo again.
+    #[test]
+    fn names_the_bios_turbo() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let shift_mode = sysfs.path().join("devices/platform/msi-ec/shift_mode");
+        fs::write(&shift_mode, "unknown (192)\n").unwrap();
+        let mut alpha = service(sysfs.path());
+        alpha.tick().unwrap();
+        assert_eq!(fs::read_to_string(&shift_mode).unwrap().trim(), "turbo");
+
+        // Any other unknown value stays as it is.
+        fs::write(&shift_mode, "unknown (195)\n").unwrap();
+        alpha.tick().unwrap();
+        assert_eq!(
+            fs::read_to_string(&shift_mode).unwrap().trim(),
+            "unknown (195)"
+        );
     }
 
     fn poke_ram(sysfs: &Path, address: usize, value: u8) {
