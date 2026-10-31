@@ -200,6 +200,7 @@ impl App {
                     status.fan_mode = modes.fan_mode;
                     status.super_battery = modes.super_battery;
                     status.cooler_boost = modes.cooler_boost;
+                    status.local_dimming = modes.local_dimming;
                     status.scenario = modes.scenario;
                     status.scenarios = modes.scenarios;
                     status.keyboard_profile = modes.keyboard_profile;
@@ -263,6 +264,9 @@ impl App {
                 }
                 Task::none()
             }
+            // The keyboard back to its profile first, rather than left
+            // on what the editor shows, for the flash to keep at power-off.
+            Message::Quit if self.editing_lights => self.preview(String::new()).chain(iced::exit()),
             Message::Quit => iced::exit(),
             Message::CurveFan(fan) => {
                 self.curve_fan = fan;
