@@ -181,7 +181,7 @@ pub fn json(status: &Status) -> Result<String, String> {
     serde_json::to_string(&object).map_err(|err| err.to_string())
 }
 
-/// A D-Bus value as JSON: tuples as arrays.
+/// A D-Bus value as JSON: tuples as arrays, dictionaries as objects.
 fn plain(value: &Value) -> serde_json::Value {
     use serde_json::Value as Json;
     match value {
@@ -198,6 +198,17 @@ fn plain(value: &Value) -> serde_json::Value {
         Value::Value(inner) => plain(inner),
         Value::Array(items) => items.iter().map(plain).collect(),
         Value::Structure(fields) => fields.fields().iter().map(plain).collect(),
+        Value::Dict(dict) => Json::Object(
+            dict.iter()
+                .map(|(key, value)| {
+                    let key = match plain(key) {
+                        Json::String(key) => key,
+                        other => other.to_string(),
+                    };
+                    (key, plain(value))
+                })
+                .collect(),
+        ),
         _ => Json::Null,
     }
 }
@@ -467,6 +478,13 @@ EC firmware            17KKIMS1.115, 2023/04/21"
         assert_eq!(parsed["webcam"], true);
         assert_eq!(parsed["cpu_curve"][0][5], 90);
         assert_eq!(parsed["cpu_curve"][1][6], 100);
+        // Dictionaries as objects.
+        let status = Status {
+            power_colors: Some([("turbo".to_owned(), "#ff6000".to_owned())].into()),
+            ..alpha17()
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&json(&status).unwrap()).unwrap();
+        assert_eq!(parsed["power_colors"]["turbo"], "#ff6000");
         // What the EC lacks isn't there at all.
         assert!(parsed.get("dgpu_users").is_none());
         assert_eq!(json(&Status::default()).unwrap(), "{}");
