@@ -173,9 +173,14 @@ ran there as it should. One effect with no steps once left another laptop's
 1122 dark for good, so ryukazed sends an effect only with 1 to 16 steps,
 none empty, their length the sum of theirs and `ff 00` at 0x8a, on any
 controller. It doesn't send `09` there: how its flash takes a save isn't
-known. `51 00 [r] [g] [b]`
-scales each channel at full; ryukazed gives it MSI's scale for the Titan at
-every start, which it already had.
+known. `51 00 [r] [g] [b]` scales each channel at full; ryukazed gives it
+MSI's scale for the Titan at every start, which it already had.
+
+A report sent right after another may be dropped there without a word,
+no EPIPE as on the 113a: the effects and four tables of a profile, sent
+back to back, left the last table out, the one from F7 on, while 1 ms
+between them was enough. So ryukazed keeps 10 ms between reports to any
+controller, as MSI's software does for all of its devices.
 
 The ALC's zones are 0 to 4 for the touchpad, in rows from the keyboard's
 edge to the front, and 5 for the logo: one report of `0e 00 06 00` and a

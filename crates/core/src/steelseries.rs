@@ -6,6 +6,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use rustix::ioctl::{Opcode, Updater, ioctl, opcode};
@@ -59,33 +60,51 @@ pub fn board(sysfs: &Path) -> Option<String> {
     Some(name.trim().to_owned())
 }
 
+/// The least time between two reports, as MSI's software keeps for every
+/// controller: closer, the later one may be dropped without a word.
+const PACE: Duration = Duration::from_millis(10);
+
 /// A controller opened.
 pub struct Controller {
     node: File,
+    last: Option<Instant>,
 }
 
 impl Controller {
     pub fn open(node: &Path) -> io::Result<Self> {
         let node = OpenOptions::new().read(true).write(true).open(node)?;
-        Ok(Self { node })
+        Ok(Self { node, last: None })
     }
 
-    pub fn feature(&self, report: &[u8; FEATURE_LEN]) -> io::Result<()> {
+    pub fn feature(&mut self, report: &[u8; FEATURE_LEN]) -> io::Result<()> {
         let mut data = [0; FEATURE_LEN + 1];
         data[1..].copy_from_slice(report);
-        patiently(|| {
+        self.wait();
+        let node = &self.node;
+        let sent = patiently(|| {
             // SAFETY: HIDIOCSFEATURE reads the report from `data`, which is as
             // long as its opcode says, and writes nothing past it.
-            unsafe { ioctl(&self.node, Updater::<SET_FEATURE, _>::new(&mut data)) }?;
+            unsafe { ioctl(node, Updater::<SET_FEATURE, _>::new(&mut data)) }?;
             Ok(())
-        })
+        });
+        self.last = Some(Instant::now());
+        sent
     }
 
     /// `report`'s bytes, the rest of the output report zero.
     pub fn output(&mut self, report: &[u8]) -> io::Result<()> {
         let mut data = [0; OUTPUT_LEN + 1];
         data[1..=report.len()].copy_from_slice(report);
-        patiently(|| self.node.write_all(&data))
+        self.wait();
+        let sent = patiently(|| self.node.write_all(&data));
+        self.last = Some(Instant::now());
+        sent
+    }
+
+    fn wait(&self) {
+        if let Some(since) = self.last.map(|last| last.elapsed()) {
+            std::thread::sleep(PACE.saturating_sub(since));
+        }
     }
 
     /// `0d 00 [what]`. Not `09`, which saves to the controller's flash.
@@ -185,6 +204,24 @@ mod tests {
         assert_eq!(super::board(sysfs.path()), None);
         testing::board(sysfs.path(), "MS-1824");
         assert_eq!(super::board(sysfs.path()).as_deref(), Some("MS-1824"));
+    }
+
+    #[test]
+    fn keeps_reports_apart() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut controller = Controller::open(file.path()).unwrap();
+        let start = Instant::now();
+        for _ in 0..4 {
+            controller.output(&[0x0d, 0x00, 0x00]).unwrap();
+        }
+        assert!(
+            start.elapsed() >= Duration::from_millis(30),
+            "{:?}",
+            start.elapsed()
+        );
+        let written = fs::read(file.path()).unwrap();
+        assert_eq!(written.len(), 4 * (OUTPUT_LEN + 1));
+        assert_eq!(&written[..4], &[0x00, 0x0d, 0x00, 0x00]);
     }
 
     #[test]
