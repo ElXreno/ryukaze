@@ -237,3 +237,37 @@ takes the same: checked by eye on both, with 2.61, as the firmware says.
 `40` puts the tables back to the firmware's own, every key red and
 flashing, and isn't sent.
 
+### The commands
+
+What the 1122's firmware 2.39 does with each report, from its code; ryukazed
+sends only those it says so for. An output report is the command and its
+bytes, 64 in all; a feature report starts `0b`, `0c` or `0e`, then 00, 524
+in all. "Restarts" means the flash above.
+
+| Output | Does | ryukazed |
+|---|---|---|
+| `0d 00 [x]` | restarts the lighting; `x` isn't read | when it must, under black |
+| `51 00 [r] [g] [b]` | the colour scale, then restarts | once, at the first show |
+| `50 00 [r] [g] [b]` | every key in that colour over the rest, at once | the black before a restart |
+| `52` | lets every key go of its own colour | yes |
+| `83 [key]` | lets one key go of its own colour | yes |
+| `09` | saves to flash, restarts with the scan stopped, dark for some 0.2 s | where the model saves |
+| `10` | the firmware version: minor, then major | yes |
+| `03 [key] [r] [g] [b]` | one key in its own colour, at once | no: `0c` takes many |
+| `0a 00 [key] 00 [slot]` | one key's slot, shown at the next restart | no |
+| `0c 00 [level]` | the brightness, then restarts; nothing reads it | no |
+| `06 [layout]` | the layout, then restarts | no |
+| `da [u32]` | how fast the matrix is scanned | no |
+| `fd 00 [on]` | the keys held, as input reports | no |
+| `ff 00 [key]` | a press for that key's flash | no |
+| `15`, `22`, `80`, `86` | the firmware's CRC, a backup register, the unique ID's address, the layout's bytes | no |
+| `40` | the factory tables: every key red, flashing | never |
+| `01`, `02`, `f1` | restart the controller, the second for its bootloader | never |
+| `08` | nothing: GG names it, the firmware has no such command | no |
+
+| Feature | Does | ryukazed |
+|---|---|---|
+| `0b 00 [id] 00` | an effect: its colours live, the rest at the next restart | yes |
+| `0c 00 [n] 00` | up to 110 keys in their own colours over their effects, until `83`, `52` or a restart | over running effects |
+| `0e 00 [n] 00` | up to 42 slots: mode 8 live, mode 1 at the next restart | yes |
+

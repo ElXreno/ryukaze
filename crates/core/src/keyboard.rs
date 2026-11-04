@@ -158,9 +158,7 @@ impl Klc {
                 (None, Some(restart)) => klc.restart(restart)?,
                 (None, None) => {}
             }
-            for report in &changes.paint {
-                klc.feature(report)?;
-            }
+            // Let go first: `52` would let go of what's painted after it.
             match &changes.release {
                 Release::None => {}
                 Release::All => klc.output(&[0x52])?,
@@ -169,6 +167,9 @@ impl Klc {
                         klc.output(&[0x83, key])?;
                     }
                 }
+            }
+            for report in &changes.paint {
+                klc.feature(report)?;
             }
             Ok(())
         })();
@@ -318,24 +319,26 @@ fn changes(plan: &Plan, sent: &Sent, scale: Option<[u8; 3]>) -> Changes {
         })
         .map(|(&key, slot)| (key, Color([slot[0], slot[1], slot[2]])))
         .collect();
-    let paint: Vec<(u8, Color)> = overrides
-        .iter()
-        .filter(|&(key, color)| sent.overrides.get(key) != Some(color))
-        .map(|(&key, &color)| (key, color))
-        .collect();
     let off: Vec<u8> = sent
         .overrides
         .keys()
         .filter(|key| !overrides.contains_key(key))
         .copied()
         .collect();
+    // A report a key, 10 ms apart, adds up: past a few, all of them go,
+    // and those staying are painted again in one report.
     let release = if off.is_empty() {
         Release::None
-    } else if overrides.is_empty() {
+    } else if overrides.is_empty() || off.len() > RELEASE_ONE_BY_ONE {
         Release::All
     } else {
         Release::Keys(off)
     };
+    let paint: Vec<(u8, Color)> = overrides
+        .iter()
+        .filter(|&(key, color)| release == Release::All || sent.overrides.get(key) != Some(color))
+        .map(|(&key, &color)| (key, color))
+        .collect();
     Changes {
         blackout: false,
         scale: None,
@@ -353,6 +356,10 @@ fn changes(plan: &Plan, sent: &Sent, scale: Option<[u8; 3]>) -> Changes {
         },
     }
 }
+
+/// Keys let go of their own colours with `83` each, up to this many; more,
+/// `52` lets go of all.
+const RELEASE_ONE_BY_ONE: usize = 3;
 
 /// Where it runs no effects: the tables, drawn again when they change.
 fn changes_still(plan: &Plan, sent: &Sent, scale: Option<[u8; 3]>) -> Changes {
@@ -944,6 +951,32 @@ mod tests {
         let back = send(&breathe(BLUE), &paint.sent);
         assert_eq!(back.restart, None);
         assert_eq!(back.release, Release::All);
+
+        // Many let go while others stay: all of them, the rest painted again.
+        let many = Lighting {
+            keys: vec![
+                (named("wasd").unwrap(), ORANGE),
+                (named("arrows").unwrap(), ORANGE),
+            ],
+            ..breathe(BLUE)
+        };
+        let painted_many = send(&many, &back.sent);
+        let fewer = Lighting {
+            keys: vec![(named("arrows").unwrap(), ORANGE)],
+            ..breathe(BLUE)
+        };
+        let let_go = send(&fewer, &painted_many.sent);
+        assert_eq!(let_go.release, Release::All);
+        assert_eq!(let_go.paint.len(), 1);
+        assert_eq!(let_go.sent.overrides.len(), 4);
+        // One alone: just it.
+        let three = Lighting {
+            keys: vec![(vec![0x52, 0x51, 0x50], ORANGE)],
+            ..breathe(BLUE)
+        };
+        let one_off = send(&three, &let_go.sent);
+        assert_eq!(one_off.release, Release::Keys(vec![0x4f]));
+        assert!(one_off.paint.is_empty());
 
         // Another colour for the effect: live.
         let recolored = send(&breathe(ORANGE), &back.sent);
