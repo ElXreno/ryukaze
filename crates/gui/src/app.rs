@@ -84,6 +84,10 @@ pub struct App {
     /// A preview on its way to the daemon, and the one asked for since.
     previewing: bool,
     next_preview: Option<String>,
+    /// The last preview was turned down: not sent again unasked.
+    preview_refused: bool,
+    /// Exiting once the previews are through.
+    quitting: bool,
     /// The previews sent, for the tests.
     #[cfg(test)]
     previews: Vec<String>,
@@ -209,6 +213,8 @@ impl App {
             power_hex: String::new(),
             previewing: false,
             next_preview: None,
+            preview_refused: false,
+            quitting: false,
             laptop: None,
             page: Page::Overview,
             arrival: anim::arrived(),
@@ -361,8 +367,10 @@ impl App {
             },
             Message::Previewed(result) => {
                 self.previewing = false;
+                self.preview_refused = result.is_err();
                 let next = match self.next_preview.take() {
                     Some(profile) => self.preview(profile),
+                    None if self.quitting => return iced::exit(),
                     None => Task::none(),
                 };
                 Task::batch([self.update(Message::Applied(result)), next])
@@ -395,7 +403,15 @@ impl App {
             }
             Message::Show => match self.window {
                 Some(id) => window::gain_focus(id),
-                None => self.open(),
+                None => {
+                    let opened = self.open();
+                    // What was left unsaved goes back on the keyboard.
+                    let lights = match self.page {
+                        Page::Lighting => self.open_lights(),
+                        _ => Task::none(),
+                    };
+                    Task::batch([opened, lights])
+                }
             },
             Message::WindowClosed(id) => {
                 // No tray to stay in.
@@ -415,9 +431,16 @@ impl App {
                 Task::none()
             }
             // The keyboard back to its profile first, rather than left
-            // on what the editor shows, for the flash to keep at power-off.
-            Message::Quit if self.editing_lights => self.end_preview().chain(iced::exit()),
-            Message::Quit => iced::exit(),
+            // on what the editor shows, for the flash to keep at power-off:
+            // what's going goes through, and the last answer exits.
+            Message::Quit => {
+                let back = self.end_preview();
+                if !self.previewing {
+                    return iced::exit();
+                }
+                self.quitting = true;
+                back
+            }
             Message::CurveFan(fan) => {
                 self.curve_fan = fan;
                 self.curve_draft = None;
@@ -1049,7 +1072,7 @@ impl App {
             &self.status,
             Some(Ok(status)) if status.keyboard_previewing == Some(false)
         );
-        if !self.editing_lights || !dropped || self.previewing {
+        if !self.editing_lights || !dropped || self.previewing || self.preview_refused {
             return Task::none();
         }
         let Some(editor) = &self.lights else {
@@ -1727,6 +1750,8 @@ mod tests {
             power_hex: String::new(),
             previewing: false,
             next_preview: None,
+            preview_refused: false,
+            quitting: false,
             laptop: Some(Laptop::any()),
             page: Page::Overview,
             arrival: anim::arrived(),
@@ -1905,6 +1930,64 @@ mod tests {
         };
         let _ = app.update(Message::Status(Box::new(Ok(shown))));
         assert_eq!(app.previews.len(), sent + 1);
+    }
+
+    /// One turned down isn't sent again by the status it brings; the next
+    /// edit tries.
+    #[test]
+    fn leaves_a_refused_preview_at_that() {
+        let mut app = on(Page::Lighting, alpha17());
+        app.lights = Some(lights::Editor::new());
+        app.editing_lights = true;
+        let _ = app.update(Message::Previewed(Err("denied".into())));
+        let sent = app.previews.len();
+        let dropped = Status {
+            keyboard_previewing: Some(false),
+            ..alpha17()
+        };
+        let _ = app.update(Message::Status(Box::new(Ok(dropped.clone()))));
+        assert_eq!(app.previews.len(), sent);
+        let _ = app.update(Message::Previewed(Ok(())));
+        let _ = app.update(Message::Status(Box::new(Ok(dropped))));
+        assert_eq!(app.previews.len(), sent + 1);
+    }
+
+    /// Quit with a preview on its way: the profile goes back after it,
+    /// not never.
+    #[test]
+    fn quits_after_the_preview_on_its_way() {
+        let mut app = titan_lighting();
+        edit(&mut app);
+        app.previewing = true;
+        let _ = app.update(Message::Quit);
+        assert_eq!(app.next_preview.as_deref(), Some(""));
+        assert!(app.quitting);
+        let _ = app.update(Message::Previewed(Ok(())));
+        assert_eq!(app.previews.last().map(String::as_str), Some(""));
+    }
+
+    /// The window opened again on Lighting shows what was left unsaved.
+    #[test]
+    fn shows_a_kept_edit_when_the_window_comes_back() {
+        let mut app = titan_lighting();
+        edit(&mut app);
+        let id = app.window.unwrap();
+        let _ = app.update(Message::WindowClosed(id));
+        assert!(!app.editing_lights);
+        let _ = app.update(Message::Show);
+        assert!(app.editing_lights);
+        assert_eq!(app.previews.last(), app.previews.first());
+    }
+
+    /// A failed save shows in the scenarios' editor too.
+    #[test]
+    fn the_scenarios_editor_shows_errors() {
+        let mut app = app(alpha17());
+        app.scenarios = Some(scenarios::Editor::from_toml("").unwrap());
+        app.editing_scenarios = true;
+        app.error = Some("no such mode".into());
+        let mut ui = simulator(app.view(window::Id::unique()));
+        assert!(ui.find("no such mode").is_ok());
     }
 
     /// On `page`, as its row in the sidebar opens it.

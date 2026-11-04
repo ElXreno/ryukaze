@@ -284,7 +284,11 @@ impl App {
                 fan: status.fan_modes.as_deref().unwrap_or_default(),
                 super_battery: status.super_battery.is_some(),
             };
-            return editor.view(width, &modes).map(Message::Scenarios);
+            let editor = editor.view(width, &modes).map(Message::Scenarios);
+            return match &self.error {
+                Some(err) => column![banner(err), editor].spacing(20).into(),
+                None => editor,
+            };
         }
 
         let title = text(page.title()).size(24).font(theme::heading());
