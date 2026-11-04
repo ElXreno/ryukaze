@@ -1,7 +1,7 @@
 //! The StatusNotifierItem: the modes at a right click, the window at a left
 //! one. It runs as a subscription, so it lives exactly as long as the app.
 
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use iced::{
     futures::{SinkExt, Stream},
@@ -13,6 +13,7 @@ use ksni::{
 };
 use ryukaze_core::Status;
 use tokio::sync::mpsc::{self, UnboundedSender};
+use zbus::{Connection, zvariant::Value};
 
 use crate::app::{FAN_ORDER, Message, SHIFT_ORDER, capitalize, ordered};
 
@@ -35,6 +36,37 @@ impl fmt::Debug for Handle {
 impl Handle {
     pub async fn show(self, status: Result<Status, String>) {
         self.0.update(|tray| tray.status = status).await;
+    }
+}
+
+/// What went wrong with no window to say it in, as a desktop notification;
+/// with no one to show it, on stderr.
+pub async fn notify(body: String) {
+    let sent = async {
+        let hints = HashMap::<&str, Value<'_>>::new();
+        Connection::session()
+            .await?
+            .call_method(
+                Some("org.freedesktop.Notifications"),
+                "/org/freedesktop/Notifications",
+                Some("org.freedesktop.Notifications"),
+                "Notify",
+                &(
+                    "ryukaze",
+                    0u32,
+                    "ryukaze",
+                    "ryukaze",
+                    body.as_str(),
+                    Vec::<&str>::new(),
+                    hints,
+                    -1i32,
+                ),
+            )
+            .await?;
+        zbus::Result::Ok(())
+    };
+    if let Err(err) = sent.await {
+        eprintln!("ryukaze: {body} (no notification: {err})");
     }
 }
 

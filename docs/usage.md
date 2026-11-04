@@ -76,7 +76,8 @@ The tray icon has the scenarios, the modes, the switches, the keyboard
 light's profiles and the GPU MUX in its menu, the scenario and the
 temperatures in its tooltip, and opens the window on a click.
 `ryukaze --hidden` starts with the tray only, as at login; starting
-`ryukaze` again while it runs brings its window up.
+`ryukaze` again while it runs brings its window up. What fails with the
+window closed comes as a desktop notification.
 
 ## The command line
 

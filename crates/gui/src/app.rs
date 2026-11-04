@@ -231,10 +231,14 @@ impl App {
                 None => Task::none(),
             },
             Message::Applied(result) => {
+                let told = match unseen(self.window, &result) {
+                    Some(err) => Task::future(tray::notify(err)).discard(),
+                    None => Task::none(),
+                };
                 self.error = result.err();
                 // What was copied no longer matches.
                 self.copied = false;
-                self.refresh()
+                Task::batch([told, self.refresh()])
             }
             Message::Dark(dark) => {
                 self.dark = dark;
@@ -1620,6 +1624,12 @@ fn marks_sliders<'a>((cpu, gpu): (u8, u8)) -> Element<'a, Message> {
     .into()
 }
 
+/// A failure with no window to show it in, as after a pick in the tray,
+/// where the item only goes back to what it was.
+fn unseen(window: Option<window::Id>, result: &Result<(), String>) -> Option<String> {
+    window.is_none().then(|| result.clone().err()).flatten()
+}
+
 fn banner<'a>(message: &str) -> Element<'a, Message> {
     container(text(message.to_owned()).size(14))
         .padding([8, 12])
@@ -2010,6 +2020,23 @@ mod tests {
             kept_hint(&status),
             "Changes here are kept; the config sets cooler boost when hot, the charge limit and its marks again at every start"
         );
+    }
+
+    #[test]
+    fn says_a_failure_with_no_window_to_show_it() {
+        let failed = Err("shift_mode: no".to_owned());
+        assert_eq!(unseen(None, &failed), Some("shift_mode: no".to_owned()));
+        assert_eq!(unseen(Some(window::Id::unique()), &failed), None);
+        assert_eq!(unseen(None, &Ok(())), None);
+    }
+
+    /// Shows a real notification: `cargo test -p ryukaze notifies --
+    /// --ignored`, to see the server takes what `tray::notify` sends.
+    #[test]
+    #[ignore]
+    fn notifies() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(tray::notify("A test of ryukaze's notification".into()));
     }
 
     #[test]
