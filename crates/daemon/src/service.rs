@@ -1925,7 +1925,14 @@ impl Service {
         if before == want {
             return Ok(());
         }
-        mux.ask(raw, want).map_err(failed)?;
+        if let Err(err) = mux.ask(raw, want) {
+            // In the variable with no ask behind it, the BIOS passes it
+            // over at the next start, but `next` would say it's coming.
+            if let Err(err) = mux.withdraw(before) {
+                warn!("gpu_mode: {err}");
+            }
+            return Err(failed(err));
+        }
         for _ in 0..30 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match mux.answer(raw).map_err(failed)? {
@@ -3561,6 +3568,13 @@ mod tests {
             gpu_modes(&titan),
             (Some("discrete".into()), Some("discrete".into()))
         );
+
+        // Nor does an ask the EC can't take stay in the variable.
+        let unasked = titan_mux(0x35);
+        let mut titan = service(unasked.path());
+        fs::remove_file(unasked.path().join("kernel/debug/ec/ec0/io")).unwrap();
+        assert!(titan.set_gpu_mode("hybrid").await.is_err());
+        assert_eq!(gpu_byte(unasked.path()), 0x35);
 
         // A mode the BIOS doesn't have isn't asked for.
         let without = titan_mux(0x15);

@@ -177,8 +177,8 @@ impl GpuMux {
     /// [`Self::next`] where it flips. Clears the last answer; the rest of
     /// 0xD1 stays as read.
     pub fn ask(&self, ec: &RawEc, mode: GpuMode) -> io::Result<()> {
-        self.request(mode)?;
         let switch = read(ec, SWITCH)?;
+        self.request(mode)?;
         ec.write(SWITCH, &[switch & !(ASK | ANSWERED | TO_DGPU) | ASK])
     }
 
@@ -267,6 +267,20 @@ mod tests {
         let ram = fs::read(sysfs.path().join("kernel/debug/ec/ec0/io")).unwrap();
         assert_eq!(ram[SWITCH as usize], 0xf0 | ASK);
         assert_eq!(ram[PANEL as usize], 0x0b);
+    }
+
+    /// Where the BIOS flips, an ask is the EC's alone: the variable is for
+    /// the Win/Fn swap there, and stays as it is even if it's there.
+    #[test]
+    fn the_alpha_leaves_the_variable_alone() {
+        let sysfs = tempfile::tempdir().unwrap();
+        let ec = ec_with(sysfs.path(), 0x0b, 0);
+        var_with(sysfs.path(), 0x35);
+        let before = fs::read(sysfs.path().join(VAR)).unwrap();
+        let mux = gpu_mux("17KKIMS1.115", sysfs.path()).unwrap();
+        mux.ask(&ec, GpuMode::Discrete).unwrap();
+        mux.withdraw(GpuMode::Hybrid).unwrap();
+        assert_eq!(fs::read(sysfs.path().join(VAR)).unwrap(), before);
     }
 
     #[test]
