@@ -45,6 +45,10 @@ struct Model {
     /// Effects the controller runs: without them every key is still in
     /// the tables.
     effects: bool,
+    /// Checked to follow its tables live and to take `50`, `52` and `83`,
+    /// so nothing restarts but what must (see [`Klc::show`]). Without, all
+    /// of it goes each time, as measured on the controller.
+    live: bool,
     /// What it shows goes to its flash as the laptop goes off or to sleep.
     saves: bool,
     tables: Tables,
@@ -59,6 +63,7 @@ const MODELS: [Model; 2] = [
         product: 0x113a,
         board: None,
         effects: true,
+        live: false,
         saves: true,
         tables: Tables::Fitted,
         scale: None,
@@ -69,6 +74,7 @@ const MODELS: [Model; 2] = [
         product: 0x1122,
         board: Some("MS-1824"),
         effects: true,
+        live: true,
         saves: false,
         tables: Tables::Regions,
         scale: Some([0x89, 0xe2, 0xea]),
@@ -121,9 +127,10 @@ impl Klc {
     /// The keys as `lighting` has them, and `over` it; without one, as they
     /// are, `over` too: with no tables of ryukaze's to keep it in, nothing
     /// would bring the numpad back or let the power button go. Only what
-    /// differs from what `sent` says the controller has goes.
+    /// differs from what `sent` says the controller has goes, where it
+    /// follows its tables live; elsewhere all of it goes.
     ///
-    /// The controller restarts its lighting inside its USB interrupt, for
+    /// Such a controller restarts its lighting inside its USB interrupt, for
     /// some 5 ms, with the matrix's scan stopped: the row lit just then
     /// stays lit, its keys flashing many times brighter. So, where it
     /// runs effects, nothing restarts but what can't go on without: the
@@ -133,10 +140,25 @@ impl Klc {
     /// and comes off again; and a restart goes under black, `50` first, so
     /// the row left lit is dark.
     pub fn show(&self, sent: &mut Sent, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
-        let lighting = lighting.map(keys_only);
-        let plan = plan(self.model, lighting.as_ref(), over);
+        let Some(lighting) = lighting.map(keys_only) else {
+            return Ok(());
+        };
+        let plan = plan(self.model, Some(&lighting), over);
         for packet in plan.packets.iter().filter(|packet| packet[0] == 0x0b) {
             check_effect(packet)?;
+        }
+        if self.model.effects && !self.model.live {
+            let mut klc = Controller::open(&self.node)?;
+            for packet in &plan.packets {
+                klc.feature(packet)?;
+            }
+            if let Some(restart) = plan.restart {
+                klc.restart(restart)?;
+            }
+            for report in reports(&plan.still) {
+                klc.feature(&report)?;
+            }
+            return Ok(());
         }
         let changes = if self.model.effects {
             changes(&plan, sent, self.model.scale)
@@ -200,17 +222,35 @@ impl Klc {
         saved
     }
 
-    /// Only `over` changed: as any other change (see [`Klc::show`]).
+    /// Only `over` changed: as any other change (see [`Klc::show`]). Where
+    /// tables aren't followed live, its keys still at once, and in the
+    /// tables, so they stay so, without the restart that would start every
+    /// effect over; the power button's colour in its effect alone, which
+    /// shows at once.
     pub fn overlay(
         &self,
         sent: &mut Sent,
         lighting: Option<&Lighting>,
         over: Over,
     ) -> io::Result<()> {
-        if lighting.is_none() {
+        let Some(lighting) = lighting else {
             return Ok(());
+        };
+        if self.model.live || !self.model.effects {
+            return self.show(sent, Some(lighting), over);
         }
-        self.show(sent, lighting, over)
+        let lighting = keys_only(lighting);
+        let mut klc = Controller::open(&self.node)?;
+        if over.power.is_some() {
+            klc.feature(&power_packet(&lighting, over))?;
+        }
+        for packet in table_packets(self.model, &lighting, over) {
+            klc.feature(&packet)?;
+        }
+        for report in reports(&without_power(over.keys())) {
+            klc.feature(&report)?;
+        }
+        Ok(())
     }
 }
 
@@ -595,7 +635,9 @@ fn table_packets(model: &Model, lighting: &Lighting, over: Over) -> Vec<[u8; REP
         let color = color.unwrap_or(Color::OFF).0;
         let id = if model.effects { id } else { 0 };
         match effect {
-            Effect::Static if model.effects => steelseries::slot(color, color, 0, id, LIVE, key),
+            Effect::Static if model.live && model.effects => {
+                steelseries::slot(color, color, 0, id, LIVE, key)
+            }
             Effect::Static => steelseries::slot(color, [0; 3], 0, id, STILL, key),
             Effect::Reactive { flash, flash_ms } => {
                 steelseries::slot(color, flash.0, ticks(*flash_ms), id, 8, key)
@@ -1120,8 +1162,11 @@ mod tests {
         assert_eq!(numpad[2], 37);
         let (slots, _) = numpad[4..4 + 42 * 12].as_chunks::<12>();
         let effect_of = |key: u8| slots.iter().find(|slot| slot[11] == key).unwrap()[8];
-        // Still in the tables, followed live.
-        assert_eq!(slots.iter().find(|slot| slot[11] == 0x40).unwrap()[9], LIVE);
+        // Still in the tables: mode 1.
+        assert_eq!(
+            slots.iter().find(|slot| slot[11] == 0x40).unwrap()[9],
+            STILL
+        );
         assert_eq!(effect_of(0x59), 2, "numpad 1");
         assert_eq!(effect_of(0x5d), 3, "numpad 5");
         assert_eq!(effect_of(POWER), 0, "Power");
@@ -1154,7 +1199,14 @@ mod tests {
         );
         assert_eq!(still.restart, None);
         assert_eq!(still.packets.len(), 1 + 4);
-        assert_eq!(slot_of(&still.packets, 0x04), (LIVE, ORANGE.0));
+        assert_eq!(slot_of(&still.packets, 0x04), (STILL, ORANGE.0));
+        // Where tables are followed live, mode 8.
+        let live = plan(
+            TITAN,
+            Some(&lighting(Effect::Static, Some(ORANGE))),
+            Over::default(),
+        );
+        assert_eq!(slot_of(&live.packets, 0x04), (LIVE, ORANGE.0));
         // All but the power button, which its effect holds.
         assert_eq!(still.still.len(), keys().count() - 1);
         assert!(!still.still.iter().any(|&(key, _)| key == POWER));
@@ -1167,7 +1219,7 @@ mod tests {
         let waving = plan(ALPHA, Some(&wave), Over::default());
         assert_eq!(waving.packets.len(), 2 + 4);
         assert!(waving.restart == Some(Restart::Effects) && waving.still.is_empty());
-        assert_eq!(slot_of(&waving.packets, 0x1a), (LIVE, red.0));
+        assert_eq!(slot_of(&waving.packets, 0x1a), (STILL, red.0));
         assert_eq!(slot_of(&waving.packets, 0x05).0, 0);
 
         // NumLock off, still in the tables; at once too where all is still.
@@ -1176,13 +1228,21 @@ mod tests {
             power: Some(red),
         };
         let dark = plan(ALPHA, Some(&wave), over);
-        assert_eq!(slot_of(&dark.packets, 0x5d), (LIVE, [0; 3]));
+        assert_eq!(slot_of(&dark.packets, 0x5d), (STILL, [0; 3]));
         assert_eq!(slot_of(&dark.packets, 0x53).0, 0, "NumLock");
         let still_dark = plan(ALPHA, Some(&lighting(Effect::Static, Some(ORANGE))), over);
         assert!(still_dark.still.contains(&(0x5d, Color::OFF)));
         assert!(!still_dark.still.iter().any(|&(key, _)| key == POWER));
-        // Without a profile, nothing.
+        // Without a profile, nothing: not even the node is opened.
         assert_eq!(plan(ALPHA, None, over), Plan::default());
+        for model in [ALPHA, TITAN] {
+            let klc = Klc {
+                node: PathBuf::from("/nonexistent"),
+                model,
+            };
+            klc.show(&mut Sent::default(), None, over).unwrap();
+            klc.overlay(&mut Sent::default(), None, over).unwrap();
+        }
     }
 
     /// Effect 0, the power button's, holding `color`.

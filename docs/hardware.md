@@ -237,6 +237,11 @@ takes the same: checked by eye on both, with 2.61, as the firmware says.
 `40` puts the tables back to the firmware's own, every key red and
 flashing, and isn't sent.
 
+None of this is checked on the Alpha's 113a, whose firmware 1.14 is another
+one, and whose restart shows no flash. There ryukazed sends all of it each
+time, as measured there and told above: still keys in mode 1 and in still
+reports, every effect's start a restart, and none of `50`, `52` or `83`.
+
 ### The commands
 
 What the 1122's firmware 2.39 does with each report, from its code; ryukazed
