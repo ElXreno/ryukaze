@@ -61,16 +61,83 @@ pub fn settings(status: &Status, curves: &[(Fan, Curve)], profiles: Vec<Value>) 
     if !fans.is_empty() {
         top.push(("fans".into(), Value::Attrs(fans)));
     }
-    if !profiles.is_empty() {
-        top.push((
-            "keyboard".into(),
-            Value::Attrs(vec![("profiles".into(), Value::List(profiles))]),
-        ));
+    let keyboard = keyboard(status, profiles);
+    if !keyboard.is_empty() {
+        top.push(("keyboard".into(), Value::Attrs(keyboard)));
     }
 
     let mut nix = String::new();
     attrs(&mut nix, &top, 0);
     nix
+}
+
+/// The keyboard light's settings: the profile shown outside scenarios with
+/// one of their own, those scenarios', the profiles saved here, the numpad
+/// and the power button's light.
+fn keyboard(status: &Status, profiles: Vec<Value>) -> Vec<(String, Value)> {
+    let mut keyboard = Vec::new();
+    let scenarios = status.keyboard_scenarios.clone().unwrap_or_default();
+    // The profile shown is the scenario's where it has one: then the
+    // usual one isn't known here.
+    let own = status
+        .scenario
+        .as_ref()
+        .is_some_and(|scenario| scenarios.contains_key(scenario));
+    if !own {
+        put(
+            &mut keyboard,
+            "profile",
+            status.keyboard_profile.clone().map(Value::Str),
+        );
+    }
+    if !profiles.is_empty() {
+        keyboard.push(("profiles".into(), Value::List(profiles)));
+    }
+    if !scenarios.is_empty() {
+        keyboard.push((
+            "scenarios".into(),
+            Value::Attrs(
+                scenarios
+                    .into_iter()
+                    .map(|(scenario, profile)| (scenario, Value::Str(profile)))
+                    .collect(),
+            ),
+        ));
+    }
+    put(
+        &mut keyboard,
+        "numpad_follows_numlock",
+        status.numpad_follows_numlock.map(Value::Bool),
+    );
+    let mut power = Vec::new();
+    put(
+        &mut power,
+        "follows",
+        status.power_light.clone().map(Value::Str),
+    );
+    put(
+        &mut power,
+        "dgpu_waking",
+        status.power_light_dgpu.map(Value::Bool),
+    );
+    let colors = status.power_colors.clone().unwrap_or_default();
+    let modes: Vec<(String, Value)> = colors
+        .iter()
+        .filter(|(name, _)| *name != "dgpu")
+        .map(|(name, color)| (name.clone(), Value::Str(color.clone())))
+        .collect();
+    if !modes.is_empty() {
+        power.push(("shift_modes".into(), Value::Attrs(modes)));
+    }
+    put(
+        &mut power,
+        "dgpu_awake",
+        colors.get("dgpu").cloned().map(Value::Str),
+    );
+    if !power.is_empty() {
+        keyboard.push(("power".into(), Value::Attrs(power)));
+    }
+    keyboard
 }
 
 /// An attribute set of its own, `{ … }`, for an element of a list.
@@ -184,6 +251,45 @@ mod tests {
         assert_eq!(string("\u{2764}\u{fe0f}"), "\"\u{2764}\u{fe0f}\"");
         assert_eq!(string("a\nb"), r#""a\nb""#);
         assert_eq!(name("my key"), r#""my key""#);
+    }
+
+    /// The keyboard light as the window set it: the usual profile but where
+    /// a scenario has its own, the scenarios', the numpad, the power button.
+    #[test]
+    fn writes_the_keyboard_light() {
+        let status = Status {
+            scenario: Some("silent".into()),
+            keyboard_profile: Some("wave".into()),
+            keyboard_scenarios: Some([("turbo".to_owned(), "static 2".to_owned())].into()),
+            numpad_follows_numlock: Some(true),
+            power_light: Some("shift_mode".into()),
+            power_light_dgpu: Some(false),
+            power_colors: Some(
+                [
+                    ("eco".to_owned(), "#00ff00".to_owned()),
+                    ("dgpu".to_owned(), "#ff0000".to_owned()),
+                ]
+                .into(),
+            ),
+            ..Status::default()
+        };
+        let nix = settings(&status, &[], Vec::new());
+        for line in [
+            "profile = \"wave\";",
+            "turbo = \"static 2\";",
+            "numpad_follows_numlock = true;",
+            "follows = \"shift_mode\";",
+            "eco = \"#00ff00\";",
+            "dgpu_awake = \"#ff0000\";",
+        ] {
+            assert!(nix.contains(line), "{line} in\n{nix}");
+        }
+        // In a scenario of its own, the usual profile isn't known.
+        let own = Status {
+            scenario: Some("turbo".into()),
+            ..status
+        };
+        assert!(!settings(&own, &[], Vec::new()).contains("profile = "));
     }
 
     #[test]

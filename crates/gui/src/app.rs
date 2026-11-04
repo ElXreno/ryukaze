@@ -42,6 +42,9 @@ const REFRESH_HIDDEN: Duration = Duration::from_secs(10);
 /// Around a page.
 const PAGE_PADDING: f32 = 20.0;
 
+/// How long the note says the settings were copied.
+const COPIED_FOR: Duration = Duration::from_secs(4);
+
 /// Between cells of a grid.
 const CELL_GAP: f32 = 8.0;
 
@@ -133,6 +136,8 @@ pub enum Message {
     CurveReleased,
     CurveReset,
     CopyAsNix,
+    /// "Copied" said long enough.
+    CopiedGone,
     /// The saved keyboard profiles, in TOML, for the settings copied.
     ProfilesRead(Vec<String>),
     AdaptiveFans(bool),
@@ -684,6 +689,10 @@ impl App {
                     _ => self.update(Message::ProfilesRead(Vec::new())),
                 }
             }
+            Message::CopiedGone => {
+                self.copied = false;
+                Task::none()
+            }
             Message::ProfilesRead(profiles) => {
                 let Some(Ok(status)) = &self.status else {
                     return Task::none();
@@ -694,7 +703,13 @@ impl App {
                     .map(|editor| editor.nix_value())
                     .collect();
                 self.copied = true;
-                iced::clipboard::write(crate::nix::settings(status, &curves(status), profiles))
+                let copy =
+                    iced::clipboard::write(crate::nix::settings(status, &curves(status), profiles));
+                // The note says so for a moment, then what it said before.
+                let gone = Task::perform(async { tokio::time::sleep(COPIED_FOR).await }, |()| {
+                    Message::CopiedGone
+                });
+                Task::batch([copy, gone])
             }
         }
     }
