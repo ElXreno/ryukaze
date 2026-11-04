@@ -13,8 +13,9 @@ use ryukaze_core::{
     dgpu::{self, Dgpu},
     fans::{self, Curve, Fan, Layout},
     gpu_mux::{self, GpuMode, GpuMux},
-    keyboard::{self, Color, Klc, Lighting},
+    keyboard::{self, Klc},
     lightbar,
+    lighting::{self, Color, Lighting},
     local_dimming::{self, LocalDimming},
     msi_ec::MsiEc,
     power_supply::{self, Source},
@@ -1123,21 +1124,12 @@ impl Service {
         }
     }
 
-    /// What the light bar and the logo show: the profile picked's, but not
-    /// while a preview is on the keys.
-    fn lights(&self) -> fdo::Result<Option<lightbar::Lights>> {
-        match (&self.keyboard_preview, &self.keyboard_profile) {
-            (None, Some(name)) => Ok(self.find_keyboard_profile(name)?.lights()),
-            _ => Ok(None),
-        }
-    }
-
     fn light(&self, klc: &Klc) -> fdo::Result<()> {
         let lighting = self.lighting()?;
         let over = self.over();
         if !klc.effects()
             && let Some(lighting) = &lighting
-            && (lighting.effect != keyboard::Effect::Static || !lighting.zones.is_empty())
+            && (lighting.effect != lighting::Effect::Static || !lighting.zones.is_empty())
         {
             info!("keyboard: this controller runs no effects, the profile shown still");
         }
@@ -1148,8 +1140,8 @@ impl Service {
         self.power_shown(over.power);
         // Beside the keys: a failure there leaves them lit.
         if let Some(alc) = lightbar::find(self.ec.sysfs(), &self.dev)
-            && let Some(lights) = self.lights()?
-            && let Err(err) = alc.show(lights)
+            && let Some(lighting) = &lighting
+            && let Err(err) = alc.show(lighting)
         {
             warn!("light bar: {err}");
         }

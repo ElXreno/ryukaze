@@ -11,6 +11,7 @@ pub mod fans;
 pub mod gpu_mux;
 pub mod keyboard;
 pub mod lightbar;
+pub mod lighting;
 pub mod local_dimming;
 pub mod msi_ec;
 pub mod power_supply;

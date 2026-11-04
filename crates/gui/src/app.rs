@@ -327,7 +327,7 @@ impl App {
                 Task::none()
             }
             Message::PowerHex(hex) => {
-                let valid = hex.parse::<ryukaze_core::keyboard::Color>().is_ok();
+                let valid = hex.parse::<ryukaze_core::lighting::Color>().is_ok();
                 self.power_hex = hex.clone();
                 match (&self.power_color, valid) {
                     (Some(name), true) => self.update(Message::PowerColor(name.clone(), hex)),
@@ -1251,7 +1251,7 @@ fn power_colors<'a>(
     }
     let swatch = |color: Option<&String>, size: f32| {
         let color = color
-            .and_then(|hex| hex.parse::<ryukaze_core::keyboard::Color>().ok())
+            .and_then(|hex| hex.parse::<ryukaze_core::lighting::Color>().ok())
             .map_or(iced::Color::TRANSPARENT, lights::led);
         container(space().width(size).height(size)).style(move |theme: &Theme| container::Style {
             background: Some(color.into()),

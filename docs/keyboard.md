@@ -56,8 +56,9 @@ Keys: `a` to `z`, `0` to `9`, `f1` to `f12`, `esc`, `tab`, `capslock`,
 `delete`, `pageup`, `pagedown` (Home and End share them), `up`, `down`,
 `left`, `right`, `numlock`, `kp0` to `kp9`, `kpslash`, `kpasterisk`,
 `kpminus`, `kpplus`, `kpenter`, `kpdot`, `lctrl`, `lshift`, `lalt`, `win`,
-`ralt`, `rshift`, `fn`, `copilot` (or `rctrl`, where right Ctrl is), and
-`power`, the power button's light.
+`ralt`, `rshift`, `fn`, `copilot` (or `rctrl`, where right Ctrl is),
+`power`, the power button's light, and beside the keys, where there are,
+`bar`, the light bar, and `logo`, the logo on the lid.
 
 Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
 Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
@@ -68,9 +69,11 @@ Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
 Its controller runs the same effects, but nothing goes to its flash, as
 how its flash takes a save isn't known: at power-on it shows what it
 kept, until ryukazed lights it again. Its touchpad, lit from below (its
-light bar), and the logo on the lid show a profile's `bar` and `logo`,
-still, or its `color` where it has none of its own (see the
-[config](config.md)).
+light bar, `bar`), and the logo on the lid (`logo`) go with the profile,
+its effect too, unless `keys` or a zone names them. A wave runs on from
+the keys down the touchpad's rows, and reaches the logo as if it lay
+above the keys. A reactive profile leaves them still in its `color`: no
+key is pressed there.
 
 ## The power button
 

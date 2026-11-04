@@ -110,11 +110,9 @@ dgpu_waking = true
 [[keyboard.profiles]]
 name = "static"
 color = "#ff6000"
-keys = { wasd = "#ff0000", arrows = "#ffffff" }
-# Where there's a light bar and a logo (the Titan 18 HX): still, in
-# `color` unless told.
-bar = "#ff0000"
-logo = "#ffffff"
+# `bar` and `logo` are the light bar and the logo, where there are (the
+# Titan 18 HX); left out, they go with the profile.
+keys = { wasd = "#ff0000", arrows = "#ffffff", logo = "#ffffff" }
 
 [[keyboard.profiles]]
 name = "breathe"
@@ -141,7 +139,7 @@ name = "split"
 color = "#ff6000"
 
 [[keyboard.profiles.zones]]
-keys = ["numpad"]
+keys = ["numpad", "bar"]
 effect = "breathe"
 color = "#0040ff"
 

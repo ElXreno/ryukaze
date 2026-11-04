@@ -10,8 +10,9 @@
   [using ryukaze](usage.md#the-fn-keys)).
 - MSI Titan 18 HX A2WJ (MS-1824), EC firmware 1824EMS1.509: the fan
   curves and rpm, [the GPU MUX](#the-gpu-mux), [Apex](#apex),
-  [local dimming](#local-dimming), and the keyboard's light still, with
-  the touchpad's light and logo (see [the keyboard's controller](#the-keyboards-controller)).
+  [local dimming](#local-dimming), and the keyboard's light with its
+  effects, zones and the power button's own colour, the touchpad's light
+  and the logo too (see [the keyboard's controller](#the-keyboards-controller)).
 
 ## The EC's RAM
 
@@ -184,5 +185,14 @@ controller, as MSI's software does for all of its devices.
 
 The ALC's zones are 0 to 4 for the touchpad, in rows from the keyboard's
 edge to the front, and 5 for the logo: one report of `0e 00 06 00` and a
-still slot each, as above but for the zone in the key's place, then
-`0d 00 02`, shows them; zones left out keep their colours.
+slot each, as above but for the zone in the key's place, then `0d 00 02`,
+shows them still; zones left out keep their colours. MSI's software
+knows it as the Titan 18 Dragon Edition's ALC. It runs the same effects
+(`0b`, then `0d 00 00`), but every zone alike: a wave's origin, and the
+places MSI's software gives the zones (`0d 00 06 00` and an x and a y
+each, as a feature report), change nothing there, wherever they're put.
+So ryukazed sends a wave to each zone as a round of its own, started as
+far into it as the zone lies from the origin, and the zones as many
+effects. How far that is comes from the 1122: the keys there lie about
+239 of its units apart, and a round of a wave lies across 28.5 times the
+wavelength it's sent, 273 at 25 %.

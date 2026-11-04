@@ -17,7 +17,10 @@ use iced::{
         text::Alignment as TextAlignment, text_input,
     },
 };
-use ryukaze_core::keyboard::{self, Color, Origin};
+use ryukaze_core::{
+    keyboard,
+    lighting::{self, Color, Origin, Part},
+};
 
 use crate::{nix, theme};
 
@@ -268,7 +271,7 @@ impl Look {
             flash_ms: 500,
             origin: Origin::Middle,
             inward: false,
-            wavelength: keyboard::Wave::default().wavelength,
+            wavelength: lighting::Wave::default().wavelength,
         }
     }
 
@@ -317,20 +320,20 @@ impl Look {
 
     /// A cycle's or a wave's colours: its own, or the rainbow.
     fn round(&self) -> Vec<Color> {
-        if self.colors.len() >= *keyboard::COLORS.start() {
+        if self.colors.len() >= *lighting::COLORS.start() {
             self.colors.clone()
         } else {
-            keyboard::RAINBOW.to_vec()
+            lighting::RAINBOW.to_vec()
         }
     }
 
     /// The period, at least what the colours need.
     fn period(&self) -> u32 {
         let shortest = match self.effect {
-            Effect::Cycle | Effect::Wave => keyboard::shortest_period_ms(self.round().len()),
-            _ => *keyboard::PERIODS_MS.start(),
+            Effect::Cycle | Effect::Wave => lighting::shortest_period_ms(self.round().len()),
+            _ => *lighting::PERIODS_MS.start(),
         };
-        self.period_ms.clamp(shortest, *keyboard::PERIODS_MS.end())
+        self.period_ms.clamp(shortest, *lighting::PERIODS_MS.end())
     }
 
     /// Its colours, as the picker sets them.
@@ -390,7 +393,7 @@ impl Look {
                 if profile && self.color != Color::OFF {
                     fields.push(("color", hex(self.color)));
                 }
-                if self.colors.len() >= *keyboard::COLORS.start() {
+                if self.colors.len() >= *lighting::COLORS.start() {
                     let colors = self.colors.iter().map(|color| color.to_string());
                     fields.push(("colors", Field::Strs(colors.collect())));
                 }
@@ -403,7 +406,7 @@ impl Look {
                     if self.inward {
                         fields.push(("direction", Field::Str("in".into())));
                     }
-                    if self.wavelength != keyboard::Wave::default().wavelength {
+                    if self.wavelength != lighting::Wave::default().wavelength {
                         fields.push(("wavelength", Field::Int(self.wavelength.into())));
                     }
                 }
@@ -456,6 +459,8 @@ impl Look {
 #[derive(Debug, Clone, PartialEq)]
 struct Zone {
     keys: BTreeSet<u8>,
+    /// The lights beside the keys it takes in, kept as read.
+    parts: BTreeSet<Part>,
     look: Look,
 }
 
@@ -468,6 +473,8 @@ pub struct Editor {
     layer: usize,
     /// Keys with colours of their own.
     keys: BTreeMap<u8, Color>,
+    /// The lights beside the keys with colours of their own, kept as read.
+    parts: BTreeMap<Part, Color>,
     picked: BTreeSet<u8>,
     slot: Slot,
     /// The colour as typed.
@@ -565,6 +572,7 @@ impl Editor {
             zones: Vec::new(),
             layer: 0,
             keys: BTreeMap::new(),
+            parts: BTreeMap::new(),
             picked: BTreeSet::new(),
             slot: Slot::Color,
             hex,
@@ -592,7 +600,13 @@ impl Editor {
             .into_iter()
             .flatten()
         {
-            keys.push((named(name)?, read_color(value)?));
+            let color = read_color(value)?;
+            match Part::named(name) {
+                Some(part) => {
+                    editor.parts.insert(part, color);
+                }
+                None => keys.push((named(name)?, color)),
+            }
         }
         keys.sort_by_key(|(codes, _)| Reverse(codes.len()));
         for (codes, color) in keys {
@@ -609,6 +623,7 @@ impl Editor {
         {
             let zone = zone.as_table().ok_or("a zone that isn't a table")?;
             let mut keys = BTreeSet::new();
+            let mut parts = BTreeSet::new();
             for name in zone
                 .get("keys")
                 .and_then(toml::Value::as_array)
@@ -616,10 +631,16 @@ impl Editor {
                 .flatten()
                 .filter_map(toml::Value::as_str)
             {
-                keys.extend(named(name)?);
+                match Part::named(name) {
+                    Some(part) => {
+                        parts.insert(part);
+                    }
+                    None => keys.extend(named(name)?),
+                }
             }
             editor.zones.push(Zone {
                 keys,
+                parts,
                 look: Look::read(zone)?,
             });
         }
@@ -702,11 +723,12 @@ impl Editor {
                 return Outcome::Nothing;
             }
             Msg::AddZone => {
-                if self.zones.len() >= keyboard::ZONES {
+                if self.zones.len() >= lighting::ZONES {
                     return Outcome::Nothing;
                 }
                 self.zones.push(Zone {
                     keys: BTreeSet::new(),
+                    parts: BTreeSet::new(),
                     look: Look::new(Effect::Breathe),
                 });
                 self.picked.clear();
@@ -770,7 +792,7 @@ impl Editor {
             }
             Msg::AddColor => {
                 let mut round = self.look().round();
-                if round.len() >= *keyboard::COLORS.end() {
+                if round.len() >= *lighting::COLORS.end() {
                     return Outcome::Nothing;
                 }
                 // A copy of the last to change.
@@ -784,7 +806,7 @@ impl Editor {
                 let Slot::Round(i) = self.slot else {
                     return Outcome::Nothing;
                 };
-                if round.len() <= *keyboard::COLORS.start() || i >= round.len() {
+                if round.len() <= *lighting::COLORS.start() || i >= round.len() {
                     return Outcome::Nothing;
                 }
                 round.remove(i);
@@ -795,7 +817,7 @@ impl Editor {
             Msg::Rainbow => {
                 self.look_mut().colors.clear();
                 if let Slot::Round(i) = self.slot {
-                    self.slot = Slot::Round(i.min(keyboard::RAINBOW.len() - 1));
+                    self.slot = Slot::Round(i.min(lighting::RAINBOW.len() - 1));
                 }
                 self.hex = self.slot_color().to_string();
             }
@@ -923,13 +945,15 @@ impl Editor {
         if !keys.is_empty() {
             fields.push(("keys", Field::Keys(keys)));
         }
-        // A zone without keys is none.
+        // A zone without keys or lights is none.
         let zones: Vec<Vec<(&'static str, Field)>> = self
             .zones
             .iter()
-            .filter(|zone| !zone.keys.is_empty())
+            .filter(|zone| !zone.keys.is_empty() || !zone.parts.is_empty())
             .map(|zone| {
-                let mut fields = vec![("keys", Field::Strs(names_of(&zone.keys)))];
+                let mut names = names_of(&zone.keys);
+                names.extend(zone.parts.iter().map(|part| part.name().to_owned()));
+                let mut fields = vec![("keys", Field::Strs(names))];
                 fields.extend(zone.look.fields(false));
                 fields
             })
@@ -961,6 +985,11 @@ impl Editor {
             let (name, _) = names.iter().find(|(_, known)| known == code)?;
             Some((name.clone(), color.to_string()))
         }));
+        named.extend(
+            self.parts
+                .iter()
+                .map(|(part, color)| (part.name().to_owned(), color.to_string())),
+        );
         named
     }
 
@@ -1179,7 +1208,7 @@ impl Editor {
         for zone in 1..=self.zones.len() {
             layers = layers.push(layer(format!("Zone {zone}"), zone));
         }
-        if self.zones.len() < keyboard::ZONES {
+        if self.zones.len() < lighting::ZONES {
             layers = layers.push(small("+ Zone", Msg::AddZone));
         }
         let effects = row(Effect::ALL
@@ -1195,7 +1224,7 @@ impl Editor {
         .spacing(4);
         let period = self.level(
             "Period",
-            slider(keyboard::PERIODS_MS.clone(), look.period(), Msg::Period)
+            slider(lighting::PERIODS_MS.clone(), look.period(), Msg::Period)
                 .step(500u32)
                 .on_release(Msg::Released)
                 .style(theme::level),
@@ -1240,11 +1269,11 @@ impl Editor {
                     .map(|(i, &color)| self.dot(color, Slot::Round(i))))
                 .spacing(6)
                 .align_y(Alignment::Center);
-                if round.len() < *keyboard::COLORS.end() {
+                if round.len() < *lighting::COLORS.end() {
                     colors = colors.push(small("+", Msg::AddColor));
                 }
                 let mut tools = row![].spacing(6);
-                if matches!(self.slot, Slot::Round(_)) && round.len() > *keyboard::COLORS.start() {
+                if matches!(self.slot, Slot::Round(_)) && round.len() > *lighting::COLORS.start() {
                     tools = tools.push(small("Remove", Msg::RemoveColor));
                 }
                 if !look.colors.is_empty() {
@@ -1271,7 +1300,7 @@ impl Editor {
                     let wavelength = self.level(
                         "Width",
                         slider(
-                            keyboard::WAVELENGTHS.clone(),
+                            lighting::WAVELENGTHS.clone(),
                             look.wavelength,
                             Msg::Wavelength,
                         )
@@ -1285,7 +1314,7 @@ impl Editor {
             Effect::Reactive => {
                 let flash_ms = self.level(
                     "Flash",
-                    slider(keyboard::FLASHES_MS.clone(), look.flash_ms, Msg::FlashMs)
+                    slider(lighting::FLASHES_MS.clone(), look.flash_ms, Msg::FlashMs)
                         .step(100u32)
                         .on_release(Msg::Released)
                         .style(theme::level),
@@ -1936,6 +1965,21 @@ mod tests {
             "[[zones]]\ncolor = \"#ff6000\"\neffect = \"breathe\"\nkeys = [\"numpad\"]\nperiod_ms = 4000\n"
         ));
         assert!(Editor::from_toml("name = \"x\"\neffect = \"sparkle\"\n").is_err());
+    }
+
+    /// The light bar and the logo, named among the keys, kept as read.
+    #[test]
+    fn keeps_the_light_bar_and_the_logo() {
+        let read = "name = \"lit\"\neffect = \"cycle\"\n\n[keys]\nlogo = \"#ffffff\"\nw = \"off\"\n\n[[zones]]\nkeys = [\"bar\"]\neffect = \"breathe\"\ncolor = \"#ff6000\"\n";
+        let editor = Editor::from_toml(read).unwrap();
+        assert_eq!(editor.parts[&Part::Logo], Color([255; 3]));
+        assert_eq!(editor.keys[&0x1a], Color::OFF);
+        assert!(editor.zones[0].keys.is_empty());
+        assert!(editor.zones[0].parts.contains(&Part::Bar));
+        let written = editor.toml();
+        assert!(written.contains("logo = \"#ffffff\""), "{written}");
+        assert!(written.contains("keys = [\"bar\"]"), "{written}");
+        assert_eq!(Editor::from_toml(&written).unwrap().toml(), written);
     }
 
     #[test]
