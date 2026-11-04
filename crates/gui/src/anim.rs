@@ -471,13 +471,24 @@ struct Hovering<'a, Message> {
     menu: Option<Menu>,
 }
 
+/// What outlives a view: the hover's animation, and the cell the view
+/// keeps its menu's opening in.
+#[derive(Default)]
+struct State {
+    hover: Option<Animation<bool>>,
+    opened: Option<Rc<Cell<Option<Instant>>>>,
+}
+
 impl<Message> Widget<Message, Theme, Renderer> for Hovering<'_, Message> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Option<Animation<bool>>>()
+        tree::Tag::of::<State>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(None::<Animation<bool>>)
+        tree::State::new(State {
+            opened: self.menu.as_ref().map(|menu| Rc::clone(&menu.opened)),
+            ..State::default()
+        })
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -485,6 +496,14 @@ impl<Message> Widget<Message, Theme, Renderer> for Hovering<'_, Message> {
     }
 
     fn diff(&self, tree: &mut Tree) {
+        // A new view knows nothing of a menu open: left so, it would draw
+        // it faded out, with nothing to ask for another frame.
+        if let Some(menu) = &self.menu {
+            let state = tree.state.downcast_mut::<State>();
+            if let Some(opened) = state.opened.replace(Rc::clone(&menu.opened)) {
+                menu.opened.set(opened.get());
+            }
+        }
         tree.diff_children(std::slice::from_ref(&self.content));
     }
 
@@ -521,9 +540,10 @@ impl<Message> Widget<Message, Theme, Renderer> for Hovering<'_, Message> {
         if let Event::Mouse(_) | Event::Window(window::Event::RedrawRequested(_)) = event {
             let over = cursor.is_over(layout.bounds());
             let now = Instant::now();
-            let animation = tree.state.downcast_mut::<Option<Animation<bool>>>();
-            let animation =
-                animation.get_or_insert_with(|| Animation::new(over).duration(lasting(120)));
+            let state = tree.state.downcast_mut::<State>();
+            let animation = state
+                .hover
+                .get_or_insert_with(|| Animation::new(over).duration(lasting(120)));
             if animation.value() != over {
                 *animation = animation.clone().duration(lasting(120));
                 animation.go_mut(over, now);
@@ -597,7 +617,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Hovering<'_, Message> {
                 }
             }));
         }
-        let animation = tree.state.downcast_ref::<Option<Animation<bool>>>();
+        let animation = &tree.state.downcast_ref::<State>().hover;
         let over = cursor.is_over(layout.bounds());
         self.hovered.set(
             animation
@@ -659,6 +679,33 @@ mod tests {
         assert_eq!(mix(black, white, 1.0), white);
         let half = mix(black, white, 0.5);
         assert!((half.r - 0.5).abs() < 1e-6 && half.a == 1.0);
+    }
+
+    /// The status comes in under an open menu: the new view has it open
+    /// since the same moment, not faded out.
+    #[test]
+    fn a_new_view_keeps_a_menu_open() {
+        let view = |opened: &Rc<Cell<Option<Instant>>>| -> Element<'_, ()> {
+            Element::new(Hovering {
+                content: iced::widget::space().into(),
+                hovered: Rc::default(),
+                menu: Some(Menu {
+                    opened: Rc::clone(opened),
+                    shown: Rc::default(),
+                }),
+            })
+        };
+        let (first, second) = (Rc::default(), Rc::default());
+        let mut tree = Tree::new(view(&first));
+        let at = Instant::now();
+        first.set(Some(at));
+        view(&second).as_widget().diff(&mut tree);
+        assert_eq!(second.get(), Some(at));
+        // Closed, it's closed in the next one too.
+        second.set(None);
+        let third = Rc::new(Cell::new(Some(at)));
+        view(&third).as_widget().diff(&mut tree);
+        assert_eq!(third.get(), None);
     }
 
     #[test]
