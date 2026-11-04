@@ -379,7 +379,10 @@ impl App {
             }
             Message::Appearance(change) => {
                 match change {
-                    appearance::Change::Dark(dark) => self.dark = dark,
+                    appearance::Change::Dark(dark) => {
+                        self.dark = dark;
+                        theme::read_desktop();
+                    }
                     appearance::Change::Accent(accent) => theme::set_accent(accent),
                     appearance::Change::Reduced(reduced) => anim::set_reduced(reduced),
                     appearance::Change::Other => theme::read_desktop(),

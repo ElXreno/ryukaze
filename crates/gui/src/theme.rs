@@ -14,7 +14,7 @@ use std::{
 
 use iced::{
     Border, Color, Font, Shadow, Theme, color,
-    theme::{Palette, Style},
+    theme::{Palette, Style, palette::Extended},
     widget::{
         button, container, overlay::menu, pick_list, progress_bar, scrollable, slider, text,
         text_input,
@@ -393,9 +393,13 @@ pub fn colors(theme: &Theme) -> Colors {
 /// The theme for the window: iced's own widgets, the scrollbars and text
 /// selection among them, in the same colours as the rest.
 pub fn theme(dark: bool) -> Theme {
-    let colors = resolve(dark, &desktop(), palettes());
+    themed(dark, resolve(dark, &desktop(), palettes()))
+}
+
+fn themed(dark: bool, colors: Colors) -> Theme {
     let base = if dark { Theme::Dark } else { Theme::Light }.palette();
-    Theme::custom(
+    // Dark as asked: iced would go by the background, and `colors` by it.
+    Theme::custom_with_fn(
         "ryukaze",
         Palette {
             background: colors.background,
@@ -403,6 +407,10 @@ pub fn theme(dark: bool) -> Theme {
             primary: colors.strong,
             danger: colors.danger,
             ..base
+        },
+        |palette| Extended {
+            is_dark: dark,
+            ..Extended::generate(palette)
         },
     )
 }
@@ -692,6 +700,17 @@ pub fn scroller(theme: &Theme, status: scrollable::Status) -> scrollable::Style 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A light theme on a dark background is still the light one.
+    #[test]
+    fn is_dark_as_asked() {
+        let dim = Colors {
+            background: color!(0x202020),
+            ..LIGHT
+        };
+        assert!(!themed(false, dim).extended_palette().is_dark);
+        assert!(themed(true, LIGHT).extended_palette().is_dark);
+    }
 
     #[test]
     fn colours_go_over_the_desktops() {
