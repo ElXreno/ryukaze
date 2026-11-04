@@ -68,7 +68,7 @@ fn fade() -> Duration {
 
 /// The surface, in logical pixels: the card sits at its bottom, with room
 /// for its shadow; the rest is see-through, and clicks go through it all.
-const SIZE: (u32, u32) = (480, 120);
+const SIZE: (u32, u32) = (560, 160);
 const SHADOW: f32 = 14.0;
 
 pub fn run(session: bool) -> Result<(), String> {
@@ -586,17 +586,22 @@ impl Faded {
     fn pill<'a>(&self, label: String, on: f32) -> Element<'a, ()> {
         let fill = self.of(anim::mix(self.0.idle, self.0.strong, on));
         let ink = self.of(anim::mix(self.0.muted, self.0.on_strong, on));
-        container(text(label).size(14).color(ink))
-            .padding([5, 12])
-            .style(move |_| container::Style {
-                background: Some(fill.into()),
-                border: Border {
-                    radius: 999.0.into(),
-                    ..Border::default()
-                },
-                ..container::Style::default()
-            })
-            .into()
+        container(
+            text(label)
+                .size(14)
+                .color(ink)
+                .wrapping(text::Wrapping::None),
+        )
+        .padding([5, 12])
+        .style(move |_| container::Style {
+            background: Some(fill.into()),
+            border: Border {
+                radius: 999.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        })
+        .into()
     }
 
     /// `card`, what's in force moving over from `before`'s, the given part
@@ -605,10 +610,14 @@ impl Faded {
         match card {
             Card::Choice { heading, name, all } if all.contains(name) => column![
                 self.heading(heading),
+                // Too many for a line: more lines, each in the middle.
                 row(all
                     .iter()
                     .map(|each| self.pill(capitalize(each), in_force(card, before, each))))
-                .spacing(6),
+                .spacing(6)
+                .wrap()
+                .vertical_spacing(6)
+                .align_x(Alignment::Center),
             ]
             .spacing(8)
             .align_x(Alignment::Center)

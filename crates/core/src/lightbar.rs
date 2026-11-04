@@ -15,8 +15,8 @@ use std::{
 use crate::{
     lighting::{Color, Effect, Lighting, Part, PartLight},
     steelseries::{
-        self, ACROSS, Controller, FEATURE_LEN, Restart, STILL, check_effect, effect_packet,
-        lagging_packet, wave_lag,
+        self, ACROSS, Class, Controller, FEATURE_LEN, LIVE, Restart, check_effect, effect_packet,
+        lagging_packet, shape, wave_lag,
     },
 };
 
@@ -116,18 +116,102 @@ impl Alc {
             .collect()
     }
 
-    /// The bar and the logo as `lighting` has them.
-    pub fn show(&self, lighting: &Lighting) -> io::Result<()> {
+    /// The bar and the logo as `lighting` has them: only what differs
+    /// from what `sent` says the controller has, a restart only where it
+    /// can't do without, under black, as for the keys (see
+    /// [`crate::keyboard::Klc::show`]).
+    pub fn show(&self, sent: &mut Sent, lighting: &Lighting) -> io::Result<()> {
         let plan = plan(self.model, lighting);
         for packet in &plan.effects {
             check_effect(packet)?;
         }
-        let mut alc = Controller::open(&self.node)?;
-        for packet in plan.effects.iter().chain([&plan.table]) {
-            alc.feature(packet)?;
+        let changes = changes(&plan, sent);
+        let shown = (|| {
+            let mut alc = Controller::open(&self.node)?;
+            if changes.restart.is_some() {
+                alc.blackout()?;
+            }
+            for packet in &changes.packets {
+                alc.feature(packet)?;
+            }
+            if let Some(restart) = changes.restart {
+                alc.restart(restart)?;
+            }
+            Ok(())
+        })();
+        match shown {
+            Ok(()) => *sent = changes.sent,
+            Err(_) => *sent = Sent::default(),
         }
-        alc.restart(plan.restart)
+        shown
     }
+}
+
+/// What goes to the controller for `plan`, given what it was `sent`, and
+/// what it then has.
+#[derive(Debug, PartialEq)]
+struct Changes {
+    packets: Vec<[u8; FEATURE_LEN]>,
+    restart: Option<Restart>,
+    sent: Sent,
+}
+
+fn changes(plan: &Plan, sent: &Sent) -> Changes {
+    let classes: Vec<Class> = plan
+        .table
+        .get(4..)
+        .unwrap_or_default()
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .take(usize::from(plan.table[2]))
+        .map(Class::of)
+        .collect();
+    let reshaped = sent.effects.as_ref().is_none_or(|effects| {
+        effects.len() != plan.effects.len()
+            || effects
+                .iter()
+                .zip(&plan.effects)
+                .any(|(old, new)| shape(old) != shape(new))
+    });
+    let next = Sent {
+        effects: Some(plan.effects.clone()),
+        table: Some(plan.table),
+        built: classes.clone(),
+    };
+    if reshaped || sent.built != classes {
+        let mut packets = plan.effects.clone();
+        packets.push(plan.table);
+        return Changes {
+            packets,
+            restart: Some(plan.restart),
+            sent: next,
+        };
+    }
+    let mut packets: Vec<[u8; FEATURE_LEN]> = plan
+        .effects
+        .iter()
+        .zip(sent.effects.iter().flatten())
+        .filter(|(new, old)| new != old)
+        .map(|(new, _)| *new)
+        .collect();
+    if sent.table != Some(plan.table) {
+        packets.push(plan.table);
+    }
+    Changes {
+        packets,
+        restart: None,
+        sent: next,
+    }
+}
+
+/// What the controller was last sent, as far as ryukaze knows.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Sent {
+    effects: Option<Vec<[u8; FEATURE_LEN]>>,
+    table: Option<[u8; FEATURE_LEN]>,
+    /// Each zone's class at the last restart.
+    built: Vec<Class>,
 }
 
 /// What goes to the controller: the effects, the table, then the restart.
@@ -154,7 +238,8 @@ fn plan(model: &Model, lighting: &Lighting) -> Plan {
     let (slots, _) = table[4..].as_chunks_mut::<12>();
     for (place, zone) in slots.iter_mut().zip(model.zones) {
         let still = |color: Option<Color>| {
-            steelseries::slot(color.unwrap_or(Color::OFF).0, [0; 3], 0, 0, STILL, zone.id)
+            let color = color.unwrap_or(Color::OFF).0;
+            steelseries::slot(color, color, 0, 0, LIVE, zone.id)
         };
         *place = match lighting.part(zone.part) {
             PartLight::Still(color) => still(Some(color)),
@@ -205,6 +290,35 @@ mod tests {
         lighting::{Origin, RAINBOW, Wave},
         steelseries::testing::{board, hidraw},
     };
+
+    /// The logo's colour or its effect's colours: live, the bar left be;
+    /// another effect: a restart, under black.
+    #[test]
+    fn restarts_only_when_it_must() {
+        let first = changes(
+            &plan(TITAN, &lighting(Effect::Static, Some(RED))),
+            &Sent::default(),
+        );
+        assert!(first.restart.is_some());
+        let again = changes(
+            &plan(TITAN, &lighting(Effect::Static, Some(RED))),
+            &first.sent,
+        );
+        assert!(again.packets.is_empty() && again.restart.is_none());
+        let green = changes(
+            &plan(TITAN, &lighting(Effect::Static, Some(GREEN))),
+            &first.sent,
+        );
+        assert_eq!((green.packets.len(), green.restart), (1, None));
+        let breathing = changes(&plan(TITAN, &lighting(breathe(), Some(RED))), &green.sent);
+        assert!(breathing.restart.is_some());
+        let other = changes(
+            &plan(TITAN, &lighting(breathe(), Some(GREEN))),
+            &breathing.sent,
+        );
+        assert_eq!(other.restart, None);
+        assert!(other.packets.iter().any(|packet| packet[0] == 0x0b));
+    }
 
     #[test]
     fn finds_it_on_the_board_it_was_checked_on() {
@@ -262,7 +376,8 @@ mod tests {
             let color = if zone == 5 { GREEN } else { RED };
             let mut want = [0; 12];
             want[..3].copy_from_slice(&color.0);
-            want[9] = STILL;
+            want[3..6].copy_from_slice(&color.0);
+            want[9] = LIVE;
             want[11] = zone as u8;
             assert_eq!(slot, &want, "zone {zone}");
         }
@@ -288,7 +403,7 @@ mod tests {
         assert!(
             slots(&still)
                 .iter()
-                .all(|slot| slot[9] == STILL && slot[..3] == RED.0)
+                .all(|slot| slot[9] == LIVE && slot[..3] == RED.0)
         );
     }
 
@@ -356,14 +471,14 @@ mod tests {
                 .all(|slot| slot[8] == 0 && slot[9] == 0)
         );
         assert_eq!(&zoned_slots[5][..3], &GREEN.0);
-        assert_eq!(zoned_slots[5][9], STILL);
+        assert_eq!(zoned_slots[5][9], LIVE);
 
         let reacting = plan(TITAN, &lighting(reactive, Some(RED)));
         assert!(reacting.effects.is_empty());
         assert!(
             slots(&reacting)
                 .iter()
-                .all(|slot| slot[9] == STILL && slot[..3] == RED.0)
+                .all(|slot| slot[9] == LIVE && slot[..3] == RED.0)
         );
     }
 }

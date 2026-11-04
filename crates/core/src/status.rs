@@ -161,6 +161,11 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub lighting_parts: Option<Vec<String>>,
 
+    /// An editor's profile on the keyboard, until the editor ends it or a
+    /// new scenario does.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub keyboard_previewing: Option<bool>,
+
     /// The scenario applied when the laptop goes on AC, and on battery:
     /// `""` for none, `*` for modes the config gives it of its own.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]

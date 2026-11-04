@@ -17,8 +17,8 @@ repository = "https://github.com/kontonkara/ryukaze"
 ryukaze-core = { path = "crates/core" }
 anyhow = "1"
 futures-util = { version = "0.3", default-features = false }
-# Software rendering only: a GPU renderer opens Vulkan/GL, and on a hybrid
-# laptop that can wake the discrete GPU for a small settings window.
+# wgpu on the integrated GPU alone, so a hybrid laptop's discrete one
+# stays asleep (see crates/gui/src/renderer.rs), tiny-skia where it can't.
 iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "wayland", "x11", "tokio", "crisp", "canvas", "advanced", "image-without-codecs"] }
 # The OSD draws iced off screen, for a layer-shell surface of its own.
 iced_runtime = "0.14"

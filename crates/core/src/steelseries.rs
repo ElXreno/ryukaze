@@ -119,10 +119,54 @@ impl Controller {
         self.output(&[0x0d, 0x00, what])
     }
 
+    /// Every light black over what it shows, until a restart: `50 00 r g
+    /// b`, which sets the colour every light shows over the rest; then
+    /// long enough for that to reach the lights (see [`BLACKOUT`]).
+    pub fn blackout(&mut self) -> io::Result<()> {
+        self.output(&[0x50, 0x00, 0, 0, 0])?;
+        std::thread::sleep(BLACKOUT);
+        Ok(())
+    }
+
     /// The controller's colour scale: how far each channel goes at full.
     pub fn scale(&mut self, [r, g, b]: [u8; 3]) -> io::Result<()> {
         self.output(&[0x51, 0x00, r, g, b])
     }
+}
+
+/// A slot's mode the controller follows live, unlike [`STILL`], which it
+/// reads only at a restart: meant for a flash on a press, with the flash's
+/// colour the slot's and no length, there's none.
+pub const LIVE: u8 = 8;
+
+/// Black over every light before a restart, for this long: the controller
+/// draws a frame every 10 ms and scans its matrix in 1. It restarts inside
+/// its USB interrupt, for some 5 ms, with the scan stopped, and the row lit
+/// just then stays lit, many times brighter: black, it stays dark.
+pub(crate) const BLACKOUT: Duration = Duration::from_millis(30);
+
+/// Whether a light follows an effect or is still, as the controller sets
+/// it up at a restart: only then does one turn from one to the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Class {
+    Effect,
+    Live,
+}
+
+impl Class {
+    pub(crate) fn of(slot: &[u8; 12]) -> Class {
+        if slot[9] & LIVE != 0 || slot[9] == STILL {
+            Class::Live
+        } else {
+            Class::Effect
+        }
+    }
+}
+
+/// What of an effect the controller takes only at a restart: all but its
+/// steps' colours and its start colour, which it reads live.
+pub(crate) fn shape(packet: &[u8; FEATURE_LEN]) -> (&[u8], &[u8]) {
+    (&packet[..2], &packet[0x8c..])
 }
 
 /// A table slot for `target`, a key's HID usage or a zone: `[colour] [flash

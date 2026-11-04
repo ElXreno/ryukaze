@@ -81,6 +81,10 @@ pub struct Service {
     keyboard_profile: Option<String>,
     /// A profile an editor shows for now, over the one picked.
     keyboard_preview: Option<Lighting>,
+    /// What the keyboard's controller and the one beside it were last
+    /// sent, so only what changes goes.
+    keyboard_sent: std::sync::Mutex<keyboard::Sent>,
+    bar_sent: std::sync::Mutex<lightbar::Sent>,
     /// The settings changed in the window, kept for the next start but for
     /// those the config sets, `config_set`, which it decides; and where.
     changes: config::Changes,
@@ -295,6 +299,8 @@ impl Service {
             keyboard_scenarios: Vec::new(),
             keyboard_profile: None,
             keyboard_preview: None,
+            keyboard_sent: std::sync::Mutex::default(),
+            bar_sent: std::sync::Mutex::default(),
             changes: config::Changes::default(),
             config_set: config::Changes::default(),
             changes_file: None,
@@ -358,6 +364,7 @@ impl Service {
             scenarios: self.scenario_names(),
             keyboard_profile: keyboard.and(self.keyboard_profile.clone()),
             keyboard_profiles: keyboard.and(self.keyboard_names()),
+            keyboard_previewing: keyboard.map(|()| self.keyboard_preview.is_some()),
             shift_mode: now.shift_mode,
             fan_mode: now.fan_mode,
             super_battery: now.super_battery,
@@ -919,6 +926,9 @@ impl Service {
     /// The keyboard's light again: after sleep, and when a hidraw device
     /// appears, which may be the controller coming back.
     pub fn keyboard_back(&self) -> fdo::Result<()> {
+        // It may have lost what it was sent.
+        self.sent_keys().forget();
+        *self.sent_bar() = lightbar::Sent::default();
         match self.keyboard() {
             Some(klc) => self.light(&klc),
             None => Ok(()),
@@ -1071,7 +1081,7 @@ impl Service {
         let Some(klc) = self.keyboard() else {
             return Ok(());
         };
-        klc.save()
+        klc.save(&mut self.sent_keys())
             .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))?;
         info!("keyboard: saved in the controller");
         Ok(())
@@ -1134,18 +1144,30 @@ impl Service {
             info!("keyboard: this controller runs no effects, the profile shown still");
         }
         if lighting.is_some() || over != keyboard::Over::default() {
-            klc.show(lighting.as_ref(), over)
+            klc.show(&mut self.sent_keys(), lighting.as_ref(), over)
                 .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))?;
         }
         self.power_shown(over.power);
         // Beside the keys: a failure there leaves them lit.
         if let Some(alc) = lightbar::find(self.ec.sysfs(), &self.dev)
             && let Some(lighting) = &lighting
-            && let Err(err) = alc.show(lighting)
+            && let Err(err) = alc.show(&mut self.sent_bar(), lighting)
         {
             warn!("light bar: {err}");
         }
         Ok(())
+    }
+
+    fn sent_keys(&self) -> std::sync::MutexGuard<'_, keyboard::Sent> {
+        self.keyboard_sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn sent_bar(&self) -> std::sync::MutexGuard<'_, lightbar::Sent> {
+        self.bar_sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Only what goes over changed: drawn at once, and kept in the
@@ -1154,7 +1176,7 @@ impl Service {
         let lighting = self.lighting()?;
         let over = self.over();
         self.power_shown(over.power);
-        klc.overlay(lighting.as_ref(), over)
+        klc.overlay(&mut self.sent_keys(), lighting.as_ref(), over)
             .map_err(|err| fdo::Error::IOError(format!("keyboard: {err}")))
     }
 
@@ -1574,6 +1596,7 @@ impl Service {
             fn_key: field("fn_key", ec.fn_key()),
             keyboard_profile: keyboard.and(self.keyboard_profile.clone()),
             keyboard_profiles: keyboard.and(self.keyboard_names()),
+            keyboard_previewing: keyboard.map(|()| self.keyboard_preview.is_some()),
             keyboard_saved_profiles: keyboard.map(|()| self.keyboard_saved_names()),
             numpad_follows_numlock: keyboard.map(|()| self.numpad_follows),
             lighting_parts: keyboard.and_then(|()| {

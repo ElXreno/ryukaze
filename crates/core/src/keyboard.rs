@@ -11,10 +11,10 @@ use std::{
 };
 
 use crate::{
-    lighting::{Color, Effect, Lighting},
+    lighting::{Color, Effect, Lighting, Zone},
     steelseries::{
-        self, Controller, FEATURE_LEN as REPORT_LEN, Restart, STILL, check_effect, effect_packet,
-        ticks,
+        self, Class, Controller, FEATURE_LEN as REPORT_LEN, LIVE, Restart, STILL, check_effect,
+        effect_packet, shape, ticks,
     },
 };
 
@@ -120,66 +120,96 @@ impl Klc {
 
     /// The keys as `lighting` has them, and `over` it; without one, as they
     /// are, `over` too: with no tables of ryukaze's to keep it in, nothing
-    /// would bring the numpad back or let the power button go.
-    pub fn show(&self, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
-        let plan = plan(self.model, lighting, over);
+    /// would bring the numpad back or let the power button go. Only what
+    /// differs from what `sent` says the controller has goes.
+    ///
+    /// The controller restarts its lighting inside its USB interrupt, for
+    /// some 5 ms, with the matrix's scan stopped: the row lit just then
+    /// stays lit, its keys flashing many times brighter. So, where it
+    /// runs effects, nothing restarts but what can't go on without: the
+    /// first show, a wave's shape, a key turning from still to an effect.
+    /// Still keys follow their tables live (see [`LIVE`]), effects take new
+    /// colours live, a key's own colour over an effect goes over it at once
+    /// and comes off again; and a restart goes under black, `50` first, so
+    /// the row left lit is dark.
+    pub fn show(&self, sent: &mut Sent, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
+        let lighting = lighting.map(keys_only);
+        let plan = plan(self.model, lighting.as_ref(), over);
         for packet in plan.packets.iter().filter(|packet| packet[0] == 0x0b) {
             check_effect(packet)?;
         }
-        let mut klc = Controller::open(&self.node)?;
-        if let Some(scale) = self.model.scale {
-            klc.scale(scale)?;
+        let changes = if self.model.effects {
+            changes(&plan, sent, self.model.scale)
+        } else {
+            changes_still(&plan, sent, self.model.scale)
+        };
+        let shown = (|| {
+            let mut klc = Controller::open(&self.node)?;
+            if changes.blackout {
+                klc.blackout()?;
+            }
+            for packet in &changes.packets {
+                klc.feature(packet)?;
+            }
+            match (changes.scale, changes.restart) {
+                // Setting the scale restarts as well.
+                (Some(scale), Some(_)) => klc.scale(scale)?,
+                (Some(scale), None) => klc.scale(scale)?,
+                (None, Some(restart)) => klc.restart(restart)?,
+                (None, None) => {}
+            }
+            for report in &changes.paint {
+                klc.feature(report)?;
+            }
+            match &changes.release {
+                Release::None => {}
+                Release::All => klc.output(&[0x52])?,
+                Release::Keys(keys) => {
+                    for &key in keys {
+                        klc.output(&[0x83, key])?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+        match shown {
+            Ok(()) => *sent = changes.sent,
+            Err(_) => sent.forget(),
         }
-        for packet in &plan.packets {
-            klc.feature(packet)?;
-        }
-        if let Some(restart) = plan.restart {
-            klc.restart(restart)?;
-        }
-        for report in reports(&plan.still) {
-            klc.feature(&report)?;
-        }
-        Ok(())
+        shown
     }
 
     /// What it shows now, saved to the controller's flash, which it shows
-    /// from at power-on: `09`, which starts the effects over too, and blinks.
-    /// Only where the model saves: elsewhere how its flash takes it isn't
-    /// known.
-    pub fn save(&self) -> io::Result<()> {
+    /// from at power-on: `09`, which starts the lighting over with the scan
+    /// stopped, and blinks. Only where the model saves: elsewhere how its
+    /// flash takes it isn't known.
+    pub fn save(&self, sent: &mut Sent) -> io::Result<()> {
         if !self.model.saves {
             return Ok(());
         }
-        Controller::open(&self.node)?.output(&[0x09])
+        let saved = Controller::open(&self.node)?.output(&[0x09]);
+        match saved {
+            // Started over from its tables: no key's own colour over them.
+            Ok(()) => {
+                sent.built = classes(&sent.tables);
+                sent.overrides.clear();
+            }
+            Err(_) => sent.forget(),
+        }
+        saved
     }
 
-    /// Only `over` changed: its keys still at once, and in the tables, so
-    /// they stay so, without the restart that would start every effect over.
-    /// The power button's colour goes in its effect alone, which shows at
-    /// once. Without effects, the tables drawn again.
-    pub fn overlay(&self, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
-        let Some(lighting) = lighting else {
+    /// Only `over` changed: as any other change (see [`Klc::show`]).
+    pub fn overlay(
+        &self,
+        sent: &mut Sent,
+        lighting: Option<&Lighting>,
+        over: Over,
+    ) -> io::Result<()> {
+        if lighting.is_none() {
             return Ok(());
-        };
-        let mut klc = Controller::open(&self.node)?;
-        if !self.model.effects {
-            for packet in table_packets(self.model, &lighting.still(), over) {
-                klc.feature(&packet)?;
-            }
-            return klc.restart(Restart::Tables);
         }
-        if over.power.is_some() {
-            let power = power_packet(lighting, over);
-            check_effect(&power)?;
-            klc.feature(&power)?;
-        }
-        for packet in table_packets(self.model, lighting, over) {
-            klc.feature(&packet)?;
-        }
-        for report in reports(&without_power(over.keys())) {
-            klc.feature(&report)?;
-        }
-        Ok(())
+        self.show(sent, lighting, over)
     }
 }
 
@@ -197,8 +227,225 @@ struct Plan {
     packets: Vec<[u8; REPORT_LEN]>,
     /// A restart after them: the effects started, or the tables drawn.
     restart: Option<Restart>,
-    /// Keys still at once, over what's there.
+    /// Keys still at once, over what's there: where no effects run.
     still: Vec<(u8, Color)>,
+}
+
+/// What goes to the controller for `plan`, given what it was `sent`, and
+/// what it then has.
+#[derive(Debug, PartialEq)]
+struct Changes {
+    /// Black over every key first, for a restart.
+    blackout: bool,
+    scale: Option<[u8; 3]>,
+    packets: Vec<[u8; REPORT_LEN]>,
+    restart: Option<Restart>,
+    /// Keys' own colours over their effects, at once.
+    paint: Vec<[u8; REPORT_LEN]>,
+    /// Keys' own colours taken off again.
+    release: Release,
+    sent: Sent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Release {
+    None,
+    All,
+    Keys(Vec<u8>),
+}
+
+/// Where the controller runs effects: see [`Klc::show`].
+fn changes(plan: &Plan, sent: &Sent, scale: Option<[u8; 3]>) -> Changes {
+    let (effects, tables): (Vec<_>, Vec<_>) =
+        plan.packets.iter().partition(|packet| packet[0] == 0x0b);
+    let new = slots(&tables);
+    let class = |slot: &[u8; 12]| Class::of(slot);
+    let reshaped = effects.len() != sent.effects.len()
+        || effects
+            .iter()
+            .zip(&sent.effects)
+            .any(|(new, old)| shape(new) != shape(old));
+    let restart = !sent.restarted
+        || reshaped
+        || new.iter().any(|(key, slot)| {
+            let built = sent.built.get(key).copied();
+            match class(slot) {
+                Class::Effect => built != Some(Class::Effect),
+                Class::Live => !pure(slot) && built == Some(Class::Effect),
+            }
+        });
+    if restart {
+        let mut packets = effects.clone();
+        packets.extend(&tables);
+        return Changes {
+            blackout: true,
+            scale: scale.filter(|_| !sent.scaled),
+            packets,
+            restart: Some(Restart::Effects),
+            paint: Vec::new(),
+            release: Release::None,
+            sent: Sent {
+                scaled: true,
+                restarted: true,
+                built: new.iter().map(|(&key, slot)| (key, class(slot))).collect(),
+                overrides: BTreeMap::new(),
+                effects,
+                tables,
+            },
+        };
+    }
+    let mut packets: Vec<[u8; REPORT_LEN]> = effects
+        .iter()
+        .zip(&sent.effects)
+        .filter(|(new, old)| new != old)
+        .map(|(new, _)| *new)
+        .collect();
+    packets.extend(
+        tables
+            .iter()
+            .enumerate()
+            .filter(|&(at, packet)| sent.tables.get(at) != Some(packet))
+            .map(|(_, packet)| *packet),
+    );
+    // Still keys still running an effect, from the last restart: their
+    // colours go over it.
+    let overrides: BTreeMap<u8, Color> = new
+        .iter()
+        .filter(|&(key, slot)| {
+            *key != POWER
+                && class(slot) == Class::Live
+                && sent.built.get(key) == Some(&Class::Effect)
+        })
+        .map(|(&key, slot)| (key, Color([slot[0], slot[1], slot[2]])))
+        .collect();
+    let paint: Vec<(u8, Color)> = overrides
+        .iter()
+        .filter(|&(key, color)| sent.overrides.get(key) != Some(color))
+        .map(|(&key, &color)| (key, color))
+        .collect();
+    let off: Vec<u8> = sent
+        .overrides
+        .keys()
+        .filter(|key| !overrides.contains_key(key))
+        .copied()
+        .collect();
+    let release = if off.is_empty() {
+        Release::None
+    } else if overrides.is_empty() {
+        Release::All
+    } else {
+        Release::Keys(off)
+    };
+    Changes {
+        blackout: false,
+        scale: None,
+        packets,
+        restart: None,
+        paint: reports(&paint),
+        release,
+        sent: Sent {
+            scaled: sent.scaled,
+            restarted: true,
+            built: sent.built.clone(),
+            overrides,
+            effects,
+            tables,
+        },
+    }
+}
+
+/// Where it runs no effects: the tables, drawn again when they change.
+fn changes_still(plan: &Plan, sent: &Sent, scale: Option<[u8; 3]>) -> Changes {
+    let tables: Vec<[u8; REPORT_LEN]> = plan.packets.clone();
+    let packets: Vec<[u8; REPORT_LEN]> = tables
+        .iter()
+        .enumerate()
+        .filter(|&(at, packet)| sent.tables.get(at) != Some(packet))
+        .map(|(_, packet)| *packet)
+        .collect();
+    let restart = (!packets.is_empty() || !sent.restarted)
+        .then_some(plan.restart)
+        .flatten();
+    Changes {
+        blackout: false,
+        scale: scale.filter(|_| !sent.scaled),
+        packets,
+        restart,
+        paint: Vec::new(),
+        release: Release::None,
+        sent: Sent {
+            scaled: true,
+            restarted: sent.restarted || restart.is_some(),
+            tables,
+            ..Sent::default()
+        },
+    }
+}
+
+/// A still slot with nothing to do on a press: what a key's own colour
+/// over an effect stands for until the next restart.
+fn pure(slot: &[u8; 12]) -> bool {
+    slot[9] == STILL || (slot[0..3] == slot[3..6] && slot[6..8] == [0, 0])
+}
+
+/// The slots of `tables`, by key.
+fn slots(tables: &[[u8; REPORT_LEN]]) -> BTreeMap<u8, [u8; 12]> {
+    tables
+        .iter()
+        .flat_map(|packet| {
+            let count = usize::from(packet[2]).min(42);
+            let (slots, _) = packet[4..4 + 42 * 12].as_chunks::<12>();
+            slots[..count].to_vec()
+        })
+        .filter(|slot| slot[11] != 0xff && slot[11] != 0)
+        .map(|slot| (slot[11], slot))
+        .collect()
+}
+
+fn classes(tables: &[[u8; REPORT_LEN]]) -> BTreeMap<u8, Class> {
+    slots(tables)
+        .iter()
+        .map(|(&key, slot)| (key, Class::of(slot)))
+        .collect()
+}
+
+/// What of `lighting` is the keys': zones with keys of their own, the
+/// lights beside them left to their controller. A zone of the touchpad
+/// alone would otherwise start the keys' effects over.
+fn keys_only(lighting: &Lighting) -> Lighting {
+    Lighting {
+        parts: Vec::new(),
+        zones: lighting
+            .zones
+            .iter()
+            .filter(|zone| !zone.keys.is_empty())
+            .map(|zone| Zone {
+                parts: Vec::new(),
+                ..zone.clone()
+            })
+            .collect(),
+        ..lighting.clone()
+    }
+}
+
+/// What a controller was last sent, as far as ryukaze knows: forgotten
+/// where it may have lost it, as in sleep, so all of it goes again.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Sent {
+    scaled: bool,
+    /// Started over since forgotten, with each key's class as then.
+    restarted: bool,
+    built: BTreeMap<u8, Class>,
+    /// Keys' own colours over their effects, as sent since.
+    overrides: BTreeMap<u8, Color>,
+    effects: Vec<[u8; REPORT_LEN]>,
+    tables: Vec<[u8; REPORT_LEN]>,
+}
+
+impl Sent {
+    pub fn forget(&mut self) {
+        *self = Sent::default();
+    }
 }
 
 /// What goes still over a profile: the numpad dark but for NumLock, and the
@@ -263,7 +510,7 @@ fn plan(model: &Model, lighting: Option<&Lighting>, over: Over) -> Plan {
         return Plan {
             packets: table_packets(model, &lighting.still(), over),
             restart: Some(Restart::Tables),
-            still: Vec::new(),
+            ..Plan::default()
         };
     }
     // All still: in the tables for the next redraw, and still reports to
@@ -341,6 +588,7 @@ fn table_packets(model: &Model, lighting: &Lighting, over: Over) -> Vec<[u8; REP
         let color = color.unwrap_or(Color::OFF).0;
         let id = if model.effects { id } else { 0 };
         match effect {
+            Effect::Static if model.effects => steelseries::slot(color, color, 0, id, LIVE, key),
             Effect::Static => steelseries::slot(color, [0; 3], 0, id, STILL, key),
             Effect::Reactive { flash, flash_ms } => {
                 steelseries::slot(color, flash.0, ticks(*flash_ms), id, 8, key)
@@ -539,7 +787,7 @@ fn reports(keys: &[(u8, Color)]) -> Vec<[u8; REPORT_LEN]> {
 mod tests {
     use super::*;
     use crate::{
-        lighting::{RAINBOW, Wave, Zone},
+        lighting::{Part, RAINBOW, Wave},
         steelseries::testing::{board, hidraw, steps},
     };
 
@@ -622,6 +870,112 @@ mod tests {
         }
     }
 
+    /// The touchpad's own zone, or its colour, is nothing to the keys'
+    /// controller.
+    #[test]
+    fn leaves_the_touchpad_to_its_controller() {
+        let titan = MODELS
+            .iter()
+            .find(|model| model.board == Some("MS-1824"))
+            .unwrap();
+        let keys = lighting(Effect::Static, Some(BLUE));
+        let with_bar = Lighting {
+            parts: vec![(Part::Logo, ORANGE)],
+            zones: vec![Zone {
+                keys: Vec::new(),
+                parts: vec![Part::Bar],
+                effect: Effect::Breathe {
+                    period_ms: 2000,
+                    fade_to: Color::OFF,
+                },
+                color: Some(ORANGE),
+            }],
+            ..keys.clone()
+        };
+        let plan_of =
+            |lighting: &Lighting| plan(titan, Some(&keys_only(lighting)), Over::default());
+        assert_eq!(plan_of(&with_bar), plan_of(&keys));
+    }
+
+    /// Nothing restarts but what can't go on without, and that under
+    /// black: a key's own colour over an effect, and taken off, at once;
+    /// an effect's colours live; still keys by their tables.
+    #[test]
+    fn restarts_only_when_it_must() {
+        let titan = MODELS
+            .iter()
+            .find(|model| model.board == Some("MS-1824"))
+            .unwrap();
+        let breathe = |color: Color| Lighting {
+            effect: Effect::Breathe {
+                period_ms: 2000,
+                fade_to: Color::OFF,
+            },
+            ..lighting(Effect::Static, Some(color))
+        };
+        let send = |lighting: &Lighting, sent: &Sent| {
+            changes(
+                &plan(titan, Some(lighting), Over::default()),
+                sent,
+                titan.scale,
+            )
+        };
+        let first = send(&breathe(BLUE), &Sent::default());
+        assert!(first.blackout);
+        assert_eq!(first.scale, titan.scale);
+        assert_eq!(first.restart, Some(Restart::Effects));
+
+        let again = send(&breathe(BLUE), &first.sent);
+        assert!(again.packets.is_empty() && again.paint.is_empty());
+        assert_eq!((again.restart, &again.release), (None, &Release::None));
+
+        // Its own colour over the effect: a table and a still report.
+        let painted = Lighting {
+            keys: vec![(vec![0x04], ORANGE)],
+            ..breathe(BLUE)
+        };
+        let paint = send(&painted, &first.sent);
+        assert_eq!(paint.restart, None);
+        assert!(!paint.blackout);
+        assert!(paint.packets.iter().all(|packet| packet[0] != 0x0b));
+        assert_eq!(paint.paint.len(), 1);
+
+        // Back to the effect: taken off, no restart.
+        let back = send(&breathe(BLUE), &paint.sent);
+        assert_eq!(back.restart, None);
+        assert_eq!(back.release, Release::All);
+
+        // Another colour for the effect: live.
+        let recolored = send(&breathe(ORANGE), &back.sent);
+        assert_eq!(recolored.restart, None);
+        assert!(recolored.packets.iter().any(|packet| packet[0] == 0x0b));
+
+        // Another effect: started over, under black.
+        let cycle = Lighting {
+            effect: Effect::Cycle {
+                period_ms: 2000,
+                colors: vec![BLUE, ORANGE],
+            },
+            ..breathe(BLUE)
+        };
+        let cycled = send(&cycle, &recolored.sent);
+        assert_eq!(cycled.restart, Some(Restart::Effects));
+        assert!(cycled.blackout);
+        assert_eq!(cycled.scale, None);
+
+        // All still: its tables, live, whatever the colours.
+        let still = send(&lighting(Effect::Static, Some(BLUE)), &cycled.sent);
+        assert_eq!(still.restart, Some(Restart::Effects));
+        let orange = send(&lighting(Effect::Static, Some(ORANGE)), &still.sent);
+        assert_eq!(orange.restart, None);
+        assert!(orange.paint.is_empty());
+        assert!(!orange.packets.is_empty());
+
+        let mut forgot = orange.sent.clone();
+        forgot.forget();
+        assert_eq!(send(&breathe(BLUE), &forgot).scale, titan.scale);
+    }
+
     #[test]
     fn keys_follow_the_effect_or_flash() {
         let flash = Color([255; 3]);
@@ -696,8 +1050,8 @@ mod tests {
         assert_eq!(numpad[2], 37);
         let (slots, _) = numpad[4..4 + 42 * 12].as_chunks::<12>();
         let effect_of = |key: u8| slots.iter().find(|slot| slot[11] == key).unwrap()[8];
-        // Still in the tables: mode 1.
-        assert_eq!(slots.iter().find(|slot| slot[11] == 0x40).unwrap()[9], 1);
+        // Still in the tables, followed live.
+        assert_eq!(slots.iter().find(|slot| slot[11] == 0x40).unwrap()[9], LIVE);
         assert_eq!(effect_of(0x59), 2, "numpad 1");
         assert_eq!(effect_of(0x5d), 3, "numpad 5");
         assert_eq!(effect_of(POWER), 0, "Power");
@@ -730,7 +1084,7 @@ mod tests {
         );
         assert_eq!(still.restart, None);
         assert_eq!(still.packets.len(), 1 + 4);
-        assert_eq!(slot_of(&still.packets, 0x04), (1, ORANGE.0));
+        assert_eq!(slot_of(&still.packets, 0x04), (LIVE, ORANGE.0));
         // All but the power button, which its effect holds.
         assert_eq!(still.still.len(), keys().count() - 1);
         assert!(!still.still.iter().any(|&(key, _)| key == POWER));
@@ -743,7 +1097,7 @@ mod tests {
         let waving = plan(ALPHA, Some(&wave), Over::default());
         assert_eq!(waving.packets.len(), 2 + 4);
         assert!(waving.restart == Some(Restart::Effects) && waving.still.is_empty());
-        assert_eq!(slot_of(&waving.packets, 0x1a), (1, red.0));
+        assert_eq!(slot_of(&waving.packets, 0x1a), (LIVE, red.0));
         assert_eq!(slot_of(&waving.packets, 0x05).0, 0);
 
         // NumLock off, still in the tables; at once too where all is still.
@@ -752,7 +1106,7 @@ mod tests {
             power: Some(red),
         };
         let dark = plan(ALPHA, Some(&wave), over);
-        assert_eq!(slot_of(&dark.packets, 0x5d), (1, [0; 3]));
+        assert_eq!(slot_of(&dark.packets, 0x5d), (LIVE, [0; 3]));
         assert_eq!(slot_of(&dark.packets, 0x53).0, 0, "NumLock");
         let still_dark = plan(ALPHA, Some(&lighting(Effect::Static, Some(ORANGE))), over);
         assert!(still_dark.still.contains(&(0x5d, Color::OFF)));
@@ -971,7 +1325,7 @@ mod tests {
                 .any(|slot| slot[11] == POWER && slot[8] == POWER_EFFECT && slot[9] == 0)
         );
         assert_eq!(slot_of(tables, 0x05), (0, [0; 3]));
-        assert_eq!(slot_of(tables, 0x1a), (STILL, red.0));
+        assert_eq!(slot_of(tables, 0x1a), (LIVE, red.0));
         assert!(tables.iter().all(|table| table[REPORT_LEN - 2..] == [0, 0]));
     }
 }

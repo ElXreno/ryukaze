@@ -46,7 +46,7 @@ And the card on screen when the modes change, as on Fn+F7:
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/osd-dark.png">
-  <img alt="The card: the scenario, Performance among Silent and Balanced" src="docs/images/osd-light.png" width="480">
+  <img alt="The card: the scenario, Performance among Silent and Balanced" src="docs/images/osd-light.png" width="560">
 </picture>
 </p>
 

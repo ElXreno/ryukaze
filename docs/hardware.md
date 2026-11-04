@@ -124,10 +124,9 @@ and sends it again.
 On a brightness key the controller draws every key again from the
 tables, and what a still report alone painted goes: a still
 profile over a reactive one, say, comes back reactive. So ryukazed keeps
-still keys in the tables too, mode 1 with their colour: a still profile's,
-a key's own, the numpad dark for NumLock and the power button's own. A
-still profile goes there without the restart, which has nothing to start,
-and its still reports show it at once.
+still keys in the tables too: a still profile's, a key's own, the numpad
+dark for NumLock and the power button's own (see [Restarts](#restarts)
+for how).
 
 The tables' third byte is how many slots the controller reads, not a
 region: msi-perkeyrgb's four lists of keys, with it as their numbers,
@@ -196,3 +195,45 @@ far into it as the zone lies from the origin, and the zones as many
 effects. How far that is comes from the 1122: the keys there lie about
 239 of its units apart, and a round of a wave lies across 28.5 times the
 wavelength it's sent, 273 at 25 %.
+
+## Restarts
+
+Every restart of the lighting flashes a few keys, brighter than anything
+the keys can show, at full brightness and with the colour scale at full
+too: `0d 00 00` and `0d 00 02` both, and `51`, while tables, effects and
+still reports sent alone don't. The firmware SteelSeries GG carries for
+the GE76's 1122 (2.39; the Titan's 2.61 isn't in it) says why. There's no
+LED driver: the controller scans a matrix of 22 rows itself, a row at a
+time from a timer, a thousand times a second. It restarts the lighting
+inside its USB interrupt, which outranks that timer, for some 5 ms (6.5
+with a wave), and the row lit just then stays lit all that time, about 22
+times its share; it's a few keys spread over the board. The mode byte
+after `0d` is never read, so `0d 00 00` and `0d 00 02` are the same, and
+`51`, the layout's `06` and an output `0c 00 [level]`, which sets the
+brightness (nothing reads it), restart the same way. GG's own name for
+an `08` restart has no handler there.
+
+The same firmware tells what changes without one:
+
+- A slot in mode 8, a flash on a press, follows its table live, every
+  10 ms; with the flash's colour the slot's and no flash length, it's a
+  still key, and its colour changes with a table alone. Mode 1 is read
+  only at a restart.
+- An effect's steps and start colour are read live: a `0b` with other
+  colours shows at once. The rest of it, a wave's origin and width, the
+  steps' count and length, only at a restart, as is whether a key is on
+  an effect at all.
+- A still report (`0c 00 [n] 00` and key, red, green, blue) holds its keys
+  over their effects until `83 [key]` lets one go, `52` all, or a restart;
+  `50 00 [r] [g] [b]` holds every key so, at once.
+
+So ryukazed restarts only where it must, at the first show, after sleep,
+for another effect or a wave's other shape, or a key turning from still to
+an effect, and then under black: `50 00 00 00 00`, 30 ms for it to reach
+the keys, then the restart, and the row left lit is dark. Still keys go in
+the tables in mode 8; a key's own colour over a running effect goes over
+it in a still report, and comes off with `83` or `52`. The Titan's ALC
+takes the same: checked by eye on both, with 2.61, as the firmware says.
+`40` puts the tables back to the firmware's own, every key red and
+flashing, and isn't sent.
+

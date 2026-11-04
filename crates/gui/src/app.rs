@@ -78,6 +78,9 @@ pub struct App {
     editing_lights: bool,
     /// The Lighting page's automation shown.
     lighting_more: bool,
+    /// A preview on its way to the daemon, and the one asked for since.
+    previewing: bool,
+    next_preview: Option<String>,
     /// The previews sent, for the tests.
     #[cfg(test)]
     previews: Vec<String>,
@@ -115,6 +118,8 @@ pub enum Message {
     ChargeLimitDragged(u8),
     ChargeLimitReleased,
     Applied(Result<(), String>),
+    /// A preview shown, or not.
+    Previewed(Result<(), String>),
     Appearance(appearance::Change),
     /// The page this far down the sidebar, from 0.
     PageAt(usize),
@@ -197,6 +202,8 @@ impl App {
             editing_scenarios: false,
             power_color: None,
             power_hex: String::new(),
+            previewing: false,
+            next_preview: None,
             laptop: None,
             page: Page::Overview,
             arrival: anim::arrived(),
@@ -304,7 +311,8 @@ impl App {
                 let before = self.shown_lights();
                 self.status = Some(*status);
                 let follow = self.follow_keyboard(before);
-                Task::batch([follow, self.show_in_tray()])
+                let keep = self.keep_preview();
+                Task::batch([follow, keep, self.show_in_tray()])
             }
             Message::ModesChanged(modes) => {
                 let before = self.shown_lights();
@@ -318,9 +326,11 @@ impl App {
                     status.scenarios = modes.scenarios;
                     status.keyboard_profile = modes.keyboard_profile;
                     status.keyboard_profiles = modes.keyboard_profiles;
+                    status.keyboard_previewing = modes.keyboard_previewing;
                 }
                 let follow = self.follow_keyboard(before);
-                Task::batch([follow, self.show_in_tray()])
+                let keep = self.keep_preview();
+                Task::batch([follow, keep, self.show_in_tray()])
             }
             Message::ShiftMode(mode) => {
                 self.call(move |client| async move { client.set_shift_mode(&mode).await })
@@ -344,6 +354,14 @@ impl App {
                 }
                 None => Task::none(),
             },
+            Message::Previewed(result) => {
+                self.previewing = false;
+                let next = match self.next_preview.take() {
+                    Some(profile) => self.preview(profile),
+                    None => Task::none(),
+                };
+                Task::batch([self.update(Message::Applied(result)), next])
+            }
             Message::Applied(result) => {
                 let told = match unseen(self.window, &result) {
                     Some(err) => Task::future(tray::notify(err)).discard(),
@@ -986,11 +1004,41 @@ impl App {
     }
 
     /// Shows a profile from the editor on the keyboard; empty, the one
-    /// picked again.
+    /// picked again. One at a time: those asked for meanwhile wait, and
+    /// only the last goes, so a quick run of changes doesn't pile up on
+    /// the controller.
     fn preview(&mut self, profile: String) -> Task<Message> {
         #[cfg(test)]
         self.previews.push(profile.clone());
-        self.call(move |client| async move { client.preview_keyboard_profile(&profile).await })
+        if self.previewing {
+            self.next_preview = Some(profile);
+            return Task::none();
+        }
+        let Some(client) = self.client.clone() else {
+            return Task::none();
+        };
+        self.previewing = true;
+        Task::perform(
+            async move { client.preview_keyboard_profile(&profile).await },
+            |result| Message::Previewed(result.map_err(client::describe)),
+        )
+    }
+
+    /// An unsaved edit taken off the keyboard by the daemon, as a new
+    /// scenario does: shown again.
+    fn keep_preview(&mut self) -> Task<Message> {
+        let dropped = matches!(
+            &self.status,
+            Some(Ok(status)) if status.keyboard_previewing == Some(false)
+        );
+        if !self.editing_lights || !dropped || self.previewing {
+            return Task::none();
+        }
+        let Some(editor) = &self.lights else {
+            return Task::none();
+        };
+        let profile = editor.preview();
+        self.preview(profile)
     }
 
     fn call<F, Fut>(&self, call: F) -> Task<Message>
@@ -1659,6 +1707,8 @@ mod tests {
             editing_scenarios: false,
             power_color: None,
             power_hex: String::new(),
+            previewing: false,
+            next_preview: None,
             laptop: Some(Laptop::any()),
             page: Page::Overview,
             arrival: anim::arrived(),
@@ -1801,6 +1851,42 @@ mod tests {
                 true,
             );
         }
+    }
+
+    /// Previews asked for while one is on its way: only the last goes,
+    /// once it's there.
+    #[test]
+    fn sends_only_the_last_preview_of_a_run() {
+        let mut app = on(Page::Lighting, alpha17());
+        app.previewing = true;
+        let _ = app.preview("a".into());
+        let _ = app.preview("b".into());
+        assert_eq!(app.next_preview.as_deref(), Some("b"));
+        let _ = app.update(Message::Previewed(Ok(())));
+        assert!(app.next_preview.is_none());
+        assert_eq!(app.previews.last().map(String::as_str), Some("b"));
+    }
+
+    /// An unsaved edit the daemon took off the keyboard, for a new
+    /// scenario, goes back on.
+    #[test]
+    fn shows_an_edit_again_when_the_daemon_drops_it() {
+        let mut app = on(Page::Lighting, alpha17());
+        app.lights = Some(lights::Editor::new());
+        app.editing_lights = true;
+        let sent = app.previews.len();
+        let dropped = Status {
+            keyboard_previewing: Some(false),
+            ..alpha17()
+        };
+        let _ = app.update(Message::Status(Box::new(Ok(dropped))));
+        assert_eq!(app.previews.len(), sent + 1);
+        let shown = Status {
+            keyboard_previewing: Some(true),
+            ..alpha17()
+        };
+        let _ = app.update(Message::Status(Box::new(Ok(shown))));
+        assert_eq!(app.previews.len(), sent + 1);
     }
 
     /// On `page`, as its row in the sidebar opens it.
