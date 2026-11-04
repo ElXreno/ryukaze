@@ -14,7 +14,7 @@ use std::{
 use crate::steelseries::{self, Controller, FEATURE_LEN as REPORT_LEN, Restart, STILL};
 
 /// How a controller keeps its tables.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tables {
     /// Any key in any table, each counting its keys, and `08 39` at the end.
     Fitted,
@@ -31,15 +31,17 @@ pub enum RightOfAlt {
 }
 
 /// A controller as checked on a laptop.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Model {
     product: u16,
     /// The board, where the controller's product ID is shared by laptops
     /// with other keyboards.
     board: Option<&'static str>,
     /// Effects the controller runs: without them every key is still in
-    /// the tables, and nothing goes to its flash.
+    /// the tables.
     effects: bool,
+    /// What it shows goes to its flash as the laptop goes off or to sleep.
+    saves: bool,
     tables: Tables,
     /// The colour scale MSI's software gives it at every start.
     scale: Option<[u8; 3]>,
@@ -52,15 +54,17 @@ const MODELS: [Model; 2] = [
         product: 0x113a,
         board: None,
         effects: true,
+        saves: true,
         tables: Tables::Fitted,
         scale: None,
         right_of_alt: RightOfAlt::Copilot,
     },
-    // Titan 18 HX A2WJ: its effects aren't checked yet.
+    // Titan 18 HX A2WJ: how its flash takes a save isn't known.
     Model {
         product: 0x1122,
         board: Some("MS-1824"),
-        effects: false,
+        effects: true,
+        saves: false,
         tables: Tables::Regions,
         scale: Some([0x89, 0xe2, 0xea]),
         right_of_alt: RightOfAlt::Copilot,
@@ -152,11 +156,14 @@ impl Klc {
     /// are, `over` too: with no tables of ryukaze's to keep it in, nothing
     /// would bring the numpad back or let the power button go.
     pub fn show(&self, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
+        let plan = plan(self.model, lighting, over);
+        for packet in plan.packets.iter().filter(|packet| packet[0] == 0x0b) {
+            check_effect(packet)?;
+        }
         let mut klc = Controller::open(&self.node)?;
         if let Some(scale) = self.model.scale {
             klc.scale(scale)?;
         }
-        let plan = plan(self.model, lighting, over);
         for packet in &plan.packets {
             klc.feature(packet)?;
         }
@@ -171,10 +178,10 @@ impl Klc {
 
     /// What it shows now, saved to the controller's flash, which it shows
     /// from at power-on: `09`, which starts the effects over too, and blinks.
-    /// Only where it runs effects: elsewhere how its flash takes it isn't
+    /// Only where the model saves: elsewhere how its flash takes it isn't
     /// known.
     pub fn save(&self) -> io::Result<()> {
-        if !self.model.effects {
+        if !self.model.saves {
             return Ok(());
         }
         Controller::open(&self.node)?.output(&[0x09])
@@ -196,7 +203,9 @@ impl Klc {
             return klc.restart(Restart::Tables);
         }
         if over.power.is_some() {
-            klc.feature(&power_packet(lighting, over))?;
+            let power = power_packet(lighting, over);
+            check_effect(&power)?;
+            klc.feature(&power)?;
         }
         for packet in table_packets(self.model, lighting, over) {
             klc.feature(&packet)?;
@@ -205,6 +214,30 @@ impl Klc {
             klc.feature(&report)?;
         }
         Ok(())
+    }
+}
+
+/// An effect sent only as MSI's software would send one: 1 to 16 steps, none
+/// empty, their length the sum of theirs, `ff 00` at 0x8a and each step's
+/// spare bytes clear. One with no steps has left a controller dark for good.
+fn check_effect(packet: &[u8; REPORT_LEN]) -> io::Result<()> {
+    let steps = usize::from(packet[0x96]);
+    let length = |i: usize| u16::from_le_bytes([packet[2 + 8 * i + 6], packet[2 + 8 * i + 7]]);
+    let total: u32 = (0..steps).map(|i| u32::from(length(i))).sum();
+    let fine = packet[..2] == [0x0b, 0]
+        && (1..=STEPS).contains(&steps)
+        && packet[0x97] == 0
+        && (0..steps)
+            .all(|i| length(i) > 0 && packet[2 + 8 * i + 1] == 0 && packet[2 + 8 * i + 5] == 0)
+        && total == u32::from(u16::from_le_bytes([packet[0x98], packet[0x99]]))
+        && packet[0x8a..0x8c] == [0xff, 0];
+    if fine {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "an effect the controller might not take, not sent",
+        ))
     }
 }
 
@@ -1021,6 +1054,51 @@ mod tests {
         }
     }
 
+    /// Every effect ryukazed can make passes the check before sending; one
+    /// with no steps, or steps that don't add up, doesn't.
+    #[test]
+    fn only_whole_effects_are_sent() {
+        let eight: Vec<Color> = RAINBOW.iter().copied().chain([ORANGE, BLUE]).collect();
+        let effects = [
+            Effect::Static,
+            breathe(*PERIODS_MS.start()),
+            breathe(*PERIODS_MS.end()),
+            Effect::Cycle {
+                period_ms: shortest_period_ms(eight.len()),
+                colors: eight.clone(),
+            },
+            Effect::Cycle {
+                period_ms: *PERIODS_MS.end(),
+                colors: eight,
+            },
+            rainbow_wave(3000, Wave::default()),
+            Effect::Reactive {
+                flash: ORANGE,
+                flash_ms: *FLASHES_MS.start(),
+            },
+        ];
+        for effect in &effects {
+            for color in [None, Some(ORANGE), Some(Color([255; 3]))] {
+                check_effect(&effect_packet(PROFILE_EFFECT, effect, color)).unwrap();
+            }
+        }
+
+        let whole = effect_packet(PROFILE_EFFECT, &breathe(4000), Some(ORANGE));
+        let mut stepless = whole;
+        stepless[0x96] = 0;
+        stepless[0x98..0x9a].copy_from_slice(&[0, 0]);
+        assert!(check_effect(&stepless).is_err());
+        let mut short = whole;
+        short[0x98] ^= 1;
+        assert!(check_effect(&short).is_err());
+        let mut empty_step = whole;
+        empty_step[2 + 6..2 + 8].copy_from_slice(&[0, 0]);
+        assert!(check_effect(&empty_step).is_err());
+        let mut unmarked = whole;
+        unmarked[0x8a] = 0;
+        assert!(check_effect(&unmarked).is_err());
+    }
+
     #[test]
     fn colours_go_round_exactly_or_near_enough() {
         let cycle = |colors: &[Color], period_ms| Effect::Cycle {
@@ -1334,7 +1412,7 @@ mod tests {
         board(titan.path(), "MS-1824");
         let klc = find(titan.path(), dev).unwrap();
         assert_eq!(klc.node(), Path::new("/dev/hidraw0"));
-        assert!(!klc.effects());
+        assert!(klc.effects() && !klc.model.saves);
         assert_eq!(klc.right_of_alt(), RightOfAlt::Copilot);
         assert_eq!(find(Path::new("/nonexistent"), dev), None);
     }
@@ -1351,11 +1429,17 @@ mod tests {
             .collect()
     }
 
+    /// The Titan's tables, but on a controller without effects.
+    const STILL_ONLY: &Model = &Model {
+        effects: false,
+        ..MODELS[1]
+    };
+
     /// Without effects: every key still, in its region's table, as found
     /// on the Titan (a key in another region's table never shows), the
     /// tables drawn at once, and no effect packet.
     #[test]
-    fn titan_keeps_every_key_still_in_its_regions_table() {
+    fn without_effects_every_key_is_still_in_its_regions_table() {
         let red = Color([255, 0, 0]);
         let wave = Lighting {
             keys: vec![(named("wasd").unwrap(), red)],
@@ -1365,7 +1449,7 @@ mod tests {
             numpad_dark: true,
             power: Some(BLUE),
         };
-        let plan = plan(TITAN, Some(&wave), over);
+        let plan = plan(STILL_ONLY, Some(&wave), over);
         assert_eq!(plan.restart, Some(Restart::Tables));
         assert!(plan.still.is_empty());
         let regions: Vec<(u8, Vec<u8>)> = vec![
@@ -1406,6 +1490,35 @@ mod tests {
             "NumLock"
         );
         assert_eq!(slot_of(&plan.packets, POWER), (STILL, BLUE.0));
+    }
+
+    /// The Titan runs effects as the Alpha does, its keys in their regions'
+    /// tables: the power button on effect 0 in Enter's, and the effects
+    /// started over after them.
+    #[test]
+    fn titan_runs_effects_from_its_regions_tables() {
+        let red = Color([255, 0, 0]);
+        let wave = Lighting {
+            keys: vec![(named("wasd").unwrap(), red)],
+            ..lighting(rainbow_wave(3000, Wave::default()), None)
+        };
+        let plan = plan(TITAN, Some(&wave), Over::default());
+        assert_eq!(plan.restart, Some(Restart::Effects));
+        assert!(plan.still.is_empty());
+        let (effects, tables) = plan.packets.split_at(2);
+        assert!(effects.iter().all(|packet| check_effect(packet).is_ok()));
+        assert_eq!(effects[0][2], POWER_EFFECT);
+        assert_eq!(effects[1][2], PROFILE_EFFECT);
+        let counts: Vec<u8> = tables.iter().map(|table| table[2]).collect();
+        assert_eq!(counts, [42, 11, 24, 36]);
+        assert!(
+            used(&tables[1])
+                .iter()
+                .any(|slot| slot[11] == POWER && slot[8] == POWER_EFFECT && slot[9] == 0)
+        );
+        assert_eq!(slot_of(tables, 0x05), (0, [0; 3]));
+        assert_eq!(slot_of(tables, 0x1a), (STILL, red.0));
+        assert!(tables.iter().all(|table| table[REPORT_LEN - 2..] == [0, 0]));
     }
 
     #[test]

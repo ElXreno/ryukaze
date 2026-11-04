@@ -1139,9 +1139,7 @@ impl Service {
             && let Some(lighting) = &lighting
             && (lighting.effect != keyboard::Effect::Static || !lighting.zones.is_empty())
         {
-            info!(
-                "keyboard: this controller's effects aren't checked yet, the profile shown still"
-            );
+            info!("keyboard: this controller runs no effects, the profile shown still");
         }
         if lighting.is_some() || over != keyboard::Over::default() {
             klc.show(lighting.as_ref(), over)

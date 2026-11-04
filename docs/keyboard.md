@@ -59,18 +59,18 @@ Keys: `a` to `z`, `0` to `9`, `f1` to `f12`, `esc`, `tab`, `capslock`,
 `ralt`, `rshift`, `fn`, `copilot` (or `rctrl`, where right Ctrl is), and
 `power`, the power button's light.
 
-## The Titan 18 HX
-
-Its controller's effects aren't checked yet, so there it shows every
-profile still: a profile's effect gives way to its `color`, or the first of
-its `colors`, and a zone's keys take the zone's `color`. Nothing goes to
-its flash. Its touchpad, lit from below (its light bar), and the logo on
-the lid show a profile's `bar` and `logo`, still, or its `color` where it
-has none of its own (see the [config](config.md)).
-
 Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
 Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
 (Ctrl, Shift, Alt, Win, Copilot, Fn) and `wasd`.
+
+## The Titan 18 HX
+
+Its controller runs the same effects, but nothing goes to its flash, as
+how its flash takes a save isn't known: at power-on it shows what it
+kept, until ryukazed lights it again. Its touchpad, lit from below (its
+light bar), and the logo on the lid show a profile's `bar` and `logo`,
+still, or its `color` where it has none of its own (see the
+[config](config.md)).
 
 ## The power button
 

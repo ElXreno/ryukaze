@@ -166,9 +166,14 @@ Enter, `\`, the key by right Alt and the power button, 24 for the other
 keys of the main board, Win, Copilot and Fn among them, and 36 for F7 on,
 the navigation keys, the arrows and the numpad; a key in another region's
 table never shows, and the slots left over go to key 0xff. A table changes
-only the keys it lists. Effects (`0b`) ryukazed doesn't send there yet, nor
-`09`: one effect with no steps once left another laptop's 1122 dark for
-good, and how its flash takes a save isn't known. `51 00 [r] [g] [b]`
+only the keys it lists. Its effects (`0b`) are laid out as the 113a's, as
+MSI's software writes them there; one built as that software would, a
+breath on effect 1 with a key on it in the tables and `0d 00 00` after,
+ran there as it should. One effect with no steps once left another laptop's
+1122 dark for good, so ryukazed sends an effect only with 1 to 16 steps,
+none empty, their length the sum of theirs and `ff 00` at 0x8a, on any
+controller. It doesn't send `09` there: how its flash takes a save isn't
+known. `51 00 [r] [g] [b]`
 scales each channel at full; ryukazed gives it MSI's scale for the Titan at
 every start, which it already had.
 
