@@ -510,6 +510,9 @@ pub enum Msg {
     Channel(usize, u8),
     /// The picked keys back to the effect.
     Unpaint,
+    /// A light beside the keys: in the profile, its own colour, the one
+    /// picked, or back with the effect; in a zone, in it or out.
+    Part(Part),
     Effect(Effect),
     AddColor,
     RemoveColor,
@@ -779,6 +782,19 @@ impl Editor {
                 }
                 self.hex = self.slot_color().to_string();
             }
+            Msg::Part(part) => match self.layer {
+                0 => {
+                    if self.parts.remove(&part).is_none() {
+                        self.parts.insert(part, self.slot_color());
+                    }
+                }
+                zone => {
+                    let parts = &mut self.zones[zone - 1].parts;
+                    if !parts.remove(&part) {
+                        parts.insert(part);
+                    }
+                }
+            },
             Msg::Effect(effect) => {
                 // A zone is never still: still colours are the keys' own.
                 if self.layer > 0 && effect == Effect::Static {
@@ -1251,6 +1267,30 @@ impl Editor {
             );
         }
         controls = controls.push(effects);
+        let parts = row(Part::ALL.into_iter().map(|part| -> Element<'_, Msg> {
+            let on = match self.layer {
+                0 => self.parts.contains_key(&part),
+                zone => self.zones[zone - 1].parts.contains(&part),
+            };
+            let label = match part {
+                Part::Bar => "Light bar",
+                Part::Logo => "Logo",
+            };
+            button(text(label).size(13).width(Length::Fill).center())
+                .on_press(Msg::Part(part))
+                .padding([4, 4])
+                .width(Length::Fill)
+                .style(theme::segment(on))
+                .into()
+        }))
+        .spacing(4);
+        let note = if self.layer == 0 {
+            "Lit: still in the colour picked; else with the effect"
+        } else {
+            "Lit: in the zone"
+        };
+        controls =
+            controls.push(column![parts, text(note).size(12).style(theme::muted)].spacing(4));
         match look.effect {
             Effect::Static => {
                 controls = controls.push(self.slot("The keys", Slot::Color));
@@ -1980,6 +2020,27 @@ mod tests {
         assert!(written.contains("logo = \"#ffffff\""), "{written}");
         assert!(written.contains("keys = [\"bar\"]"), "{written}");
         assert_eq!(Editor::from_toml(&written).unwrap().toml(), written);
+    }
+
+    /// The bar and the logo picked in the profile take the colour shown, and
+    /// let go go back with the effect; in a zone, they join it.
+    #[test]
+    fn picks_the_light_bar_and_the_logo() {
+        let mut editor = Editor::new();
+        let _ = editor.update(Msg::Swatch(Color([255, 0, 0])));
+        let _ = editor.update(Msg::Part(Part::Logo));
+        assert_eq!(editor.parts[&Part::Logo], Color([255, 0, 0]));
+        assert!(editor.toml().contains("logo = \"#ff0000\""));
+        let _ = editor.update(Msg::Part(Part::Logo));
+        assert!(editor.parts.is_empty());
+        let _ = editor.update(Msg::AddZone);
+        let _ = editor.update(Msg::Part(Part::Bar));
+        assert!(editor.zones[0].parts.contains(&Part::Bar));
+        assert!(
+            editor.toml().contains("keys = [\"bar\"]"),
+            "{}",
+            editor.toml()
+        );
     }
 
     #[test]
