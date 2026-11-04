@@ -32,18 +32,16 @@
       # (nix/test.nix).
       checks =
         nixpkgs.lib.recursiveUpdate
-          (
-            forAllSystems (
-              pkgs:
-              let
-                packages = self.packages.${pkgs.stdenv.hostPlatform.system};
-              in
-              packages.default.tests
-              // nixpkgs.lib.mapAttrs' (
-                name: nixpkgs.lib.nameValuePair "gg-layouts-${name}"
-              ) packages.gg-layouts.tests
-            )
-          )
+          (forAllSystems (
+            pkgs:
+            let
+              packages = self.packages.${pkgs.stdenv.hostPlatform.system};
+            in
+            packages.default.tests
+            // nixpkgs.lib.mapAttrs' (
+              name: nixpkgs.lib.nameValuePair "gg-layouts-${name}"
+            ) packages.gg-layouts.tests
+          ))
           {
             x86_64-linux.vm = import ./nix/test.nix {
               pkgs = nixpkgs.legacyPackages.x86_64-linux;
