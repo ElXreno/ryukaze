@@ -3,10 +3,15 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      crane,
+    }:
     let
       forAllSystems =
         f:
@@ -17,16 +22,22 @@
     in
     {
       packages = forAllSystems (pkgs: {
-        default = pkgs.callPackage ./nix/package.nix { };
+        default = pkgs.callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
       });
 
       nixosModules.default = import ./nix/module.nix self;
 
-      # nix flake check: the module in a VM (nix/test.nix).
-      checks.x86_64-linux.vm = import ./nix/test.nix {
-        pkgs = nixpkgs.legacyPackages.x86_64-linux;
-        inherit self;
-      };
+      # nix flake check: the tests, clippy, and the module in a VM
+      # (nix/test.nix).
+      checks =
+        nixpkgs.lib.recursiveUpdate
+          (forAllSystems (pkgs: self.packages.${pkgs.stdenv.hostPlatform.system}.default.tests))
+          {
+            x86_64-linux.vm = import ./nix/test.nix {
+              pkgs = nixpkgs.legacyPackages.x86_64-linux;
+              inherit self;
+            };
+          };
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
