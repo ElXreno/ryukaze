@@ -33,6 +33,7 @@ install:
 	install -Dm644 data/$(POLICY).conf $(DESTDIR)$(DBUSDIR)/$(POLICY).conf
 	install -Dm644 data/ryukaze.desktop $(DESTDIR)$(DATADIR)/applications/ryukaze.desktop
 	install -Dm644 data/ryukaze.svg $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/ryukaze.svg
+	install -Dm644 -t $(DESTDIR)$(DATADIR)/ryukaze/keyboards data/keyboards/*.toml
 ifneq ($(strip $(USERS)),)
 	{ \
 		echo '<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"'; \
@@ -58,5 +59,6 @@ uninstall:
 		$(DESTDIR)$(DBUSDIR)/$(POLICY).conf $(DESTDIR)$(DBUSDIR)/$(POLICY).users.conf \
 		$(DESTDIR)$(DATADIR)/applications/ryukaze.desktop \
 		$(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/ryukaze.svg
+	rm -rf $(DESTDIR)$(DATADIR)/ryukaze/keyboards
 
 .PHONY: all install uninstall
