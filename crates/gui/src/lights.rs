@@ -1382,6 +1382,9 @@ impl Editor {
             );
         }
         controls = controls.push(effects);
+        // A round's colours with what sets the one picked right under
+        // them, rather than below the wave's other settings.
+        let mut docked = false;
         match look.effect {
             Effect::Static => {
                 controls = controls.push(self.slot("The keys", Slot::Color));
@@ -1411,9 +1414,16 @@ impl Editor {
                     tools = tools.push(small("Rainbow", Msg::Rainbow));
                 }
                 controls = controls
+                    .push(
+                        text("Colours: click one to set it")
+                            .size(14)
+                            .style(theme::muted),
+                    )
                     .push(colors.wrap().vertical_spacing(6))
                     .push(tools)
+                    .push(self.dock())
                     .push(period);
+                docked = true;
                 if look.effect == Effect::Wave {
                     let origins = row(ORIGINS.map(|(origin, name)| {
                         choice(
@@ -1462,7 +1472,9 @@ impl Editor {
                     );
             }
         }
-        controls = controls.push(self.dock());
+        if !docked {
+            controls = controls.push(self.dock());
+        }
         panel("Effect", controls)
     }
 
@@ -1530,7 +1542,7 @@ impl Editor {
             },
             Slot::FadeTo => "Fading to".to_owned(),
             Slot::Flash => "A pressed key's".to_owned(),
-            Slot::Round(i) => format!("Colour {} of the round", i + 1),
+            Slot::Round(i) => format!("Colour {}", i + 1),
         };
         let swatches = row(SWATCHES.map(|color| {
             button(space().width(24).height(24))

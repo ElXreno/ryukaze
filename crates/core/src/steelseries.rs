@@ -163,10 +163,12 @@ impl Class {
     }
 }
 
-/// What of an effect the controller takes only at a restart: all but its
-/// steps' colours and its start colour, which it reads live.
-pub(crate) fn shape(packet: &[u8; FEATURE_LEN]) -> (&[u8], &[u8]) {
-    (&packet[..2], &packet[0x8c..])
+/// What of an effect the controller takes only at a restart: its wave
+/// and its length; its steps, however many, and its start colour it reads
+/// live. A colour's steps depend on the colours, so their count changes
+/// with them.
+pub(crate) fn shape(packet: &[u8; FEATURE_LEN]) -> [&[u8]; 3] {
+    [&packet[..2], &packet[0x8c..0x96], &packet[0x98..]]
 }
 
 /// A table slot for `target`, a key's HID usage or a zone: `[colour] [flash

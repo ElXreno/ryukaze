@@ -978,15 +978,52 @@ mod tests {
         assert_eq!(one_off.release, Release::Keys(vec![0x4f]));
         assert!(one_off.paint.is_empty());
 
+        // A wave's other colours, however many steps they take: live.
+        let wave = |colors: Vec<Color>| Lighting {
+            effect: Effect::Wave {
+                period_ms: 3000,
+                colors,
+                wave: Wave::default(),
+            },
+            ..lighting(Effect::Static, None)
+        };
+        let rainbow = send(&wave(RAINBOW.to_vec()), &back.sent);
+        assert_eq!(rainbow.restart, Some(Restart::Effects));
+        let tinted = send(
+            &wave(vec![
+                ORANGE,
+                BLUE,
+                Color([0x12, 0x34, 0x56]),
+                RAINBOW[3],
+                RAINBOW[4],
+                RAINBOW[5],
+            ]),
+            &rainbow.sent,
+        );
+        assert_eq!(tinted.restart, None);
+        // Its origin: a restart.
+        let left = Lighting {
+            effect: Effect::Wave {
+                period_ms: 3000,
+                colors: RAINBOW.to_vec(),
+                wave: Wave {
+                    origin: crate::lighting::Origin::Left,
+                    ..Wave::default()
+                },
+            },
+            ..lighting(Effect::Static, None)
+        };
+        assert_eq!(send(&left, &tinted.sent).restart, Some(Restart::Effects));
+
         // Another colour for the effect: live.
         let recolored = send(&breathe(ORANGE), &back.sent);
         assert_eq!(recolored.restart, None);
         assert!(recolored.packets.iter().any(|packet| packet[0] == 0x0b));
 
-        // Another effect: started over, under black.
+        // Another effect of another length: started over, under black.
         let cycle = Lighting {
             effect: Effect::Cycle {
-                period_ms: 2000,
+                period_ms: 3000,
                 colors: vec![BLUE, ORANGE],
             },
             ..breathe(BLUE)
