@@ -181,7 +181,8 @@ impl Profiles {
 
     pub async fn sleeping(&mut self) {
         let service = self.service().await;
-        let service = service.get().await;
+        let mut service = service.get_mut().await;
+        service.going_to_sleep();
         let source = power_supply::source(&self.sysfs).ok().flatten();
         self.before_sleep = Some((service.snapshot(), source));
         report(service.save_keyboard());
@@ -226,6 +227,7 @@ impl Profiles {
                 service.restore(&snapshot);
             }
         }
+        self.service().await.get_mut().await.woke();
         self.keyboard_back().await;
         self.power_changed().await;
     }

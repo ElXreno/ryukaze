@@ -39,6 +39,8 @@ pub struct Service {
     usb_share: Option<(RawEc, UsbShare)>,
     /// The GPU MUX, where the EC's map has it.
     gpu_mux: Option<(RawEc, GpuMux)>,
+    /// Between the word that the laptop sleeps and that it woke.
+    asleep: bool,
     /// Apex, where the EC's map has it.
     apex: Option<(RawEc, Apex)>,
     /// Local dimming, where the EC's map has it and the panel has zones.
@@ -271,6 +273,7 @@ impl Service {
             boost,
             usb_share,
             gpu_mux,
+            asleep: false,
             apex,
             local_dimming,
             apex_on_ac: false,
@@ -1268,7 +1271,22 @@ impl Service {
         }
     }
 
+    /// The laptop goes to sleep: the EC drops the boost through it, which
+    /// isn't to be taken for a hand switching it off, in a tick that comes
+    /// before the word that it woke.
+    pub fn going_to_sleep(&mut self) {
+        self.asleep = true;
+    }
+
+    /// Awake, and the modes back.
+    pub fn woke(&mut self) {
+        self.asleep = false;
+    }
+
     fn auto_boost(&mut self) {
+        if self.asleep {
+            return;
+        }
         let Ok(on) = self.ec.cooler_boost() else {
             return;
         };
@@ -3174,6 +3192,38 @@ mod tests {
         let mut alpha = service(elsewhere.path());
         assert!(!alpha.status().shift_modes.unwrap().contains(&"apex".into()));
         assert!(alpha.set_shift_mode("apex").is_err());
+    }
+
+    /// Sleep drops a boost it started, and a tick may come before the word
+    /// that the laptop woke: that's no one switching it off by hand, and
+    /// the boost put back stays its to end.
+    #[test]
+    fn a_boost_through_sleep_stays_its_own() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let device = sysfs.path().join("devices/platform/msi-ec");
+        let temp = device.join("cpu/realtime_temperature");
+        let boost = device.join("cooler_boost");
+        let on = || fs::read_to_string(&boost).unwrap().trim() == "on";
+        let mut alpha = service(sysfs.path());
+        alpha.boost.config.auto = true;
+        fs::write(&temp, "97\n").unwrap();
+        for _ in 0..3 {
+            alpha.tick().unwrap();
+        }
+        assert!(on());
+
+        let snapshot = alpha.snapshot();
+        alpha.going_to_sleep();
+        fs::write(&boost, "off\n").unwrap();
+        fs::write(&temp, "50\n").unwrap();
+        alpha.tick().unwrap();
+        alpha.restore(&snapshot);
+        alpha.woke();
+        assert!(on());
+        for _ in 0..5 {
+            alpha.tick().unwrap();
+        }
+        assert!(!on(), "cool again, and the boost still on");
     }
 
     /// The BIOS's turbo, 0xC0, which msi-ec doesn't name: turbo again.
