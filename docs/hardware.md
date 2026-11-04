@@ -134,8 +134,8 @@ happen to fit. Its lists leave the power button out; it goes in like any
 other key, in a table that counts it (found 2026-10-19: in one that
 didn't, it showed effect 0, whatever its slot said).
 
-The tables show only at the next redraw or restart, and the restart
-starts every effect over, so ryukazed keeps effect 0 for the power button:
+On the 113a the tables show only at the next redraw or restart, and the
+restart starts every effect over, so ryukazed keeps effect 0 for the power button:
 an effect sent again shows at once, with the others running on, and stays
 through a redraw. It never goes in a still report, which would hold it:
 the restart (`0d 00 00`) lets the other keys go again, but not the power

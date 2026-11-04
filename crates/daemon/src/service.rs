@@ -1100,8 +1100,8 @@ impl Service {
         let Some(klc) = self.keyboard() else {
             return Ok(());
         };
-        // Back on, the numpad rejoins the effect: only the refresh that
-        // takes it does, and that starts every key's effect over.
+        // Back on, the numpad rejoins the effect: where only the refresh
+        // takes it, that starts every key's effect over.
         if on {
             self.light(&klc)
         } else {

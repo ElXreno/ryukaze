@@ -173,9 +173,9 @@ the numpad goes dark while NumLock is off, NumLock itself aside. ryukazed
 reads the laptop keyboard's events for it with the kernel holding back all
 but its lights' changes (`EVIOCSMASK`), so no key press reaches the daemon
 this way either. Going dark leaves an
-effect running; coming back on starts it over on every key: the
-controller takes keys back into an effect only with the refresh, which
-restarts it.
+effect running; coming back on, the Titan's keys just rejoin it, and on
+the Alpha 17 it starts over on every key: that controller takes keys back
+into an effect only with the refresh, which restarts it.
 
 ## Colours
 
