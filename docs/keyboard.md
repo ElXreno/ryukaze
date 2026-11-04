@@ -1,7 +1,8 @@
 # The keyboard's backlight
 
 On a controller checked, the SteelSeries KLC (1038:113a) of the Alpha 17
-C7VG, ryukazed lights the keys in profiles: a standard one for each effect
+C7VG, or the KLC (1038:1122) of the Titan 18 HX A2WJ with its light bar and
+logo, ryukazed lights the keys in profiles: a standard one for each effect
 (static, breathe, cycle, wave and reactive, white or the rainbow), the
 config's (see the [config](config.md)), and those saved in the window. The
 one shown is a scenario's own, from `keyboard.scenarios` or picked under
@@ -55,11 +56,85 @@ Keys: `a` to `z`, `0` to `9`, `f1` to `f12`, `esc`, `tab`, `capslock`,
 `delete`, `pageup`, `pagedown` (Home and End share them), `up`, `down`,
 `left`, `right`, `numlock`, `kp0` to `kp9`, `kpslash`, `kpasterisk`,
 `kpminus`, `kpplus`, `kpenter`, `kpdot`, `lctrl`, `lshift`, `lalt`, `win`,
-`ralt`, `rshift`, `fn`, `copilot`, and `power`, the power button's light.
+`ralt`, `rshift`, `fn`, `copilot` (or `rctrl`, where right Ctrl is),
+`power`, the power button's light, and beside the keys, where there are,
+`bar`, the light bar, and `logo`, the logo on the lid.
 
 Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
 Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
 (Ctrl, Shift, Alt, Win, Copilot, Fn) and `wasd`.
+
+## The picture
+
+The window draws the keyboard from a layout: the Titan 18 HX's for its
+board, `MS-1824`, and the Alpha 17 C7VG's for any other laptop. A layout
+is a TOML file: its `name`, the DMI board names it's for in `boards`
+(`/sys/class/dmi/id/board_name`) and the CHIDs in `chids` (Windows'
+HardwareID-9, of `sys_vendor` and `product_name`; with neither, any
+laptop's), each key in `keys`
+with its HID usage `hid`, its `label` and its box, `x` and `y` from the
+top left and `w` and `h`, in key widths, and where there are the
+touchpad's box and its rows of light in `[touchpad]`, the deck's box in
+`[deck]`, keys and touchpad on it, and in `[logo]` the lid's width to its
+height, `lid`, and the logo's box on it as parts of the lid seen from the
+keys, drawn when the laptop has them. With a deck, the keys and the
+touchpad are drawn on it where they are, and the lid above it, as wide;
+without, the touchpad under the keys and the lid over them, close. Keys
+are the ones the config names, each once, none over another:
+
+```toml
+name = "My laptop"
+boards = ["MS-1234"]
+keys = [
+  { hid = 0x29, label = "Esc", x = 0, y = 0, w = 1, h = 0.6 },
+  { hid = 0x3a, label = "F1", x = 1, y = 0, w = 1, h = 0.6 },
+]
+
+[touchpad]
+x = 6
+y = 7.5
+w = 7
+h = 4.3
+rows = 5
+
+[deck]
+x = -1.5
+y = -1.2
+w = 21.4
+h = 13.8
+
+[logo]
+lid = 1.3
+x = 0.1
+y = 0.35
+w = 0.11
+h = 0.2
+```
+
+A new laptop takes a file and no rebuild: the window reads the `.toml`
+files in `ryukaze/keyboards` under `$XDG_DATA_HOME` (`~/.local/share`),
+then under the `share` beside the program's own `bin` (its package's, on
+NixOS too), then under each of `$XDG_DATA_DIRS`
+(`/usr/local/share:/usr/share`), at
+start, and the first for the laptop's board or CHID wins, over the
+built-in ones too; the first with no `boards` and no `chids` stands in
+for any other. One that doesn't
+read or check out is told of on stderr and left out. The built-in ones are
+[`data/keyboards`](../data/keyboards), installed to
+`share/ryukaze/keyboards`, made from SteelSeries GG's pictures by
+[ryukaze-gg-layouts](gg-layouts.md), which makes them for other MSI
+laptops too.
+
+## The Titan 18 HX
+
+Its controller runs the same effects, but nothing goes to its flash, as
+how its flash takes a save isn't known: at power-on it shows what it
+kept, until ryukazed lights it again. Its touchpad, lit from below (its
+light bar, `bar`), and the logo on the lid (`logo`) go with the profile,
+its effect too, unless `keys` or a zone names them. A wave runs on from
+the keys down the touchpad's rows, and reaches the logo as if it lay
+above the keys. A reactive profile leaves them still in its `color`: no
+key is pressed there.
 
 ## The power button
 

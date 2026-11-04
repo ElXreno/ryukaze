@@ -259,6 +259,15 @@ pub fn dgpu_state(status: &Status) -> Option<String> {
     })
 }
 
+/// The GPU modes to offer: the daemon's, or the two every MUX has from a
+/// daemon too old to list them.
+pub fn gpu_modes(status: &Status) -> Vec<String> {
+    status
+        .gpu_modes
+        .clone()
+        .unwrap_or_else(|| vec!["hybrid".into(), "discrete".into()])
+}
+
 /// 40 s, 12 min, 2 h 5 min.
 fn duration(secs: u64) -> String {
     match secs {

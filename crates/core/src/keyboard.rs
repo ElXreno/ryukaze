@@ -1,100 +1,106 @@
-//! The keyboard's backlight: a SteelSeries KLC on USB, which colours keys
-//! from a HID feature report on its first interface. Only on controllers
-//! checked by hand: 1038:113a (Alpha 17 C7VG). There one report of
-//! `0c 00 66 00` and then (key, red, green, blue) entries, the keys by
-//! their HID usage, colours the keys it lists and leaves the others.
+//! The keyboard's backlight: a SteelSeries KLC (see [`crate::steelseries`]),
+//! which colours keys from feature reports, the keys by their HID usage.
+//! Only on controllers checked by hand, as `MODELS` lists them. A report of
+//! `0c 00 [entries] 00` and then (key, red, green, blue) entries colours
+//! the keys it lists and leaves the others.
 
 use std::{
     collections::BTreeMap,
-    fmt,
-    fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io,
     path::{Path, PathBuf},
-    str::FromStr,
 };
 
-use rustix::ioctl::{Opcode, Updater, ioctl, opcode};
+use crate::{
+    lighting::{Color, Effect, Lighting, Zone},
+    steelseries::{
+        self, Class, Controller, FEATURE_LEN as REPORT_LEN, LIVE, Restart, STILL, check_effect,
+        effect_packet, shape, ticks,
+    },
+};
 
-/// (vendor, product) of the controllers checked.
-const KNOWN: [(u16, u16); 1] = [(0x1038, 0x113a)];
+/// How a controller keeps its tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tables {
+    /// Any key in any table, each counting its keys, and `08 39` at the end.
+    Fitted,
+    /// A table for each region of keys, which its count picks: a key goes
+    /// only in its region's, the slots left over for key 0xff.
+    Regions,
+}
 
-const REPORT_LEN: usize = 524;
+/// What sits where the right Ctrl key would be, at 0xe4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RightOfAlt {
+    Copilot,
+    RightCtrl,
+}
+
+/// A controller as checked on a laptop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Model {
+    product: u16,
+    /// The board, where the controller's product ID is shared by laptops
+    /// with other keyboards.
+    board: Option<&'static str>,
+    /// Effects the controller runs: without them every key is still in
+    /// the tables.
+    effects: bool,
+    /// What it shows goes to its flash as the laptop goes off or to sleep.
+    saves: bool,
+    tables: Tables,
+    /// The colour scale MSI's software gives it at every start.
+    scale: Option<[u8; 3]>,
+    right_of_alt: RightOfAlt,
+}
+
+const MODELS: [Model; 2] = [
+    // Alpha 17 C7VG.
+    Model {
+        product: 0x113a,
+        board: None,
+        effects: true,
+        saves: true,
+        tables: Tables::Fitted,
+        scale: None,
+        right_of_alt: RightOfAlt::Copilot,
+    },
+    // Titan 18 HX A2WJ: how its flash takes a save isn't known.
+    Model {
+        product: 0x1122,
+        board: Some("MS-1824"),
+        effects: true,
+        saves: false,
+        tables: Tables::Regions,
+        scale: Some([0x89, 0xe2, 0xea]),
+        right_of_alt: RightOfAlt::Copilot,
+    },
+];
 
 /// The controller reads about the first hundred entries of a report.
 const KEYS_PER_REPORT: usize = 96;
 
-/// HIDIOCSFEATURE: the report ID (0, none) and then the report.
-const SET_FEATURE: Opcode = opcode::read_write::<[u8; REPORT_LEN + 1]>(b'H', 0x06);
-
-/// One colour for all the keys; black is off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Color(pub [u8; 3]);
-
-impl Color {
-    pub const OFF: Color = Color([0; 3]);
-}
-
-/// `#rrggbb`, or `off`.
-impl FromStr for Color {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, String> {
-        if text == "off" {
-            return Ok(Self::OFF);
-        }
-        let bad = || format!("keyboard colour {text:?}: #rrggbb or off");
-        let hex = text.strip_prefix('#').ok_or_else(bad)?;
-        if hex.len() != 6 {
-            return Err(bad());
-        }
-        let byte = |at: usize| {
-            hex.get(at..at + 2)
-                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-                .ok_or_else(bad)
-        };
-        Ok(Self([byte(0)?, byte(2)?, byte(4)?]))
-    }
-}
-
-impl fmt::Display for Color {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            [0, 0, 0] => f.write_str("off"),
-            [r, g, b] => write!(f, "#{r:02x}{g:02x}{b:02x}"),
-        }
-    }
-}
-
-/// A controller found: its hidraw node.
+/// A controller found: its hidraw node, and how it was checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Klc {
     node: PathBuf,
+    model: &'static Model,
 }
 
 /// The first known controller's first interface, under `sysfs`, as a node
 /// under `dev`.
 pub fn find(sysfs: &Path, dev: &Path) -> Option<Klc> {
-    let ids: Vec<String> = KNOWN
+    let board = steelseries::board(sysfs);
+    MODELS
         .iter()
-        .map(|(vendor, product)| format!("HID_ID=0003:{vendor:08X}:{product:08X}"))
-        .collect();
-    let mut nodes: Vec<PathBuf> = fs::read_dir(sysfs.join("class/hidraw"))
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .collect();
-    nodes.sort();
-    nodes.into_iter().find_map(|node| {
-        let device = node.join("device");
-        let uevent = fs::read_to_string(device.join("uevent")).ok()?;
-        // The HID device's parent is the USB interface.
-        let interface = fs::read_to_string(device.join("../bInterfaceNumber")).ok()?;
-        let known = uevent.lines().any(|line| ids.iter().any(|id| id == line));
-        let name = node.file_name()?;
-        (known && interface.trim() == "00").then(|| Klc {
-            node: dev.join(name),
+        .filter(|model| {
+            model
+                .board
+                .is_none_or(|name| board.as_deref() == Some(name))
         })
-    })
+        .find_map(|model| {
+            let node = steelseries::find(sysfs, dev, model.product)?;
+            Some(Klc { node, model })
+        })
 }
 
 impl Klc {
@@ -102,199 +108,116 @@ impl Klc {
         &self.node
     }
 
+    /// Whether it runs effects of its own; without, a profile's are shown
+    /// still.
+    pub fn effects(&self) -> bool {
+        self.model.effects
+    }
+
+    pub fn right_of_alt(&self) -> RightOfAlt {
+        self.model.right_of_alt
+    }
+
     /// The keys as `lighting` has them, and `over` it; without one, as they
     /// are, `over` too: with no tables of ryukaze's to keep it in, nothing
-    /// would bring the numpad back or let the power button go.
-    pub fn show(&self, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
-        let mut node = OpenOptions::new().read(true).write(true).open(&self.node)?;
-        let plan = plan(lighting, over);
-        for packet in &plan.packets {
-            set_feature(&node, packet)?;
+    /// would bring the numpad back or let the power button go. Only what
+    /// differs from what `sent` says the controller has goes.
+    ///
+    /// The controller restarts its lighting inside its USB interrupt, for
+    /// some 5 ms, with the matrix's scan stopped: the row lit just then
+    /// stays lit, its keys flashing many times brighter. So, where it
+    /// runs effects, nothing restarts but what can't go on without: the
+    /// first show, a wave's shape, a key turning from still to an effect.
+    /// Still keys follow their tables live (see [`LIVE`]), effects take new
+    /// colours live, a key's own colour over an effect goes over it at once
+    /// and comes off again; and a restart goes under black, `50` first, so
+    /// the row left lit is dark.
+    pub fn show(&self, sent: &mut Sent, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
+        let lighting = lighting.map(keys_only);
+        let plan = plan(self.model, lighting.as_ref(), over);
+        for packet in plan.packets.iter().filter(|packet| packet[0] == 0x0b) {
+            check_effect(packet)?;
         }
-        if plan.refresh {
-            // The refresh, an output report: report ID 0 and 64 bytes,
-            // `0d 00 00`. Not `09`, which saves to the controller's flash.
-            let mut refresh = [0; 65];
-            refresh[1] = 0x0d;
-            patiently(|| node.write_all(&refresh))?;
+        let changes = if self.model.effects {
+            changes(&plan, sent, self.model.scale)
+        } else {
+            changes_still(&plan, sent, self.model.scale)
+        };
+        let shown = (|| {
+            let mut klc = Controller::open(&self.node)?;
+            if changes.blackout {
+                klc.blackout()?;
+            }
+            for packet in &changes.packets {
+                klc.feature(packet)?;
+            }
+            match (changes.scale, changes.restart) {
+                // Setting the scale restarts as well.
+                (Some(scale), Some(_)) => klc.scale(scale)?,
+                (Some(scale), None) => klc.scale(scale)?,
+                (None, Some(restart)) => klc.restart(restart)?,
+                (None, None) => {}
+            }
+            // Let go first: `52` would let go of what's painted after it.
+            match &changes.release {
+                Release::None => {}
+                Release::All => klc.output(&[0x52])?,
+                Release::Keys(keys) => {
+                    for &key in keys {
+                        klc.output(&[0x83, key])?;
+                    }
+                }
+            }
+            for report in &changes.paint {
+                klc.feature(report)?;
+            }
+            Ok(())
+        })();
+        match shown {
+            Ok(()) => *sent = changes.sent,
+            Err(_) => sent.forget(),
         }
-        for report in reports(&plan.still) {
-            set_feature(&node, &report)?;
-        }
-        Ok(())
+        shown
     }
 
     /// What it shows now, saved to the controller's flash, which it shows
-    /// from at power-on: `09`, which starts the effects over too, and blinks.
-    pub fn save(&self) -> io::Result<()> {
-        let mut node = OpenOptions::new().read(true).write(true).open(&self.node)?;
-        let mut save = [0; 65];
-        save[1] = 0x09;
-        patiently(|| node.write_all(&save))
+    /// from at power-on: `09`, which starts the lighting over with the scan
+    /// stopped, and blinks. Only where the model saves: elsewhere how its
+    /// flash takes it isn't known.
+    pub fn save(&self, sent: &mut Sent) -> io::Result<()> {
+        if !self.model.saves {
+            return Ok(());
+        }
+        let saved = Controller::open(&self.node)?.output(&[0x09]);
+        match saved {
+            // Started over from its tables: no key's own colour over them.
+            Ok(()) => {
+                sent.built = classes(&sent.tables);
+                sent.overrides.clear();
+            }
+            Err(_) => sent.forget(),
+        }
+        saved
     }
 
-    /// Only `over` changed: its keys still at once, and in the tables, so
-    /// they stay so, without the refresh that would start every effect over.
-    /// The power button's colour goes in its effect alone, which shows at
-    /// once.
-    pub fn overlay(&self, lighting: Option<&Lighting>, over: Over) -> io::Result<()> {
-        let Some(lighting) = lighting else {
+    /// Only `over` changed: as any other change (see [`Klc::show`]).
+    pub fn overlay(
+        &self,
+        sent: &mut Sent,
+        lighting: Option<&Lighting>,
+        over: Over,
+    ) -> io::Result<()> {
+        if lighting.is_none() {
             return Ok(());
-        };
-        let node = OpenOptions::new().read(true).write(true).open(&self.node)?;
-        if over.power.is_some() {
-            set_feature(&node, &power_packet(lighting, over))?;
         }
-        for packet in table_packets(lighting, over) {
-            set_feature(&node, &packet)?;
-        }
-        for report in reports(&without_power(over.keys())) {
-            set_feature(&node, &report)?;
-        }
-        Ok(())
+        self.show(sent, lighting, over)
     }
 }
 
 /// Still keys but the power button, which has its effect: a still report
-/// would hold it, and the refresh doesn't let it go, unlike the others.
+/// would hold it, and the restart doesn't let it go, unlike the others.
 fn without_power(keys: Vec<(u8, Color)>) -> Vec<(u8, Color)> {
     keys.into_iter().filter(|&(key, _)| key != POWER).collect()
-}
-
-fn set_feature(node: &File, report: &[u8; REPORT_LEN]) -> io::Result<()> {
-    let mut data = [0; REPORT_LEN + 1];
-    data[1..].copy_from_slice(report);
-    patiently(|| {
-        // SAFETY: HIDIOCSFEATURE reads the report from `data`, which is as
-        // long as its opcode says, and writes nothing past it.
-        unsafe { ioctl(node, Updater::<SET_FEATURE, _>::new(&mut data)) }?;
-        Ok(())
-    })
-}
-
-/// While the controller sets up an effect, a wave more slowly than the
-/// others, it stalls what comes next: EPIPE. A little later it takes it.
-fn patiently(mut send: impl FnMut() -> io::Result<()>) -> io::Result<()> {
-    const TRIES: u32 = 10;
-    const PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
-    for _ in 1..TRIES {
-        match send() {
-            Err(err) if err.kind() == io::ErrorKind::BrokenPipe => std::thread::sleep(PAUSE),
-            done => return done,
-        }
-    }
-    send()
-}
-
-/// What the controller does with the keys that have no colour of their own.
-/// All but `Static` are its own effects, which it runs by itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Effect {
-    /// Still, in the colour.
-    Static,
-    /// The colour fading to `fade_to`, black to breathe out, and back.
-    Breathe { period_ms: u32, fade_to: Color },
-    /// All of them through `colors` together, and round to the first.
-    Cycle { period_ms: u32, colors: Vec<Color> },
-    /// `colors` as a wave across the board.
-    Wave {
-        period_ms: u32,
-        colors: Vec<Color>,
-        wave: Wave,
-    },
-    /// Still in the colour, a key flashing `flash` when pressed: the
-    /// controller sees the presses, the computer has no part in it.
-    Reactive { flash: Color, flash_ms: u32 },
-}
-
-/// Where a wave comes from, and which way it runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Wave {
-    pub origin: Origin,
-    /// Into the origin rather than out of it.
-    pub inward: bool,
-    /// How wide a round of the colours lies across the keys, in percent.
-    pub wavelength: u8,
-}
-
-impl Default for Wave {
-    fn default() -> Self {
-        Self {
-            origin: Origin::Middle,
-            inward: false,
-            wavelength: 25,
-        }
-    }
-}
-
-/// A wave's origin: out of the middle it spreads both ways, from an edge
-/// it runs straight across or down.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Origin {
-    Middle,
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
-
-/// The colours a cycle or a wave goes through unless told others.
-pub const RAINBOW: [Color; 6] = [
-    Color([255, 0, 0]),
-    Color([255, 255, 0]),
-    Color([0, 255, 0]),
-    Color([0, 255, 255]),
-    Color([0, 0, 255]),
-    Color([255, 0, 255]),
-];
-
-/// How long a breath or a round of the colours may take. The shortest
-/// also depends on how many colours there are: see `shortest_period_ms`.
-pub const PERIODS_MS: std::ops::RangeInclusive<u32> = 2000..=60000;
-
-/// How many colours a cycle or a wave goes through.
-pub const COLORS: std::ops::RangeInclusive<usize> = 2..=8;
-
-/// How wide a wave may be, in percent of the board.
-pub const WAVELENGTHS: std::ops::RangeInclusive<u8> = 1..=100;
-
-/// How long a key's flash lasts.
-pub const FLASHES_MS: std::ops::RangeInclusive<u32> = 100..=5000;
-
-/// How many zones a profile may have, each an effect of its own beside
-/// the power button's and the profile's: the controller runs effects
-/// numbered up to 15 at least.
-pub const ZONES: usize = 8;
-
-/// The shortest round through `colors` colours: going from one to the
-/// next, a channel moves at most 127/16 a tick, so a full swing takes 33
-/// ticks of 10 ms.
-pub fn shortest_period_ms(colors: usize) -> u32 {
-    (colors as u32 * 33 * TICK_MS).max(*PERIODS_MS.start())
-}
-
-/// Part of the board with an effect of its own.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Zone {
-    pub keys: Vec<u8>,
-    /// Any but `Static`: still keys go in the profile's `keys`.
-    pub effect: Effect,
-    /// As a profile's: breathing, or between flashes.
-    pub color: Option<Color>,
-}
-
-/// A keyboard's worth of light, as a profile has it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Lighting {
-    pub effect: Effect,
-    /// The keys without one of their own: still, breathing, or between
-    /// flashes; a cycle or a wave goes through colours of its own.
-    pub color: Option<Color>,
-    /// Keys with their own colours, still whatever the effects.
-    pub keys: Vec<(Vec<u8>, Color)>,
-    /// Parts of the board with effects of their own, a later one over an
-    /// earlier.
-    pub zones: Vec<Zone>,
 }
 
 /// What goes to the controller: the effects' packets, then still colours.
@@ -303,10 +226,233 @@ struct Plan {
     /// The effects, then the keys' tables, which the controller draws
     /// the keys from again whenever it redraws them, as on a brightness key.
     packets: Vec<[u8; REPORT_LEN]>,
-    /// A refresh after them, which starts the effects.
-    refresh: bool,
-    /// Keys still at once, over what's there.
+    /// A restart after them: the effects started, or the tables drawn.
+    restart: Option<Restart>,
+    /// Keys still at once, over what's there: where no effects run.
     still: Vec<(u8, Color)>,
+}
+
+/// What goes to the controller for `plan`, given what it was `sent`, and
+/// what it then has.
+#[derive(Debug, PartialEq)]
+struct Changes {
+    /// Black over every key first, for a restart.
+    blackout: bool,
+    scale: Option<[u8; 3]>,
+    packets: Vec<[u8; REPORT_LEN]>,
+    restart: Option<Restart>,
+    /// Keys' own colours over their effects, at once.
+    paint: Vec<[u8; REPORT_LEN]>,
+    /// Keys' own colours taken off again.
+    release: Release,
+    sent: Sent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Release {
+    None,
+    All,
+    Keys(Vec<u8>),
+}
+
+/// Where the controller runs effects: see [`Klc::show`].
+fn changes(plan: &Plan, sent: &Sent, scale: Option<[u8; 3]>) -> Changes {
+    let (effects, tables): (Vec<_>, Vec<_>) =
+        plan.packets.iter().partition(|packet| packet[0] == 0x0b);
+    let new = slots(&tables);
+    let class = |slot: &[u8; 12]| Class::of(slot);
+    let reshaped = effects.len() != sent.effects.len()
+        || effects
+            .iter()
+            .zip(&sent.effects)
+            .any(|(new, old)| shape(new) != shape(old));
+    let restart = !sent.restarted
+        || reshaped
+        || new.iter().any(|(key, slot)| {
+            let built = sent.built.get(key).copied();
+            match class(slot) {
+                Class::Effect => built != Some(Class::Effect),
+                Class::Live => !pure(slot) && built == Some(Class::Effect),
+            }
+        });
+    if restart {
+        let mut packets = effects.clone();
+        packets.extend(&tables);
+        return Changes {
+            blackout: true,
+            scale: scale.filter(|_| !sent.scaled),
+            packets,
+            restart: Some(Restart::Effects),
+            paint: Vec::new(),
+            release: Release::None,
+            sent: Sent {
+                scaled: true,
+                restarted: true,
+                built: new.iter().map(|(&key, slot)| (key, class(slot))).collect(),
+                overrides: BTreeMap::new(),
+                effects,
+                tables,
+            },
+        };
+    }
+    let mut packets: Vec<[u8; REPORT_LEN]> = effects
+        .iter()
+        .zip(&sent.effects)
+        .filter(|(new, old)| new != old)
+        .map(|(new, _)| *new)
+        .collect();
+    packets.extend(
+        tables
+            .iter()
+            .enumerate()
+            .filter(|&(at, packet)| sent.tables.get(at) != Some(packet))
+            .map(|(_, packet)| *packet),
+    );
+    // Still keys still running an effect, from the last restart: their
+    // colours go over it.
+    let overrides: BTreeMap<u8, Color> = new
+        .iter()
+        .filter(|&(key, slot)| {
+            *key != POWER
+                && class(slot) == Class::Live
+                && sent.built.get(key) == Some(&Class::Effect)
+        })
+        .map(|(&key, slot)| (key, Color([slot[0], slot[1], slot[2]])))
+        .collect();
+    let off: Vec<u8> = sent
+        .overrides
+        .keys()
+        .filter(|key| !overrides.contains_key(key))
+        .copied()
+        .collect();
+    // A report a key, 10 ms apart, adds up: past a few, all of them go,
+    // and those staying are painted again in one report.
+    let release = if off.is_empty() {
+        Release::None
+    } else if overrides.is_empty() || off.len() > RELEASE_ONE_BY_ONE {
+        Release::All
+    } else {
+        Release::Keys(off)
+    };
+    let paint: Vec<(u8, Color)> = overrides
+        .iter()
+        .filter(|&(key, color)| release == Release::All || sent.overrides.get(key) != Some(color))
+        .map(|(&key, &color)| (key, color))
+        .collect();
+    Changes {
+        blackout: false,
+        scale: None,
+        packets,
+        restart: None,
+        paint: reports(&paint),
+        release,
+        sent: Sent {
+            scaled: sent.scaled,
+            restarted: true,
+            built: sent.built.clone(),
+            overrides,
+            effects,
+            tables,
+        },
+    }
+}
+
+/// Keys let go of their own colours with `83` each, up to this many; more,
+/// `52` lets go of all.
+const RELEASE_ONE_BY_ONE: usize = 3;
+
+/// Where it runs no effects: the tables, drawn again when they change.
+fn changes_still(plan: &Plan, sent: &Sent, scale: Option<[u8; 3]>) -> Changes {
+    let tables: Vec<[u8; REPORT_LEN]> = plan.packets.clone();
+    let packets: Vec<[u8; REPORT_LEN]> = tables
+        .iter()
+        .enumerate()
+        .filter(|&(at, packet)| sent.tables.get(at) != Some(packet))
+        .map(|(_, packet)| *packet)
+        .collect();
+    let restart = (!packets.is_empty() || !sent.restarted)
+        .then_some(plan.restart)
+        .flatten();
+    Changes {
+        blackout: false,
+        scale: scale.filter(|_| !sent.scaled),
+        packets,
+        restart,
+        paint: Vec::new(),
+        release: Release::None,
+        sent: Sent {
+            scaled: true,
+            restarted: sent.restarted || restart.is_some(),
+            tables,
+            ..Sent::default()
+        },
+    }
+}
+
+/// A still slot with nothing to do on a press: what a key's own colour
+/// over an effect stands for until the next restart.
+fn pure(slot: &[u8; 12]) -> bool {
+    slot[9] == STILL || (slot[0..3] == slot[3..6] && slot[6..8] == [0, 0])
+}
+
+/// The slots of `tables`, by key.
+fn slots(tables: &[[u8; REPORT_LEN]]) -> BTreeMap<u8, [u8; 12]> {
+    tables
+        .iter()
+        .flat_map(|packet| {
+            let count = usize::from(packet[2]).min(42);
+            let (slots, _) = packet[4..4 + 42 * 12].as_chunks::<12>();
+            slots[..count].to_vec()
+        })
+        .filter(|slot| slot[11] != 0xff && slot[11] != 0)
+        .map(|slot| (slot[11], slot))
+        .collect()
+}
+
+fn classes(tables: &[[u8; REPORT_LEN]]) -> BTreeMap<u8, Class> {
+    slots(tables)
+        .iter()
+        .map(|(&key, slot)| (key, Class::of(slot)))
+        .collect()
+}
+
+/// What of `lighting` is the keys': zones with keys of their own, the
+/// lights beside them left to their controller. A zone of the touchpad
+/// alone would otherwise start the keys' effects over.
+fn keys_only(lighting: &Lighting) -> Lighting {
+    Lighting {
+        parts: Vec::new(),
+        zones: lighting
+            .zones
+            .iter()
+            .filter(|zone| !zone.keys.is_empty())
+            .map(|zone| Zone {
+                parts: Vec::new(),
+                ..zone.clone()
+            })
+            .collect(),
+        ..lighting.clone()
+    }
+}
+
+/// What a controller was last sent, as far as ryukaze knows: forgotten
+/// where it may have lost it, as in sleep, so all of it goes again.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Sent {
+    scaled: bool,
+    /// Started over since forgotten, with each key's class as then.
+    restarted: bool,
+    built: BTreeMap<u8, Class>,
+    /// Keys' own colours over their effects, as sent since.
+    overrides: BTreeMap<u8, Color>,
+    effects: Vec<[u8; REPORT_LEN]>,
+    tables: Vec<[u8; REPORT_LEN]>,
+}
+
+impl Sent {
+    pub fn forget(&mut self) {
+        *self = Sent::default();
+    }
 }
 
 /// What goes still over a profile: the numpad dark but for NumLock, and the
@@ -361,12 +507,21 @@ fn power_packet(lighting: &Lighting, over: Over) -> [u8; REPORT_LEN] {
     }
 }
 
-fn plan(lighting: Option<&Lighting>, over: Over) -> Plan {
+fn plan(model: &Model, lighting: Option<&Lighting>, over: Over) -> Plan {
     let Some(lighting) = lighting else {
         return Plan::default();
     };
+    // No effects: every key still in the tables, the power button too,
+    // which the controller draws at once when asked.
+    if !model.effects {
+        return Plan {
+            packets: table_packets(model, &lighting.still(), over),
+            restart: Some(Restart::Tables),
+            ..Plan::default()
+        };
+    }
     // All still: in the tables for the next redraw, and still reports to
-    // show it now, without a refresh: no effect runs. The power button's
+    // show it now, without a restart: no effect runs. The power button's
     // effect shows at once.
     if lighting.effect == Effect::Static && lighting.zones.is_empty() {
         let mut still = paint(lighting.color, &lighting.keys);
@@ -377,10 +532,10 @@ fn plan(lighting: Option<&Lighting>, over: Over) -> Plan {
             }
         }
         let mut packets = vec![power_packet(lighting, over)];
-        packets.extend(table_packets(lighting, over));
+        packets.extend(table_packets(model, lighting, over));
         return Plan {
             packets,
-            refresh: false,
+            restart: None,
             still: without_power(still),
         };
     }
@@ -391,183 +546,37 @@ fn plan(lighting: Option<&Lighting>, over: Over) -> Plan {
     for (i, zone) in lighting.zones.iter().enumerate() {
         packets.push(effect_packet(zone_effect(i), &zone.effect, zone.color));
     }
-    packets.extend(table_packets(lighting, over));
+    packets.extend(table_packets(model, lighting, over));
     Plan {
         packets,
-        refresh: true,
+        restart: Some(Restart::Effects),
         still: Vec::new(),
     }
 }
 
-/// The effects' time unit.
-const TICK_MS: u32 = 10;
-
-/// Wave origins in the controller's units: 0x105c across, 0x040d down.
-const ACROSS: u16 = 0x105c;
-const DOWN: u16 = 0x040d;
-
-/// One step of an effect: each channel's change per tick, in 1/16, and
-/// how many ticks it lasts.
-type Step = ([i8; 3], u16);
-
-/// The controller holds 16 steps an effect.
-const STEPS: usize = 16;
-
-fn ticks(ms: u32) -> u16 {
-    (ms / TICK_MS).clamp(1, u16::MAX.into()) as u16
-}
-
-/// Effect `id`: a packet `0b 00`, then up to 16 steps of `[n] 00 [r] [g]
-/// [b] 00 [ticks]` (n the effect's number first, then the step's), the
-/// start colour at 0x84 in 1/16, the wave at 0x8c, the steps' count at
-/// 0x96 and their length at 0x98, which the controller runs round and
-/// round, from the start colour each time.
-fn effect_packet(id: u8, effect: &Effect, color: Option<Color>) -> [u8; REPORT_LEN] {
-    let color = color.unwrap_or(Color::OFF).0;
-    let (start, steps, wave) = match effect {
-        Effect::Breathe { period_ms, fade_to } => {
-            let half = ticks(period_ms / 2);
-            let mut steps = ramp(color, fade_to.0, half);
-            steps.extend(ramp(fade_to.0, color, half));
-            (color, steps, None)
-        }
-        Effect::Cycle { period_ms, colors } => (colors[0].0, round(colors, *period_ms), None),
-        Effect::Wave {
-            period_ms,
-            colors,
-            wave,
-        } => (colors[0].0, round(colors, *period_ms), Some(*wave)),
-        // Still, or still between flashes: one long step that changes
-        // nothing.
-        Effect::Static | Effect::Reactive { .. } => (color, vec![([0; 3], 100)], None),
-    };
-    debug_assert!(steps.len() <= STEPS);
-
-    let mut packet = [0; REPORT_LEN];
-    packet[0] = 0x0b;
-    for (i, &([r, g, b], length)) in steps.iter().enumerate() {
-        let at = 2 + 8 * i;
-        packet[at] = if i == 0 { id } else { i as u8 };
-        packet[at + 2..at + 5].copy_from_slice(&[r as u8, g as u8, b as u8]);
-        packet[at + 6..at + 8].copy_from_slice(&length.to_le_bytes());
-    }
-    for (channel, value) in start.into_iter().enumerate() {
-        let at = 0x84 + 2 * channel;
-        packet[at..at + 2].copy_from_slice(&(u16::from(value) << 4).to_le_bytes());
-    }
-    packet[0x8a] = 0xff;
-    if let Some(wave) = wave {
-        let (x, y, across, down) = match wave.origin {
-            Origin::Middle => (ACROSS / 2, DOWN / 2, 1, 1),
-            Origin::Left => (0, DOWN / 2, 1, 0),
-            Origin::Right => (ACROSS, DOWN / 2, 1, 0),
-            Origin::Top => (ACROSS / 2, 0, 0, 1),
-            Origin::Bottom => (ACROSS / 2, DOWN, 0, 1),
-        };
-        packet[0x8c..0x8e].copy_from_slice(&x.to_le_bytes());
-        packet[0x8e..0x90].copy_from_slice(&y.to_le_bytes());
-        packet[0x90] = across;
-        packet[0x92] = down;
-        // 31 to 1001, as the vendor's app had it.
-        let wavelength = (31 + u32::from(wave.wavelength) * 970 / 100) as u16;
-        packet[0x94..0x96].copy_from_slice(&wavelength.to_le_bytes());
-        // 1 runs out of the origin, 0 into it.
-        packet[0x9a] = u8::from(!wave.inward);
-    }
-    packet[0x96] = steps.len() as u8;
-    let length: u16 = steps.iter().map(|&(_, length)| length).sum();
-    packet[0x98..0x9a].copy_from_slice(&length.to_le_bytes());
-    packet
-}
-
-/// Through `colors` and back to the first in `period_ms`: exact ramps if
-/// they fit in the steps there are. Or else one step a colour, each aimed
-/// from where the last one really ended so the error doesn't pile up, and
-/// a short last one back onto the first colour, where the next round
-/// starts.
-fn round(colors: &[Color], period_ms: u32) -> Vec<Step> {
-    let leg = ticks(period_ms / colors.len() as u32);
-    let stops: Vec<[u8; 3]> = colors.iter().chain(&colors[..1]).map(|c| c.0).collect();
-    let exact: Vec<Step> = stops
-        .windows(2)
-        .flat_map(|pair| ramp(pair[0], pair[1], leg))
+/// The keys in blocks of up to 42, a table each, with the count each
+/// table's header gives: the keys' regions, the power button with Enter's
+/// where tables keep to them, after the numpad where they don't.
+fn blocks(tables: &Tables) -> [(u8, Vec<u8>); 4] {
+    let letters: Vec<u8> = (0x04..=0x27).chain(0x3a..=0x3f).collect();
+    let enter = vec![0x28, 0x31, 0x32, 0x64];
+    let others: Vec<u8> = (0x29..=0x30)
+        .chain(0x33..=0x39)
+        .chain([0x65])
+        .chain(0xe0..=0xe6)
+        .chain([0xf0])
         .collect();
-    if exact.len() <= STEPS {
-        return exact;
+    let right: Vec<u8> = (0x40..=0x63).collect();
+    match tables {
+        Tables::Fitted => [letters, enter, others, [right, vec![POWER]].concat()]
+            .map(|keys| (keys.len() as u8, keys)),
+        Tables::Regions => [
+            (42, letters),
+            (11, [enter, vec![POWER]].concat()),
+            (24, others),
+            (36, right),
+        ],
     }
-    let start = stops[0].map(|value| i32::from(value) * 16);
-    let mut at = start;
-    let mut steps: Vec<Step> = stops[1..]
-        .iter()
-        .map(|stop| {
-            let rates = std::array::from_fn(|c| {
-                let change = i32::from(stop[c]) * 16 - at[c];
-                (change as f32 / f32::from(leg))
-                    .round()
-                    .clamp(-127.0, 127.0) as i32
-            });
-            for c in 0..3 {
-                at[c] += rates[c] * i32::from(leg);
-            }
-            (rates.map(|rate| rate as i8), leg)
-        })
-        .collect();
-    let off: [i32; 3] = std::array::from_fn(|c| start[c] - at[c]);
-    let length = off
-        .iter()
-        .map(|off| off.unsigned_abs().div_ceil(127))
-        .max()
-        .unwrap_or(0);
-    if length > 0 {
-        let rates = off.map(|off| (off as f32 / length as f32).round() as i8);
-        steps.push((rates, length as u16));
-    }
-    steps
-}
-
-/// A straight change from one colour to another over `length` ticks,
-/// exact: each channel moves at r or r + 1 sixteenths a tick, the faster
-/// first, so it ends where it should.
-fn ramp(from: [u8; 3], to: [u8; 3], length: u16) -> Vec<Step> {
-    let length = i32::from(length);
-    // Per channel: the slower rate, and the ticks at one more.
-    let channels: [(i32, i32); 3] = std::array::from_fn(|c| {
-        let change = (i32::from(to[c]) - i32::from(from[c])) * 16;
-        let slow = change.div_euclid(length);
-        (slow, change - slow * length)
-    });
-    let mut cuts: Vec<i32> = channels
-        .iter()
-        .map(|&(_, faster)| faster)
-        .filter(|&faster| faster > 0)
-        .chain([length])
-        .collect();
-    cuts.sort_unstable();
-    cuts.dedup();
-    let mut steps = Vec::new();
-    let mut at = 0;
-    for cut in cuts {
-        let rates = channels.map(|(slow, faster)| (slow + i32::from(at < faster)) as i8);
-        steps.push((rates, (cut - at) as u16));
-        at = cut;
-    }
-    steps
-}
-
-/// The keys, in blocks of up to 42, a table each: any key may go in any
-/// block, as each slot names its key.
-fn blocks() -> [Vec<u8>; 4] {
-    [
-        (0x04..=0x27).chain(0x3a..=0x3f).collect(),
-        vec![0x28, 0x31, 0x32, 0x64],
-        (0x29..=0x30)
-            .chain(0x33..=0x39)
-            .chain([0x65])
-            .chain(0xe0..=0xe6)
-            .chain([0xf0])
-            .collect(),
-        (0x40..=0x63).chain([POWER]).collect(),
-    ]
 }
 
 /// Zone `i`'s effect.
@@ -577,31 +586,37 @@ fn zone_effect(i: usize) -> u8 {
 
 /// Every key on its effect, the profile's or its zone's, or still in a
 /// colour of its own or `over`'s, a packet a block: `0e 00 [slots] 00`,
-/// then 42 slots of `[colour] [flash colour] [flash ticks] [effect] [mode]
-/// 00 [key]` (mode 0 follows the effect, 1 is still in the colour, 8
-/// flashes on presses), and `08 39` at the end.
-fn table_packets(lighting: &Lighting, over: Over) -> Vec<[u8; REPORT_LEN]> {
+/// then 42 slots (see [`steelseries::slot`]: mode 0 follows the effect, 1
+/// is still in the colour, 8 flashes on presses), as the model keeps them.
+/// Without effects every key is still, the power button too, on effect 0
+/// as MSI's software leaves still keys.
+fn table_packets(model: &Model, lighting: &Lighting, over: Over) -> Vec<[u8; REPORT_LEN]> {
     let slot = |id: u8, effect: &Effect, color: Option<Color>, key: u8| -> [u8; 12] {
-        let [r, g, b] = color.unwrap_or(Color::OFF).0;
-        let (mode, [fr, fg, fb], flash_ticks) = match effect {
-            Effect::Static => (1, [0; 3], 0),
-            Effect::Reactive { flash, flash_ms } => (8, flash.0, ticks(*flash_ms)),
-            _ => (0, [0; 3], 0),
-        };
-        let [ticks_low, ticks_high] = flash_ticks.to_le_bytes();
-        [r, g, b, fr, fg, fb, ticks_low, ticks_high, id, mode, 0, key]
+        let color = color.unwrap_or(Color::OFF).0;
+        let id = if model.effects { id } else { 0 };
+        match effect {
+            Effect::Static if model.effects => steelseries::slot(color, color, 0, id, LIVE, key),
+            Effect::Static => steelseries::slot(color, [0; 3], 0, id, STILL, key),
+            Effect::Reactive { flash, flash_ms } => {
+                steelseries::slot(color, flash.0, ticks(*flash_ms), id, 8, key)
+            }
+            _ => steelseries::slot(color, [0; 3], 0, id, 0, key),
+        }
     };
     // Keys of their own colours, and `over`'s: still in them.
     let mut still: BTreeMap<u8, Color> = paint(None, &lighting.keys).into_iter().collect();
     still.extend(over.keys());
-    blocks()
+    blocks(&model.tables)
         .into_iter()
-        .map(|keys| {
+        .map(|(count, keys)| {
             let mut packet = [0; REPORT_LEN];
-            // The controller reads as many slots as this says.
-            packet[..4].copy_from_slice(&[0x0e, 0x00, keys.len() as u8, 0x00]);
             let (slots, _) = packet[4..4 + 42 * 12].as_chunks_mut::<12>();
-            for (place, key) in slots.iter_mut().zip(keys) {
+            if model.tables == Tables::Regions {
+                for slot in slots.iter_mut() {
+                    slot[11] = 0xff;
+                }
+            }
+            for (place, &key) in slots.iter_mut().zip(&keys) {
                 let zone = lighting
                     .zones
                     .iter()
@@ -610,13 +625,19 @@ fn table_packets(lighting: &Lighting, over: Over) -> Vec<[u8; REPORT_LEN]> {
                     .find(|(_, zone)| zone.keys.contains(&key));
                 *place = match (still.get(&key), zone) {
                     // Only so it's lit at all: effect 0 alone colours it.
-                    _ if key == POWER => [0, 0, 0, 0, 0, 0, 0, 0, POWER_EFFECT, 0, 0, POWER],
+                    _ if key == POWER && model.effects => {
+                        steelseries::slot([0; 3], [0; 3], 0, POWER_EFFECT, 0, POWER)
+                    }
                     (Some(&color), _) => slot(PROFILE_EFFECT, &Effect::Static, Some(color), key),
                     (None, Some((i, zone))) => slot(zone_effect(i), &zone.effect, zone.color, key),
                     (None, None) => slot(PROFILE_EFFECT, &lighting.effect, lighting.color, key),
                 };
             }
-            packet[REPORT_LEN - 2..].copy_from_slice(&[0x08, 0x39]);
+            // The controller reads as many slots as the header says.
+            packet[..4].copy_from_slice(&[0x0e, 0x00, count, 0x00]);
+            if model.tables == Tables::Fitted {
+                packet[REPORT_LEN - 2..].copy_from_slice(&[0x08, 0x39]);
+            }
             packet
         })
         .collect()
@@ -631,7 +652,8 @@ fn keys() -> impl Iterator<Item = u8> {
 /// Each key's name, as the config writes it, and its HID usage. Checked
 /// on the Alpha 17's keyboard, which has no Home, End or Pause of their
 /// own (they share PgUp, PgDn and the numpad), a Copilot key where right
-/// Ctrl would be, and `102nd`, the `\` between AltGr and Fn.
+/// Ctrl would be (`rctrl` names the same light, for keyboards with one: see
+/// [`RightOfAlt`]), and `102nd`, the `\` between AltGr and Fn.
 pub fn names() -> Vec<(String, u8)> {
     let mut names: Vec<(String, u8)> = Vec::new();
     names.extend((b'a'..=b'z').map(|c| (char::from(c).to_string(), c - b'a' + 0x04)));
@@ -683,6 +705,7 @@ pub fn names() -> Vec<(String, u8)> {
             ("lalt", 0xe2),
             ("win", 0xe3),
             ("copilot", 0xe4),
+            ("rctrl", 0xe4),
             ("rshift", 0xe5),
             ("ralt", 0xe6),
             ("fn", 0xf0),
@@ -770,18 +793,10 @@ fn reports(keys: &[(u8, Color)]) -> Vec<[u8; REPORT_LEN]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
-
-    #[test]
-    fn colours_read_and_written() {
-        assert_eq!("#fab387".parse(), Ok(Color([0xfa, 0xb3, 0x87])));
-        assert_eq!("off".parse(), Ok(Color::OFF));
-        assert_eq!(Color([0xfa, 0xb3, 0x87]).to_string(), "#fab387");
-        assert_eq!("#000000".parse::<Color>().unwrap().to_string(), "off");
-        for bad in ["fab387", "#fab38", "#fab3877", "#gab387", "red", "#ffé000"] {
-            assert!(bad.parse::<Color>().is_err(), "{bad}");
-        }
-    }
+    use crate::{
+        lighting::{Part, RAINBOW, Wave},
+        steelseries::testing::{board, hidraw, steps},
+    };
 
     #[test]
     fn names_and_groups() {
@@ -834,81 +849,12 @@ mod tests {
         assert!(paint(None, &[]).is_empty());
     }
 
-    /// How far a channel moves over the steps, in 1/16.
-    fn moved(steps: &[Step], channel: usize) -> i32 {
-        steps
-            .iter()
-            .map(|&(rates, length)| i32::from(rates[channel]) * i32::from(length))
-            .sum()
-    }
-
-    /// The steps effect `id`'s packet holds, checking they're numbered:
-    /// the effect's number first, then the steps'.
-    fn steps(packet: &[u8; REPORT_LEN], id: u8) -> Vec<Step> {
-        (0..usize::from(packet[0x96]))
-            .map(|i| {
-                let at = 2 + 8 * i;
-                assert_eq!(packet[at], if i == 0 { id } else { i as u8 });
-                let rates = [packet[at + 2], packet[at + 3], packet[at + 4]].map(|r| r as i8);
-                (rates, u16::from_le_bytes([packet[at + 6], packet[at + 7]]))
-            })
-            .collect()
-    }
-
-    #[test]
-    fn waits_out_a_busy_controller() {
-        let mut stalls = 3;
-        let mut tries = 0;
-        let sent = patiently(|| {
-            tries += 1;
-            if stalls > 0 {
-                stalls -= 1;
-                return Err(io::ErrorKind::BrokenPipe.into());
-            }
-            Ok(())
-        });
-        assert!(sent.is_ok());
-        assert_eq!(tries, 4);
-        // Gone for good, or never coming back: said so.
-        let mut tries = 0;
-        let stalled = patiently(|| {
-            tries += 1;
-            Err(io::ErrorKind::BrokenPipe.into())
-        });
-        assert_eq!(stalled.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
-        assert_eq!(tries, 10);
-        let mut tries = 0;
-        let gone = patiently(|| {
-            tries += 1;
-            Err(io::ErrorKind::NotFound.into())
-        });
-        assert!(gone.is_err());
-        assert_eq!(tries, 1);
-    }
-
-    #[test]
-    fn ramps_end_where_they_should() {
-        for (from, to, length) in [
-            ([255, 96, 0], [0, 0, 0], 100),
-            ([0, 0, 0], [250, 179, 135], 37),
-            ([255, 0, 0], [255, 255, 0], 33),
-            ([10, 20, 30], [10, 20, 30], 50),
-        ] {
-            let steps = ramp(from, to, length);
-            assert!(steps.len() <= 4, "{steps:?}");
-            assert_eq!(steps.iter().map(|&(_, l)| l).sum::<u16>(), length);
-            for channel in 0..3 {
-                let change = (i32::from(to[channel]) - i32::from(from[channel])) * 16;
-                assert_eq!(moved(&steps, channel), change, "{from:?} → {to:?}");
-            }
-        }
-    }
-
     fn lighting(effect: Effect, color: Option<Color>) -> Lighting {
         Lighting {
             effect,
             color,
             keys: Vec::new(),
+            parts: Vec::new(),
             zones: Vec::new(),
         }
     }
@@ -931,116 +877,173 @@ mod tests {
         }
     }
 
+    /// The touchpad's own zone, or its colour, is nothing to the keys'
+    /// controller.
     #[test]
-    fn breathes_out_and_back_in_its_period() {
-        let packet = effect_packet(0, &breathe(4000), Some(ORANGE));
-        assert_eq!(&packet[..2], &[0x0b, 0x00]);
-        // The start colour in 1/16.
-        assert_eq!(&packet[0x84..0x8a], &[0xf0, 0x0f, 0x00, 0x06, 0x00, 0x00]);
-        assert_eq!(packet[0x8a], 0xff);
-        // 400 ticks of 10 ms; out and back, so nowhere in the end.
-        assert_eq!(u16::from_le_bytes([packet[0x98], packet[0x99]]), 400);
-        let breath = steps(&packet, 0);
-        assert!((0..3).all(|channel| moved(&breath, channel) == 0));
-        // All keys alike: no wave.
-        assert_eq!(&packet[0x8c..0x96], &[0; 10]);
-        assert_eq!(packet[0x9a], 0);
-
-        // Between two colours: out to blue at half time.
-        let two = Effect::Breathe {
-            period_ms: 4000,
-            fade_to: BLUE,
+    fn leaves_the_touchpad_to_its_controller() {
+        let titan = MODELS
+            .iter()
+            .find(|model| model.board == Some("MS-1824"))
+            .unwrap();
+        let keys = lighting(Effect::Static, Some(BLUE));
+        let with_bar = Lighting {
+            parts: vec![(Part::Logo, ORANGE)],
+            zones: vec![Zone {
+                keys: Vec::new(),
+                parts: vec![Part::Bar],
+                effect: Effect::Breathe {
+                    period_ms: 2000,
+                    fade_to: Color::OFF,
+                },
+                color: Some(ORANGE),
+            }],
+            ..keys.clone()
         };
-        let packet = effect_packet(0, &two, Some(ORANGE));
-        let steps = steps(&packet, 0);
-        let half: Vec<Step> = {
-            let mut at = 0;
-            steps
-                .iter()
-                .copied()
-                .take_while(|&(_, length)| {
-                    at += length;
-                    at <= 200
-                })
-                .collect()
-        };
-        for channel in 0..3 {
-            let change = (i32::from(BLUE.0[channel]) - i32::from(ORANGE.0[channel])) * 16;
-            assert_eq!(moved(&half, channel), change);
-            assert_eq!(moved(&steps, channel), 0);
-        }
+        let plan_of =
+            |lighting: &Lighting| plan(titan, Some(&keys_only(lighting)), Over::default());
+        assert_eq!(plan_of(&with_bar), plan_of(&keys));
     }
 
+    /// Nothing restarts but what can't go on without, and that under
+    /// black: a key's own colour over an effect, and taken off, at once;
+    /// an effect's colours live; still keys by their tables.
     #[test]
-    fn colours_go_round_exactly_or_near_enough() {
-        let cycle = |colors: &[Color], period_ms| Effect::Cycle {
-            period_ms,
-            colors: colors.to_vec(),
+    fn restarts_only_when_it_must() {
+        let titan = MODELS
+            .iter()
+            .find(|model| model.board == Some("MS-1824"))
+            .unwrap();
+        let breathe = |color: Color| Lighting {
+            effect: Effect::Breathe {
+                period_ms: 2000,
+                fade_to: Color::OFF,
+            },
+            ..lighting(Effect::Static, Some(color))
         };
-        let rainbow = effect_packet(0, &cycle(&RAINBOW, 6000), None);
-        assert_eq!(rainbow[0x96], 12);
-        assert_eq!(u16::from_le_bytes([rainbow[0x98], rainbow[0x99]]), 600);
-        assert_eq!(&rainbow[0x84..0x8a], &[0xf0, 0x0f, 0, 0, 0, 0]);
-        assert_eq!(&rainbow[0x8c..0x96], &[0; 10]);
-        let steps_of = |packet: &[u8; REPORT_LEN]| steps(packet, 0);
-        assert!((0..3).all(|channel| moved(&steps_of(&rainbow), channel) == 0));
+        let send = |lighting: &Lighting, sent: &Sent| {
+            changes(
+                &plan(titan, Some(lighting), Over::default()),
+                sent,
+                titan.scale,
+            )
+        };
+        let first = send(&breathe(BLUE), &Sent::default());
+        assert!(first.blackout);
+        assert_eq!(first.scale, titan.scale);
+        assert_eq!(first.restart, Some(Restart::Effects));
 
-        // Two colours of all three channels: exact, in up to eight steps.
-        let two = effect_packet(0, &cycle(&[ORANGE, BLUE], 4000), None);
-        assert!(two[0x96] <= 8);
-        assert!((0..3).all(|channel| moved(&steps_of(&two), channel) == 0));
+        let again = send(&breathe(BLUE), &first.sent);
+        assert!(again.packets.is_empty() && again.paint.is_empty());
+        assert_eq!((again.restart, &again.release), (None, &Release::None));
 
-        // Eight such: too many steps to be exact, so one a colour, close.
-        let eight: Vec<Color> = (0..8u8)
-            .map(|i| Color([i * 31 + 7, 255 - i * 29, i * 17 + 3]))
-            .collect();
-        let shortest = shortest_period_ms(8);
-        assert_eq!(shortest, 2640);
-        let packet = effect_packet(0, &cycle(&eight, shortest), None);
-        let steps = steps_of(&packet);
-        assert!((8..=9).contains(&steps.len()), "{steps:?}");
-        assert!(steps[..8].iter().all(|&(_, length)| length == 33));
-        // Back on the start colour, but for a sixteenth or so; a long
-        // round too, where rounding a colour's step errs most.
-        let slow = effect_packet(0, &cycle(&eight, 60000), None);
-        for steps in [steps, steps_of(&slow)] {
-            assert!(steps.len() <= 16);
-            for channel in 0..3 {
-                let off = moved(&steps, channel);
-                assert!(off.abs() <= 2, "{off}");
-            }
-        }
-        assert_eq!(shortest_period_ms(6), 2000);
-    }
+        // Its own colour over the effect: a table and a still report.
+        let painted = Lighting {
+            keys: vec![(vec![0x04], ORANGE)],
+            ..breathe(BLUE)
+        };
+        let paint = send(&painted, &first.sent);
+        assert_eq!(paint.restart, None);
+        assert!(!paint.blackout);
+        assert!(paint.packets.iter().all(|packet| packet[0] != 0x0b));
+        assert_eq!(paint.paint.len(), 1);
 
-    #[test]
-    fn waves_from_where_they_are_told() {
-        let middle = effect_packet(0, &rainbow_wave(3000, Wave::default()), None);
-        assert_eq!(u16::from_le_bytes([middle[0x98], middle[0x99]]), 300);
-        assert_eq!(
-            &middle[0x8c..0x96],
-            &[0x2e, 0x08, 0x06, 0x02, 1, 0, 1, 0, 0x11, 0x01]
+        // Back to the effect: taken off, no restart.
+        let back = send(&breathe(BLUE), &paint.sent);
+        assert_eq!(back.restart, None);
+        assert_eq!(back.release, Release::All);
+
+        // Many let go while others stay: all of them, the rest painted again.
+        let many = Lighting {
+            keys: vec![
+                (named("wasd").unwrap(), ORANGE),
+                (named("arrows").unwrap(), ORANGE),
+            ],
+            ..breathe(BLUE)
+        };
+        let painted_many = send(&many, &back.sent);
+        let fewer = Lighting {
+            keys: vec![(named("arrows").unwrap(), ORANGE)],
+            ..breathe(BLUE)
+        };
+        let let_go = send(&fewer, &painted_many.sent);
+        assert_eq!(let_go.release, Release::All);
+        assert_eq!(let_go.paint.len(), 1);
+        assert_eq!(let_go.sent.overrides.len(), 4);
+        // One alone: just it.
+        let three = Lighting {
+            keys: vec![(vec![0x52, 0x51, 0x50], ORANGE)],
+            ..breathe(BLUE)
+        };
+        let one_off = send(&three, &let_go.sent);
+        assert_eq!(one_off.release, Release::Keys(vec![0x4f]));
+        assert!(one_off.paint.is_empty());
+
+        // A wave's other colours, however many steps they take: live.
+        let wave = |colors: Vec<Color>| Lighting {
+            effect: Effect::Wave {
+                period_ms: 3000,
+                colors,
+                wave: Wave::default(),
+            },
+            ..lighting(Effect::Static, None)
+        };
+        let rainbow = send(&wave(RAINBOW.to_vec()), &back.sent);
+        assert_eq!(rainbow.restart, Some(Restart::Effects));
+        let tinted = send(
+            &wave(vec![
+                ORANGE,
+                BLUE,
+                Color([0x12, 0x34, 0x56]),
+                RAINBOW[3],
+                RAINBOW[4],
+                RAINBOW[5],
+            ]),
+            &rainbow.sent,
         );
-        assert_eq!(middle[0x9a], 1);
+        assert_eq!(tinted.restart, None);
+        // Its origin: a restart.
+        let left = Lighting {
+            effect: Effect::Wave {
+                period_ms: 3000,
+                colors: RAINBOW.to_vec(),
+                wave: Wave {
+                    origin: crate::lighting::Origin::Left,
+                    ..Wave::default()
+                },
+            },
+            ..lighting(Effect::Static, None)
+        };
+        assert_eq!(send(&left, &tinted.sent).restart, Some(Restart::Effects));
 
-        // From the left edge into it, straight across, as wide as can be.
-        let left = Wave {
-            origin: Origin::Left,
-            inward: true,
-            wavelength: 100,
+        // Another colour for the effect: live.
+        let recolored = send(&breathe(ORANGE), &back.sent);
+        assert_eq!(recolored.restart, None);
+        assert!(recolored.packets.iter().any(|packet| packet[0] == 0x0b));
+
+        // Another effect of another length: started over, under black.
+        let cycle = Lighting {
+            effect: Effect::Cycle {
+                period_ms: 3000,
+                colors: vec![BLUE, ORANGE],
+            },
+            ..breathe(BLUE)
         };
-        let packet = effect_packet(0, &rainbow_wave(3000, left), None);
-        assert_eq!(
-            &packet[0x8c..0x96],
-            &[0, 0, 0x06, 0x02, 1, 0, 0, 0, 0xe9, 0x03]
-        );
-        assert_eq!(packet[0x9a], 0);
-        let bottom = Wave {
-            origin: Origin::Bottom,
-            ..Wave::default()
-        };
-        let packet = effect_packet(0, &rainbow_wave(3000, bottom), None);
-        assert_eq!(&packet[0x8c..0x94], &[0x2e, 0x08, 0x0d, 0x04, 0, 0, 1, 0]);
+        let cycled = send(&cycle, &recolored.sent);
+        assert_eq!(cycled.restart, Some(Restart::Effects));
+        assert!(cycled.blackout);
+        assert_eq!(cycled.scale, None);
+
+        // All still: its tables, live, whatever the colours.
+        let still = send(&lighting(Effect::Static, Some(BLUE)), &cycled.sent);
+        assert_eq!(still.restart, Some(Restart::Effects));
+        let orange = send(&lighting(Effect::Static, Some(ORANGE)), &still.sent);
+        assert_eq!(orange.restart, None);
+        assert!(orange.paint.is_empty());
+        assert!(!orange.packets.is_empty());
+
+        let mut forgot = orange.sent.clone();
+        forgot.forget();
+        assert_eq!(send(&breathe(BLUE), &forgot).scale, titan.scale);
     }
 
     #[test]
@@ -1050,7 +1053,7 @@ mod tests {
             flash,
             flash_ms: 500,
         };
-        let packets = table_packets(&lighting(reactive, Some(ORANGE)), Over::default());
+        let packets = table_packets(ALPHA, &lighting(reactive, Some(ORANGE)), Over::default());
         assert_eq!(packets.len(), 4);
         let alphanum = &packets[0];
         assert_eq!(&alphanum[..4], &[0x0e, 0x00, 0x2a, 0x00]);
@@ -1062,16 +1065,22 @@ mod tests {
         assert_eq!(&alphanum[REPORT_LEN - 2..], &[0x08, 0x39]);
 
         let waving = table_packets(
+            ALPHA,
             &lighting(rainbow_wave(3000, Wave::default()), None),
             Over::default(),
         );
         assert_eq!(&waving[0][4..16], &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0x04]);
         // Every key there may be, once.
-        let mut keys: Vec<u8> = blocks().into_iter().flatten().collect();
-        keys.sort_unstable();
-        let mut all: Vec<u8> = super::keys().filter(|&key| key != 0xe7).collect();
-        all.sort_unstable();
-        assert_eq!(keys, all);
+        for tables in [Tables::Fitted, Tables::Regions] {
+            let mut keys: Vec<u8> = blocks(&tables)
+                .into_iter()
+                .flat_map(|(_, keys)| keys)
+                .collect();
+            keys.sort_unstable();
+            let mut all: Vec<u8> = super::keys().filter(|&key| key != 0xe7).collect();
+            all.sort_unstable();
+            assert_eq!(keys, all, "{tables:?}");
+        }
     }
 
     #[test]
@@ -1079,11 +1088,13 @@ mod tests {
         // Still orange, the numpad breathing blue, its 5 waving over that.
         let breathing = Zone {
             keys: named("numpad").unwrap(),
+            parts: Vec::new(),
             effect: breathe(3000),
             color: Some(BLUE),
         };
         let waving = Zone {
             keys: named("kp5").unwrap(),
+            parts: Vec::new(),
             effect: rainbow_wave(3000, Wave::default()),
             color: None,
         };
@@ -1091,8 +1102,8 @@ mod tests {
             zones: vec![breathing, waving],
             ..lighting(Effect::Static, Some(ORANGE))
         };
-        let plan = plan(Some(&split), Over::default());
-        assert!(plan.refresh);
+        let plan = plan(ALPHA, Some(&split), Over::default());
+        assert_eq!(plan.restart, Some(Restart::Effects));
         let packets = plan.packets;
         // Four effects, the power button's, the profile's and the zones',
         // numbered in turn, then the four tables.
@@ -1109,8 +1120,8 @@ mod tests {
         assert_eq!(numpad[2], 37);
         let (slots, _) = numpad[4..4 + 42 * 12].as_chunks::<12>();
         let effect_of = |key: u8| slots.iter().find(|slot| slot[11] == key).unwrap()[8];
-        // Still in the tables: mode 1.
-        assert_eq!(slots.iter().find(|slot| slot[11] == 0x40).unwrap()[9], 1);
+        // Still in the tables, followed live.
+        assert_eq!(slots.iter().find(|slot| slot[11] == 0x40).unwrap()[9], LIVE);
         assert_eq!(effect_of(0x59), 2, "numpad 1");
         assert_eq!(effect_of(0x5d), 3, "numpad 5");
         assert_eq!(effect_of(POWER), 0, "Power");
@@ -1137,12 +1148,13 @@ mod tests {
 
         // All still: the tables and still reports, no refresh.
         let still = plan(
+            ALPHA,
             Some(&lighting(Effect::Static, Some(ORANGE))),
             Over::default(),
         );
-        assert!(!still.refresh);
+        assert_eq!(still.restart, None);
         assert_eq!(still.packets.len(), 1 + 4);
-        assert_eq!(slot_of(&still.packets, 0x04), (1, ORANGE.0));
+        assert_eq!(slot_of(&still.packets, 0x04), (LIVE, ORANGE.0));
         // All but the power button, which its effect holds.
         assert_eq!(still.still.len(), keys().count() - 1);
         assert!(!still.still.iter().any(|&(key, _)| key == POWER));
@@ -1152,10 +1164,10 @@ mod tests {
             keys: wasd,
             ..lighting(rainbow_wave(3000, Wave::default()), None)
         };
-        let waving = plan(Some(&wave), Over::default());
+        let waving = plan(ALPHA, Some(&wave), Over::default());
         assert_eq!(waving.packets.len(), 2 + 4);
-        assert!(waving.refresh && waving.still.is_empty());
-        assert_eq!(slot_of(&waving.packets, 0x1a), (1, red.0));
+        assert!(waving.restart == Some(Restart::Effects) && waving.still.is_empty());
+        assert_eq!(slot_of(&waving.packets, 0x1a), (LIVE, red.0));
         assert_eq!(slot_of(&waving.packets, 0x05).0, 0);
 
         // NumLock off, still in the tables; at once too where all is still.
@@ -1163,14 +1175,14 @@ mod tests {
             numpad_dark: true,
             power: Some(red),
         };
-        let dark = plan(Some(&wave), over);
-        assert_eq!(slot_of(&dark.packets, 0x5d), (1, [0; 3]));
+        let dark = plan(ALPHA, Some(&wave), over);
+        assert_eq!(slot_of(&dark.packets, 0x5d), (LIVE, [0; 3]));
         assert_eq!(slot_of(&dark.packets, 0x53).0, 0, "NumLock");
-        let still_dark = plan(Some(&lighting(Effect::Static, Some(ORANGE))), over);
+        let still_dark = plan(ALPHA, Some(&lighting(Effect::Static, Some(ORANGE))), over);
         assert!(still_dark.still.contains(&(0x5d, Color::OFF)));
         assert!(!still_dark.still.iter().any(|&(key, _)| key == POWER));
         // Without a profile, nothing.
-        assert_eq!(plan(None, over), Plan::default());
+        assert_eq!(plan(ALPHA, None, over), Plan::default());
     }
 
     /// Effect 0, the power button's, holding `color`.
@@ -1199,7 +1211,7 @@ mod tests {
             power: Some(red),
             ..none
         };
-        let packets = |lighting: &Lighting, over| plan(Some(lighting), over).packets;
+        let packets = |lighting: &Lighting, over| plan(ALPHA, Some(lighting), over).packets;
 
         // Still: the profile's colour, or the button's own, held.
         let still = lighting(Effect::Static, Some(ORANGE));
@@ -1225,6 +1237,7 @@ mod tests {
         let zoned = Lighting {
             zones: vec![Zone {
                 keys: vec![POWER],
+                parts: Vec::new(),
                 effect: breathe(3000),
                 color: Some(BLUE),
             }],
@@ -1255,34 +1268,134 @@ mod tests {
         }
     }
 
-    /// `class/hidraw/<name>` → its HID device, inside a USB interface.
-    fn hidraw(sysfs: &Path, name: &str, id: &str, interface: &str) {
-        let usb = sysfs.join(format!("devices/usb/{name}-if"));
-        let hid = usb.join("hid");
-        fs::create_dir_all(&hid).unwrap();
-        fs::write(usb.join("bInterfaceNumber"), format!("{interface}\n")).unwrap();
-        fs::write(
-            hid.join("uevent"),
-            format!("DRIVER=hid-generic\nHID_ID={id}\n"),
-        )
-        .unwrap();
-        let class = sysfs.join("class/hidraw").join(name);
-        fs::create_dir_all(&class).unwrap();
-        symlink(&hid, class.join("device")).unwrap();
-    }
+    const ALPHA: &Model = &MODELS[0];
+    const TITAN: &Model = &MODELS[1];
 
     #[test]
     fn finds_the_first_interface_of_one_it_knows() {
+        let dev = Path::new("/dev");
         let sysfs = tempfile::tempdir().unwrap();
         hidraw(sysfs.path(), "hidraw0", "0003:0000046D:0000C52B", "00");
         hidraw(sysfs.path(), "hidraw3", "0003:00001038:0000113A", "00");
         hidraw(sysfs.path(), "hidraw4", "0003:00001038:0000113A", "01");
-        let klc = find(sysfs.path(), Path::new("/dev")).unwrap();
+        let klc = find(sysfs.path(), dev).unwrap();
         assert_eq!(klc.node(), Path::new("/dev/hidraw3"));
+        assert!(klc.effects());
 
-        let other = tempfile::tempdir().unwrap();
-        hidraw(other.path(), "hidraw0", "0003:00001038:00001122", "00");
-        assert_eq!(find(other.path(), Path::new("/dev")), None);
-        assert_eq!(find(Path::new("/nonexistent"), Path::new("/dev")), None);
+        // 1122 is on many laptops: only on the board it was checked on.
+        let titan = tempfile::tempdir().unwrap();
+        hidraw(titan.path(), "hidraw0", "0003:00001038:00001122", "00");
+        hidraw(titan.path(), "hidraw2", "0003:00001038:00001169", "00");
+        assert_eq!(find(titan.path(), dev), None);
+        board(titan.path(), "MS-1824");
+        let klc = find(titan.path(), dev).unwrap();
+        assert_eq!(klc.node(), Path::new("/dev/hidraw0"));
+        assert!(klc.effects() && !klc.model.saves);
+        assert_eq!(klc.right_of_alt(), RightOfAlt::Copilot);
+        assert_eq!(find(Path::new("/nonexistent"), dev), None);
+    }
+
+    /// The slots of a table, but those left over.
+    fn used(packet: &[u8; REPORT_LEN]) -> Vec<[u8; 12]> {
+        let count = usize::from(packet[2]);
+        packet[4..4 + count * 12]
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .filter(|slot| slot[11] != 0xff)
+            .copied()
+            .collect()
+    }
+
+    /// The Titan's tables, but on a controller without effects.
+    const STILL_ONLY: &Model = &Model {
+        effects: false,
+        ..MODELS[1]
+    };
+
+    /// Without effects: every key still, in its region's table, as found
+    /// on the Titan (a key in another region's table never shows), the
+    /// tables drawn at once, and no effect packet.
+    #[test]
+    fn without_effects_every_key_is_still_in_its_regions_table() {
+        let red = Color([255, 0, 0]);
+        let wave = Lighting {
+            keys: vec![(named("wasd").unwrap(), red)],
+            ..lighting(rainbow_wave(3000, Wave::default()), None)
+        };
+        let over = Over {
+            numpad_dark: true,
+            power: Some(BLUE),
+        };
+        let plan = plan(STILL_ONLY, Some(&wave), over);
+        assert_eq!(plan.restart, Some(Restart::Tables));
+        assert!(plan.still.is_empty());
+        let regions: Vec<(u8, Vec<u8>)> = vec![
+            (42, (0x04..=0x27).chain(0x3a..=0x3f).collect()),
+            (11, vec![0x28, 0x31, 0x32, 0x64, POWER]),
+            (
+                24,
+                (0x29..=0x30)
+                    .chain(0x33..=0x39)
+                    .chain([0x65])
+                    .chain(0xe0..=0xe6)
+                    .chain([0xf0])
+                    .collect(),
+            ),
+            (36, (0x40..=0x63).collect()),
+        ];
+        assert_eq!(plan.packets.len(), regions.len());
+        for (packet, (count, keys)) in plan.packets.iter().zip(&regions) {
+            assert_eq!(&packet[..4], &[0x0e, 0x00, *count, 0x00]);
+            let used = used(packet);
+            assert_eq!(used.iter().map(|slot| slot[11]).collect::<Vec<_>>(), *keys);
+            assert!(used.iter().all(|slot| slot[9] == STILL && slot[8] == 0));
+            let (slots, _) = packet[4..4 + 42 * 12].as_chunks::<12>();
+            assert!(
+                slots[keys.len()..]
+                    .iter()
+                    .all(|slot| slot[..11] == [0; 11] && slot[11] == 0xff)
+            );
+            assert!(packet[4 + 42 * 12..].iter().all(|&byte| byte == 0));
+        }
+        // The wave's first colour where a key has none of its own.
+        assert_eq!(slot_of(&plan.packets, 0x05), (STILL, RAINBOW[0].0));
+        assert_eq!(slot_of(&plan.packets, 0x1a), (STILL, red.0));
+        assert_eq!(slot_of(&plan.packets, 0x5d), (STILL, [0; 3]));
+        assert_eq!(
+            slot_of(&plan.packets, 0x53),
+            (STILL, RAINBOW[0].0),
+            "NumLock"
+        );
+        assert_eq!(slot_of(&plan.packets, POWER), (STILL, BLUE.0));
+    }
+
+    /// The Titan runs effects as the Alpha does, its keys in their regions'
+    /// tables: the power button on effect 0 in Enter's, and the effects
+    /// started over after them.
+    #[test]
+    fn titan_runs_effects_from_its_regions_tables() {
+        let red = Color([255, 0, 0]);
+        let wave = Lighting {
+            keys: vec![(named("wasd").unwrap(), red)],
+            ..lighting(rainbow_wave(3000, Wave::default()), None)
+        };
+        let plan = plan(TITAN, Some(&wave), Over::default());
+        assert_eq!(plan.restart, Some(Restart::Effects));
+        assert!(plan.still.is_empty());
+        let (effects, tables) = plan.packets.split_at(2);
+        assert!(effects.iter().all(|packet| check_effect(packet).is_ok()));
+        assert_eq!(effects[0][2], POWER_EFFECT);
+        assert_eq!(effects[1][2], PROFILE_EFFECT);
+        let counts: Vec<u8> = tables.iter().map(|table| table[2]).collect();
+        assert_eq!(counts, [42, 11, 24, 36]);
+        assert!(
+            used(&tables[1])
+                .iter()
+                .any(|slot| slot[11] == POWER && slot[8] == POWER_EFFECT && slot[9] == 0)
+        );
+        assert_eq!(slot_of(tables, 0x05), (0, [0; 3]));
+        assert_eq!(slot_of(tables, 0x1a), (LIVE, red.0));
+        assert!(tables.iter().all(|table| table[REPORT_LEN - 2..] == [0, 0]));
     }
 }

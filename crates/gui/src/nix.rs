@@ -18,7 +18,7 @@ pub enum Value {
 
 /// The settings `status` reports, as attributes to go inside
 /// `settings = { … };`.
-pub fn settings(status: &Status, curves: &[(Fan, Curve)]) -> String {
+pub fn settings(status: &Status, curves: &[(Fan, Curve)], profiles: Vec<Value>) -> String {
     let int = |n: u8| Value::Int(n.into());
     let mut top = Vec::new();
     put(&mut top, "charge_limit", status.charge_limit.map(int));
@@ -61,13 +61,87 @@ pub fn settings(status: &Status, curves: &[(Fan, Curve)]) -> String {
     if !fans.is_empty() {
         top.push(("fans".into(), Value::Attrs(fans)));
     }
+    let keyboard = keyboard(status, profiles);
+    if !keyboard.is_empty() {
+        top.push(("keyboard".into(), Value::Attrs(keyboard)));
+    }
 
     let mut nix = String::new();
     attrs(&mut nix, &top, 0);
     nix
 }
 
+/// The keyboard light's settings: the profile shown outside scenarios with
+/// one of their own, those scenarios', the profiles saved here, the numpad
+/// and the power button's light.
+fn keyboard(status: &Status, profiles: Vec<Value>) -> Vec<(String, Value)> {
+    let mut keyboard = Vec::new();
+    let scenarios = status.keyboard_scenarios.clone().unwrap_or_default();
+    // The profile shown is the scenario's where it has one: then the
+    // usual one isn't known here.
+    let own = status
+        .scenario
+        .as_ref()
+        .is_some_and(|scenario| scenarios.contains_key(scenario));
+    if !own {
+        put(
+            &mut keyboard,
+            "profile",
+            status.keyboard_profile.clone().map(Value::Str),
+        );
+    }
+    if !profiles.is_empty() {
+        keyboard.push(("profiles".into(), Value::List(profiles)));
+    }
+    if !scenarios.is_empty() {
+        keyboard.push((
+            "scenarios".into(),
+            Value::Attrs(
+                scenarios
+                    .into_iter()
+                    .map(|(scenario, profile)| (scenario, Value::Str(profile)))
+                    .collect(),
+            ),
+        ));
+    }
+    put(
+        &mut keyboard,
+        "numpad_follows_numlock",
+        status.numpad_follows_numlock.map(Value::Bool),
+    );
+    let mut power = Vec::new();
+    put(
+        &mut power,
+        "follows",
+        status.power_light.clone().map(Value::Str),
+    );
+    put(
+        &mut power,
+        "dgpu_waking",
+        status.power_light_dgpu.map(Value::Bool),
+    );
+    let colors = status.power_colors.clone().unwrap_or_default();
+    let modes: Vec<(String, Value)> = colors
+        .iter()
+        .filter(|(name, _)| *name != "dgpu")
+        .map(|(name, color)| (name.clone(), Value::Str(color.clone())))
+        .collect();
+    if !modes.is_empty() {
+        power.push(("shift_modes".into(), Value::Attrs(modes)));
+    }
+    put(
+        &mut power,
+        "dgpu_awake",
+        colors.get("dgpu").cloned().map(Value::Str),
+    );
+    if !power.is_empty() {
+        keyboard.push(("power".into(), Value::Attrs(power)));
+    }
+    keyboard
+}
+
 /// An attribute set of its own, `{ … }`, for an element of a list.
+#[cfg(test)]
 pub fn attrset(entries: &[(String, Value)]) -> String {
     let mut nix = String::from("{\n");
     attrs(&mut nix, entries, 1);
@@ -89,11 +163,29 @@ fn name(key: &str) -> String {
         .next()
         .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '\''));
-    if bare {
-        key.to_owned()
-    } else {
-        format!("{key:?}")
+    if bare { key.to_owned() } else { string(key) }
+}
+
+/// `text` as a Nix string: quoted, with `\`, `"` and `${` escaped and the
+/// control characters Nix has escapes for written as them; anything else
+/// as it is.
+fn string(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            '$' if chars.peek() == Some(&'{') => quoted.push_str("\\$"),
+            c => quoted.push(c),
+        }
     }
+    quoted.push('"');
+    quoted
 }
 
 /// A value that goes on one line.
@@ -101,7 +193,7 @@ fn scalar(value: &Value) -> String {
     match value {
         Value::Bool(on) => on.to_string(),
         Value::Int(n) => n.to_string(),
-        Value::Str(text) => format!("{text:?}"),
+        Value::Str(text) => string(text),
         Value::List(_) | Value::Attrs(_) => unreachable!("not a scalar"),
     }
 }
@@ -112,12 +204,18 @@ fn attrs(nix: &mut String, attrs: &[(String, Value)], depth: usize) {
     for (key, value) in attrs {
         let _ = write!(nix, "{:indent$}{} = ", "", name(key), indent = depth * 2);
         match value {
-            Value::List(values) if values.len() == 1 => {
+            Value::List(values) if values.len() == 1 && !matches!(values[0], Value::Attrs(_)) => {
                 let _ = writeln!(nix, "[ {} ];", scalar(&values[0]));
             }
             Value::List(values) => {
                 nix.push_str("[\n");
                 for value in values {
+                    if let Value::Attrs(inner) = value {
+                        let _ = writeln!(nix, "{:indent$}{{", "", indent = depth * 2 + 2);
+                        self::attrs(nix, inner, depth + 2);
+                        let _ = writeln!(nix, "{:indent$}}}", "", indent = depth * 2 + 2);
+                        continue;
+                    }
                     let _ = writeln!(
                         nix,
                         "{:indent$}{}",
@@ -144,6 +242,56 @@ fn attrs(nix: &mut String, attrs: &[(String, Value)], depth: usize) {
 mod tests {
     use super::*;
 
+    /// Text Nix reads back as it was, `${` and the joiners included.
+    #[test]
+    fn writes_strings_nix_reads_back() {
+        assert_eq!(string("a${b}"), r#""a\${b}""#);
+        assert_eq!(string("$x {y}"), r#""$x {y}""#);
+        assert_eq!(string("q\"\\"), r#""q\"\\""#);
+        assert_eq!(string("\u{2764}\u{fe0f}"), "\"\u{2764}\u{fe0f}\"");
+        assert_eq!(string("a\nb"), r#""a\nb""#);
+        assert_eq!(name("my key"), r#""my key""#);
+    }
+
+    /// The keyboard light as the window set it: the usual profile but where
+    /// a scenario has its own, the scenarios', the numpad, the power button.
+    #[test]
+    fn writes_the_keyboard_light() {
+        let status = Status {
+            scenario: Some("silent".into()),
+            keyboard_profile: Some("wave".into()),
+            keyboard_scenarios: Some([("turbo".to_owned(), "static 2".to_owned())].into()),
+            numpad_follows_numlock: Some(true),
+            power_light: Some("shift_mode".into()),
+            power_light_dgpu: Some(false),
+            power_colors: Some(
+                [
+                    ("eco".to_owned(), "#00ff00".to_owned()),
+                    ("dgpu".to_owned(), "#ff0000".to_owned()),
+                ]
+                .into(),
+            ),
+            ..Status::default()
+        };
+        let nix = settings(&status, &[], Vec::new());
+        for line in [
+            "profile = \"wave\";",
+            "turbo = \"static 2\";",
+            "numpad_follows_numlock = true;",
+            "follows = \"shift_mode\";",
+            "eco = \"#00ff00\";",
+            "dgpu_awake = \"#ff0000\";",
+        ] {
+            assert!(nix.contains(line), "{line} in\n{nix}");
+        }
+        // In a scenario of its own, the usual profile isn't known.
+        let own = Status {
+            scenario: Some("turbo".into()),
+            ..status
+        };
+        assert!(!settings(&own, &[], Vec::new()).contains("profile = "));
+    }
+
     #[test]
     fn writes_what_is_there() {
         let status = Status {
@@ -158,7 +306,7 @@ mod tests {
             ..Status::default()
         };
         let cpu = Curve::new(&[50, 57, 64, 71, 78, 85], &[0, 40, 45, 50, 57, 65, 80]).unwrap();
-        let nix = settings(&status, &[(Fan::Cpu, cpu)]);
+        let nix = settings(&status, &[(Fan::Cpu, cpu)], Vec::new());
         assert_eq!(
             nix,
             r#"charge_limit = 80;
@@ -241,6 +389,14 @@ fans = {
             charge_limit: Some(100),
             ..Status::default()
         };
-        assert_eq!(settings(&status, &[]), "charge_limit = 100;\n");
+        assert_eq!(settings(&status, &[], Vec::new()), "charge_limit = 100;\n");
+        let profile = Value::Attrs(vec![
+            ("name".into(), Value::Str("mine".into())),
+            ("color".into(), Value::Str("#ff6000".into())),
+        ]);
+        assert_eq!(
+            settings(&status, &[], vec![profile]),
+            "charge_limit = 100;\nkeyboard = {\n  profiles = [\n    {\n      name = \"mine\";\n      color = \"#ff6000\";\n    }\n  ];\n};\n"
+        );
     }
 }

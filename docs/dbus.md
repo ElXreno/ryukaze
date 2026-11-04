@@ -33,7 +33,7 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `ReadKeyboardProfile` | `s` | one of `keyboard_profiles` as the config writes it, in TOML (`s`): for an editor to start from |
 | `SaveKeyboardProfile` | `s` | a profile in TOML, as `[[keyboard.profiles]]` takes it, under a name of its own or a saved one's, kept with the others and on the disk (see [saved profiles](keyboard.md#saved-profiles)), and picked |
 | `DeleteKeyboardProfile` | `s` | one of `keyboard_saved_profiles` gone |
-| `SetGpuMode` | `s` | `hybrid` or `discrete`, from the next restart |
+| `SetGpuMode` | `s` | one of `gpu_modes` (`hybrid`, `discrete`, `integrated`), from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
 | `ReadScenarios` | | the scenarios, `[[scenarios]]` in TOML as the config writes them (`s`): for an editor to start from |
 | `SetScenarios` | `s` | all of them, in order, the same way, at least one; one the config names for AC, battery or a keyboard light has to stay |

@@ -1,14 +1,15 @@
 use std::{
     collections::BTreeMap,
     future::Future,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use iced::{
-    Alignment, Element, Length, Subscription, Task, Theme, mouse,
+    Alignment, Element, Length, Subscription, Task, Theme, event, keyboard, mouse,
     widget::{
-        button, canvas, column, container, mouse_area, pick_list, progress_bar, responsive, row,
-        scrollable, slider, space, text, text_input, toggler,
+        Stack, button, canvas, column, container, mouse_area, pick_list, progress_bar, responsive,
+        row, slider, space, text, text_input,
     },
     window,
 };
@@ -17,11 +18,18 @@ use ryukaze_core::{
     fans::{Curve, Fan},
 };
 
+mod pages;
+
+pub use pages::Page;
+
+use crate::anim::Hover;
 use crate::{
-    appearance,
+    anim, appearance,
     client::{self, Client},
-    history::{self, History, Series},
-    icon, instance, lights, report, scenarios, theme, tray,
+    history::History,
+    icon, instance,
+    laptop::{self, Laptop},
+    lights, report, scenarios, theme, tray,
 };
 
 /// Picks the EC makes on its own (Fn keys, the daemon's power profiles)
@@ -31,15 +39,19 @@ const REFRESH: Duration = Duration::from_secs(2);
 /// With only the tray up, its menu and tooltip can lag a little.
 const REFRESH_HIDDEN: Duration = Duration::from_secs(10);
 
-/// A column of panels is at least this wide, and at most that; a window
-/// wider than one takes up to three side by side, this far apart.
-const COLUMN_MIN: f32 = 400.0;
-const COLUMN_MAX: f32 = 560.0;
-const GAP: f32 = 12.0;
+/// Around a page.
 const PAGE_PADDING: f32 = 20.0;
+
+/// How long the note says the settings were copied.
+const COPIED_FOR: Duration = Duration::from_secs(4);
+
+/// Between cells of a grid.
+const CELL_GAP: f32 = 8.0;
 
 pub struct App {
     session: bool,
+    /// Over a made-up laptop: no daemon, no tray (see demo.rs).
+    demo: bool,
     client: Option<Client>,
     /// `None` until the first answer; `Err` while the daemon can't be reached.
     status: Option<Result<Status, String>>,
@@ -63,21 +75,41 @@ pub struct App {
     curve_draft: Option<Curve>,
     /// The settings went to the clipboard since the last change.
     copied: bool,
-    /// The keyboard light's editor: what it has, kept while it's closed
-    /// unsaved, and whether it's open.
+    /// The keyboard light's editor, kept unsaved while another page is shown.
     lights: Option<lights::Editor>,
+    /// The editor's changes on the keyboard: a preview to take back.
     editing_lights: bool,
+    /// The Lighting page's automation shown.
+    lighting_more: bool,
+    /// A preview on its way to the daemon, and the one asked for since.
+    previewing: bool,
+    next_preview: Option<String>,
+    /// The previews sent, for the tests.
+    #[cfg(test)]
+    previews: Vec<String>,
     /// The scenarios' editor, the same way.
     scenarios: Option<scenarios::Editor>,
     editing_scenarios: bool,
     /// The power button's colour open to change, and it as typed.
     power_color: Option<String>,
     power_hex: String,
+    /// The laptop itself, once read.
+    laptop: Option<Arc<Laptop>>,
+    /// The page shown, and it coming in, as of `now`.
+    page: Page,
+    arrival: iced::animation::Animation<bool>,
+    now: Instant,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Connected(Result<Client, String>),
+    /// Show a page, leaving an editor open on another.
+    Page(Page),
+    /// A frame while something moves.
+    Frame(Instant),
+    /// The laptop itself, read.
+    Laptop(Arc<Laptop>),
     Tick,
     Status(Box<Result<Status, String>>),
     /// ryukazed says the modes changed, from wherever.
@@ -89,7 +121,11 @@ pub enum Message {
     ChargeLimitDragged(u8),
     ChargeLimitReleased,
     Applied(Result<(), String>),
-    Dark(bool),
+    /// A preview shown, or not.
+    Previewed(Result<(), String>),
+    Appearance(appearance::Change),
+    /// The page this far down the sidebar, from 0.
+    PageAt(usize),
     TrayReady(tray::Handle),
     /// From the tray or a second start.
     Show,
@@ -100,6 +136,10 @@ pub enum Message {
     CurveReleased,
     CurveReset,
     CopyAsNix,
+    /// "Copied" said long enough.
+    CopiedGone,
+    /// The saved keyboard profiles, in TOML, for the settings copied.
+    ProfilesRead(Vec<String>),
     AdaptiveFans(bool),
     GpuFollowsCpu(bool),
     AutoCoolerBoost(bool),
@@ -126,8 +166,8 @@ pub enum Message {
     GpuMode(String),
     Scenario(String),
     KeyboardProfile(String),
-    /// Open the keyboard light's editor.
-    EditLights,
+    /// The Lighting page's automation shown or hidden.
+    LightingMore,
     /// The profile shown, in TOML, for the editor to start from.
     LightsRead(Result<String, String>),
     Lights(lights::Msg),
@@ -142,11 +182,12 @@ pub enum Message {
 
 impl App {
     /// `hidden` starts with only the tray, as at login.
-    pub fn new(session: bool, hidden: bool) -> (Self, Task<Message>) {
+    pub fn new(session: bool, hidden: bool, demo: bool) -> (Self, Task<Message>) {
         let mut app = Self {
             session,
+            demo,
             client: None,
-            status: None,
+            status: demo.then(|| Ok(crate::demo::status())),
             history: History::default(),
             charge_limit: None,
             error: None,
@@ -159,13 +200,29 @@ impl App {
             copied: false,
             lights: None,
             editing_lights: false,
+            lighting_more: false,
+            #[cfg(test)]
+            previews: Vec::new(),
             scenarios: None,
             editing_scenarios: false,
             power_color: None,
             power_hex: String::new(),
+            previewing: false,
+            next_preview: None,
+            laptop: None,
+            page: Page::Overview,
+            arrival: anim::arrived(),
+            now: Instant::now(),
         };
-        let connect = Task::perform(client::connect(session), Message::Connected);
-        if hidden {
+        let connect = Task::batch([
+            Task::perform(laptop::read(), Message::Laptop),
+            if demo {
+                Task::none()
+            } else {
+                Task::perform(client::connect(session), Message::Connected)
+            },
+        ]);
+        if hidden && !demo {
             (app, connect)
         } else {
             let open = app.open();
@@ -174,7 +231,72 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if self.demo
+            && let Some(Ok(status)) = &mut self.status
+        {
+            if crate::demo::apply(status, &message) {
+                return Task::none();
+            }
+            match message {
+                Message::Tick => {
+                    self.history.push(Instant::now(), status);
+                    return Task::none();
+                }
+                Message::ChargeLimitReleased => {
+                    status.charge_limit = self.charge_limit.take().or(status.charge_limit);
+                    return Task::none();
+                }
+                _ => {}
+            }
+        }
         match message {
+            Message::PageAt(at) => {
+                let Some(Ok(status)) = &self.status else {
+                    return Task::none();
+                };
+                match Page::ALL
+                    .into_iter()
+                    .filter(|page| page.shown(status))
+                    .nth(at)
+                {
+                    Some(page) if page != self.page => self.update(Message::Page(page)),
+                    _ => Task::none(),
+                }
+            }
+            Message::Frame(now) => {
+                self.now = now;
+                Task::none()
+            }
+            Message::Laptop(laptop) => {
+                if let Some(editor) = &mut self.lights {
+                    editor.set_laptop(Arc::clone(&laptop));
+                }
+                self.laptop = Some(laptop);
+                Task::none()
+            }
+            Message::Page(page) => {
+                self.editing_scenarios = false;
+                let from = std::mem::replace(&mut self.page, page);
+                // Another page comes in from its top.
+                let top = if from == page {
+                    Task::none()
+                } else {
+                    self.now = Instant::now();
+                    self.arrival = anim::arriving(self.now);
+                    iced::widget::operation::snap_to(
+                        pages::scroller(),
+                        iced::widget::scrollable::RelativeOffset::START,
+                    )
+                };
+                let rest = match page {
+                    Page::Lighting if from == Page::Lighting => Task::none(),
+                    Page::Lighting => self.open_lights(),
+                    // As when the window closes: the keyboard back to its
+                    // profile, what was left unsaved kept for the next time.
+                    _ => self.end_preview(),
+                };
+                Task::batch([top, rest])
+            }
             Message::Connected(Ok(client)) => {
                 self.client = Some(client);
                 self.refresh()
@@ -191,10 +313,14 @@ impl App {
                 if let Ok(status) = &*status {
                     self.history.push(Instant::now(), status);
                 }
+                let before = self.shown_lights();
                 self.status = Some(*status);
-                self.show_in_tray()
+                let follow = self.follow_keyboard(before);
+                let keep = self.keep_preview();
+                Task::batch([follow, keep, self.show_in_tray()])
             }
             Message::ModesChanged(modes) => {
+                let before = self.shown_lights();
                 if let Some(Ok(status)) = &mut self.status {
                     status.shift_mode = modes.shift_mode;
                     status.fan_mode = modes.fan_mode;
@@ -205,8 +331,11 @@ impl App {
                     status.scenarios = modes.scenarios;
                     status.keyboard_profile = modes.keyboard_profile;
                     status.keyboard_profiles = modes.keyboard_profiles;
+                    status.keyboard_previewing = modes.keyboard_previewing;
                 }
-                self.show_in_tray()
+                let follow = self.follow_keyboard(before);
+                let keep = self.keep_preview();
+                Task::batch([follow, keep, self.show_in_tray()])
             }
             Message::ShiftMode(mode) => {
                 self.call(move |client| async move { client.set_shift_mode(&mode).await })
@@ -230,6 +359,14 @@ impl App {
                 }
                 None => Task::none(),
             },
+            Message::Previewed(result) => {
+                self.previewing = false;
+                let next = match self.next_preview.take() {
+                    Some(profile) => self.preview(profile),
+                    None => Task::none(),
+                };
+                Task::batch([self.update(Message::Applied(result)), next])
+            }
             Message::Applied(result) => {
                 let told = match unseen(self.window, &result) {
                     Some(err) => Task::future(tray::notify(err)).discard(),
@@ -240,8 +377,13 @@ impl App {
                 self.copied = false;
                 Task::batch([told, self.refresh()])
             }
-            Message::Dark(dark) => {
-                self.dark = dark;
+            Message::Appearance(change) => {
+                match change {
+                    appearance::Change::Dark(dark) => self.dark = dark,
+                    appearance::Change::Accent(accent) => theme::set_accent(accent),
+                    appearance::Change::Reduced(reduced) => anim::set_reduced(reduced),
+                    appearance::Change::Other => theme::read_desktop(),
+                }
                 Task::none()
             }
             Message::TrayReady(tray) => {
@@ -253,6 +395,10 @@ impl App {
                 None => self.open(),
             },
             Message::WindowClosed(id) => {
+                // No tray to stay in.
+                if self.demo {
+                    return iced::exit();
+                }
                 if self.window == Some(id) {
                     self.window = None;
                     self.charge_limit = None;
@@ -261,16 +407,13 @@ impl App {
                     self.editing_scenarios = false;
                     // The keyboard back to its profile, what was left
                     // unsaved kept for the next time.
-                    if self.editing_lights {
-                        self.editing_lights = false;
-                        return self.preview(String::new());
-                    }
+                    return self.end_preview();
                 }
                 Task::none()
             }
             // The keyboard back to its profile first, rather than left
             // on what the editor shows, for the flash to keep at power-off.
-            Message::Quit if self.editing_lights => self.preview(String::new()).chain(iced::exit()),
+            Message::Quit if self.editing_lights => self.end_preview().chain(iced::exit()),
             Message::Quit => iced::exit(),
             Message::CurveFan(fan) => {
                 self.curve_fan = fan;
@@ -327,7 +470,7 @@ impl App {
                 Task::none()
             }
             Message::PowerHex(hex) => {
-                let valid = hex.parse::<ryukaze_core::keyboard::Color>().is_ok();
+                let valid = hex.parse::<ryukaze_core::lighting::Color>().is_ok();
                 self.power_hex = hex.clone();
                 match (&self.power_color, valid) {
                     (Some(name), true) => self.update(Message::PowerColor(name.clone(), hex)),
@@ -373,109 +516,30 @@ impl App {
             Message::KeyboardProfile(name) => {
                 self.call(move |client| async move { client.set_keyboard_profile(&name).await })
             }
-            // Back to what was left unsaved, or else from the profile shown.
-            Message::EditLights => {
-                if let Some(editor) = &self.lights
-                    && editor.unsaved()
-                {
-                    self.editing_lights = true;
-                    return self.preview(editor.preview());
-                }
-                match self.shown_lights() {
-                    Some(name) => self.read_lights(name),
-                    None => self.update(Message::LightsRead(Err(String::new()))),
-                }
+            Message::LightingMore => {
+                self.lighting_more = !self.lighting_more;
+                Task::none()
             }
             Message::LightsRead(read) => {
-                self.editing_lights = true;
                 match read.and_then(|profile| lights::Editor::from_toml(&profile)) {
-                    // Shown, unless the keyboard shows it already.
-                    Ok(editor) => {
-                        let shown = self.shown_lights().as_deref() == Some(editor.name());
-                        let profile = editor.preview();
-                        self.lights = Some(editor);
-                        if shown {
-                            Task::none()
-                        } else {
-                            self.preview(profile)
-                        }
-                    }
+                    Ok(editor) => self.lights = Some(self.on_laptop(editor)),
                     // Not read: what's open stays, rather than a blank one
                     // over it. Asked for nothing in particular, a blank one.
-                    Err(err) if !err.is_empty() && self.lights.is_some() => {
-                        self.error = Some(err);
-                        Task::none()
-                    }
-                    Err(_) => {
-                        let editor = lights::Editor::new();
-                        let profile = editor.preview();
-                        self.lights = Some(editor);
-                        self.preview(profile)
-                    }
+                    Err(err) if !err.is_empty() && self.lights.is_some() => self.error = Some(err),
+                    Err(_) => self.lights = Some(self.on_laptop(lights::Editor::new())),
                 }
+                Task::none()
             }
             Message::Lights(msg) => {
                 let Some(editor) = &mut self.lights else {
                     return Task::none();
                 };
-                match editor.update(msg) {
-                    lights::Outcome::Nothing => Task::none(),
-                    lights::Outcome::Preview(profile) => self.preview(profile),
-                    lights::Outcome::Save(profile) => {
-                        let Some(client) = self.client.clone() else {
-                            return Task::none();
-                        };
-                        Task::perform(
-                            async move {
-                                client
-                                    .save_keyboard_profile(&profile)
-                                    .await
-                                    .map_err(client::describe)
-                            },
-                            Message::LightsSaved,
-                        )
-                    }
-                    lights::Outcome::New => {
-                        // "profile 2" if there's a "profile 1", and so on.
-                        let names = match &self.status {
-                            Some(Ok(status)) => {
-                                status.keyboard_profiles.clone().unwrap_or_default()
-                            }
-                            _ => Vec::new(),
-                        };
-                        let name = (1..)
-                            .map(|n| format!("profile {n}"))
-                            .find(|name| !names.contains(name))
-                            .unwrap_or_default();
-                        let editor = lights::Editor::named(&name);
-                        let profile = editor.preview();
-                        self.lights = Some(editor);
-                        self.preview(profile)
-                    }
-                    lights::Outcome::Open(name) => self.read_lights(name),
-                    lights::Outcome::Delete(name) => {
-                        let Some(client) = self.client.clone() else {
-                            return Task::none();
-                        };
-                        Task::perform(
-                            async move {
-                                client
-                                    .delete_keyboard_profile(&name)
-                                    .await
-                                    .map_err(client::describe)
-                            },
-                            Message::LightsDeleted,
-                        )
-                    }
-                    lights::Outcome::Copy(nix) => iced::clipboard::write(nix),
-                    lights::Outcome::Done => {
-                        self.editing_lights = false;
-                        self.preview(String::new())
-                    }
-                }
+                let outcome = editor.update(msg);
+                self.lights_outcome(outcome)
             }
             // Back to what was left unsaved, or else from the daemon's.
             Message::EditScenarios => {
+                self.page = Page::System;
                 if self
                     .scenarios
                     .as_ref()
@@ -537,10 +601,10 @@ impl App {
             }
             Message::LightsDeleted(deleted) => {
                 match deleted {
+                    // The editor opens what the keyboard shows now, once the
+                    // status says.
                     Ok(()) => {
-                        if let Some(editor) = &mut self.lights {
-                            editor.deleted();
-                        }
+                        self.lights = None;
                         self.error = None;
                     }
                     Err(err) => self.error = Some(err),
@@ -548,16 +612,28 @@ impl App {
                 self.refresh()
             }
             Message::LightsSaved(saved) => {
-                match saved {
+                let next = match saved {
+                    // The daemon shows the profile saved, and picks it.
                     Ok(()) => {
-                        if let Some(editor) = &mut self.lights {
-                            editor.saved();
-                        }
                         self.error = None;
+                        self.editing_lights = false;
+                        match &mut self.lights {
+                            Some(editor) => {
+                                if let Some(Ok(status)) = &mut self.status {
+                                    status.keyboard_profile = Some(editor.name().to_owned());
+                                }
+                                editor.saved()
+                            }
+                            None => lights::Outcome::Nothing,
+                        }
                     }
-                    Err(err) => self.error = Some(err),
-                }
-                self.refresh()
+                    Err(err) => {
+                        self.error = Some(err);
+                        lights::Outcome::Nothing
+                    }
+                };
+                let next = self.lights_outcome(next);
+                Task::batch([next, self.refresh()])
             }
             Message::AutoCoolerBoost(on) => {
                 self.call(move |client| async move { client.set_auto_cooler_boost(on).await })
@@ -591,12 +667,49 @@ impl App {
             Message::GpuFollowsCpu(on) => {
                 self.call(move |client| async move { client.set_gpu_fan_follows_cpu(on).await })
             }
+            // With the saved keyboard profiles, read from the daemon first.
             Message::CopyAsNix => {
                 let Some(Ok(status)) = &self.status else {
                     return Task::none();
                 };
+                let saved = status.keyboard_saved_profiles.clone().unwrap_or_default();
+                match self.client.clone() {
+                    Some(client) if !saved.is_empty() => Task::perform(
+                        async move {
+                            let mut read = Vec::new();
+                            for name in saved {
+                                if let Ok(profile) = client.read_keyboard_profile(&name).await {
+                                    read.push(profile);
+                                }
+                            }
+                            read
+                        },
+                        Message::ProfilesRead,
+                    ),
+                    _ => self.update(Message::ProfilesRead(Vec::new())),
+                }
+            }
+            Message::CopiedGone => {
+                self.copied = false;
+                Task::none()
+            }
+            Message::ProfilesRead(profiles) => {
+                let Some(Ok(status)) = &self.status else {
+                    return Task::none();
+                };
+                let profiles = profiles
+                    .iter()
+                    .filter_map(|profile| lights::Editor::from_toml(profile).ok())
+                    .map(|editor| editor.nix_value())
+                    .collect();
                 self.copied = true;
-                iced::clipboard::write(crate::nix::settings(status, &curves(status)))
+                let copy =
+                    iced::clipboard::write(crate::nix::settings(status, &curves(status), profiles));
+                // The note says so for a moment, then what it said before.
+                let gone = Task::perform(async { tokio::time::sleep(COPIED_FOR).await }, |()| {
+                    Message::CopiedGone
+                });
+                Task::batch([copy, gone])
             }
         }
     }
@@ -617,346 +730,42 @@ impl App {
         } else {
             REFRESH_HIDDEN
         };
-        Subscription::batch([
+        let common = [
             iced::time::every(refresh).map(|_| Message::Tick),
-            Subscription::run_with(self.session, client::modes)
-                .map(|modes| Message::ModesChanged(Box::new(modes))),
-            Subscription::run(appearance::dark).map(Message::Dark),
-            Subscription::run(tray::run),
-            Subscription::run(instance::serve),
+            Subscription::run(appearance::changes).map(Message::Appearance),
             window::close_events().map(Message::WindowClosed),
-        ])
+            event::listen_with(hotkey),
+            if self.arrival.is_animating(self.now) {
+                window::frames().map(Message::Frame)
+            } else {
+                Subscription::none()
+            },
+        ];
+        if self.demo {
+            return Subscription::batch(common);
+        }
+        Subscription::batch(
+            common.into_iter().chain([
+                Subscription::run_with(self.session, client::modes)
+                    .map(|modes| Message::ModesChanged(Box::new(modes))),
+                Subscription::run(tray::run),
+                Subscription::run(instance::serve),
+            ]),
+        )
     }
 
-    /// iced's plain Light or Dark; the styles in theme.rs only ask which.
+    /// The desktop's colours, light or dark as it prefers (see theme.rs).
     pub fn theme(&self, _window: window::Id) -> Theme {
-        if theme::is_dark(self.dark) {
-            Theme::Dark
-        } else {
-            Theme::Light
-        }
+        theme::theme(theme::is_dark(self.dark))
     }
 
     pub fn view(&self, _window: window::Id) -> Element<'_, Message> {
-        responsive(move |size| self.page(size.width)).into()
-    }
-
-    /// The panels in as many columns as `width` takes, up to three: a
-    /// window tiled full width shows it all, a narrow one scrolls.
-    fn page(&self, width: f32) -> Element<'_, Message> {
-        let columns = ((width - 2.0 * PAGE_PADDING + GAP) / (COLUMN_MIN + GAP))
-            .floor()
-            .clamp(1.0, 3.0) as usize;
-        let firmware = match &self.status {
-            Some(Ok(status)) => status.firmware.clone().unwrap_or_default(),
-            _ => String::new(),
-        };
-        let header = row![
-            text("ryukaze").size(20),
-            space::horizontal(),
-            text(firmware).size(13).style(theme::muted),
-        ]
-        .align_y(Alignment::Center);
-
-        let max_width = columns as f32 * (COLUMN_MAX + GAP) - GAP;
-        let body: Element<'_, Message> = match &self.status {
-            None => text("Connecting…").style(theme::muted).into(),
-            Some(Err(err)) => banner(err),
-            Some(Ok(status))
-                if self.editing_lights
-                    && let Some(editor) = &self.lights =>
-            {
-                let inside = (width - 2.0 * PAGE_PADDING).min(max_width);
-                let (saved, standard) = keyboard_profiles(status);
-                let known = lights::Known { standard, saved };
-                editor.view(inside, &known).map(Message::Lights)
-            }
-            Some(Ok(status))
-                if self.editing_scenarios
-                    && let Some(editor) = &self.scenarios =>
-            {
-                let modes = scenarios::Modes {
-                    shift: status.shift_modes.as_deref().unwrap_or_default(),
-                    fan: status.fan_modes.as_deref().unwrap_or_default(),
-                    super_battery: status.super_battery.is_some(),
-                };
-                let inside = (width - 2.0 * PAGE_PADDING).min(max_width);
-                editor.view(inside, &modes).map(Message::Scenarios)
-            }
-            Some(Ok(status)) => self.sections(status, columns),
-        };
-
-        let mut page = column![header, body].spacing(16);
-        if let Some(err) = &self.error {
-            page = page.push(banner(err));
-        }
-        scrollable(
-            container(container(page).max_width(max_width))
-                .padding(PAGE_PADDING)
-                .center_x(Length::Fill),
-        )
-        .into()
-    }
-
-    /// The sections in `columns` columns: the readings and the modes first,
-    /// the fans next, the battery and the rest last; in one column, in that
-    /// order.
-    fn sections<'a>(&'a self, status: &'a Status, columns: usize) -> Element<'a, Message> {
-        let mut placed: Vec<Vec<Element<'a, Message>>> = (0..columns).map(|_| Vec::new()).collect();
-        // Which column a section goes to with three columns, and with two.
-        let mut put = |at: [usize; 2], section: Element<'a, Message>| {
-            let column = match columns {
-                3 => at[0],
-                2 => at[1],
-                _ => 0,
-            };
-            placed[column].push(section);
-        };
-
-        let gauges: Vec<Element<'a, Message>> = [
-            (Fan::Cpu, status.cpu_temp, status.cpu_fan, status.cpu_rpm),
-            (Fan::Gpu, status.gpu_temp, status.gpu_fan, status.gpu_rpm),
-        ]
-        .into_iter()
-        .filter_map(|(fan, temp, duty, rpm)| {
-            let graph = canvas(history::Graph {
-                history: &self.history,
-                series: Series::Sensor(fan),
-            })
-            .width(Length::Fill)
-            .height(64);
-            gauge(fan, temp, duty, rpm, graph)
-        })
-        .collect();
-        if !gauges.is_empty() {
-            put(
-                [0, 0],
-                section(
-                    "Sensors",
-                    column![
-                        row(gauges).spacing(24),
-                        text("The temperature, and the fan fainter, both from 0 to 100")
-                            .size(13)
-                            .style(theme::muted),
-                    ]
-                    .spacing(10),
-                ),
-            );
-        }
-
-        // In the config's order; none picked while the modes make none.
-        if let Some(scenarios) = &status.scenarios {
-            let current = status.scenario.as_deref().unwrap_or_default();
-            let mut scenario = column![grid(current, scenarios, 3, Message::Scenario)].spacing(10);
-            let sources = [
-                ("ac", "On AC", &status.ac_scenario),
-                ("battery", "On battery", &status.battery_scenario),
-            ];
-            let from_config: Vec<&str> = sources
-                .iter()
-                .filter(|(source, ..)| config_sets(status, &format!("profiles.{source}")))
-                .map(|(_, label, _)| *label)
-                .collect();
-            let picks: Vec<Element<'_, Message>> = sources
-                .into_iter()
-                .filter_map(|(source, label, picked)| {
-                    Some(source_pick(source, label, picked.as_deref()?, scenarios))
-                })
-                .collect();
-            scenario = scenario.push(cells(picks, 2));
-            if !from_config.is_empty() {
-                scenario = scenario.push(
-                    text(format!(
-                        "{}: set in the config, which sets it again at the next start",
-                        from_config.join(" and ")
-                    ))
-                    .size(12)
-                    .style(theme::muted),
-                );
-            }
-            scenario = scenario.push(row![
-                space::horizontal(),
-                small_button("Edit the scenarios", Message::EditScenarios),
-            ]);
-            put([0, 0], section("Scenario", scenario));
-        }
-
-        if let (Some(current), Some(modes)) = (&status.shift_mode, &status.shift_modes) {
-            let mut performance =
-                column![modes_row(current, modes, SHIFT_ORDER, Message::ShiftMode)].spacing(12);
-            if let Some(on) = status.power_profiles_sync {
-                performance = performance.push(switch(
-                    "In step with power-profiles-daemon",
-                    on,
-                    Message::PowerProfilesSync,
-                ));
-            }
-            put([0, 0], section("Performance", performance));
-        }
-
-        let mut fans = column![].spacing(12);
-        if let (Some(current), Some(modes)) = (&status.fan_mode, &status.fan_modes) {
-            fans = fans.push(modes_row(current, modes, FAN_ORDER, Message::FanMode));
-        }
-        if let Some(on) = status.cooler_boost {
-            fans = fans.push(switch("Cooler boost", on, Message::CoolerBoost));
-        }
-        if let Some(on) = status.auto_cooler_boost {
-            fans = fans.push(switch(
-                "Cooler boost when hot",
-                on,
-                Message::AutoCoolerBoost,
-            ));
-            if on && let Some(marks) = self.boost_marks.or(boost_marks(status)) {
-                fans = fans.push(marks_sliders(marks));
-            }
-        }
-        if status.fan_mode.as_deref() == Some("advanced")
-            && let Some(editor) = self.curve_editor(status)
-        {
-            fans = fans.push(editor);
-        }
-        put([1, 1], section("Fans", fans));
-
-        let mut battery = column![].spacing(12);
-        if let Some(summary) = battery_summary(status) {
-            battery = battery.push(summary);
-        }
-        if status.battery_watts.is_some() {
-            let top = self.history.top(Series::Power);
-            battery = battery.push(
-                column![
-                    canvas(history::Graph {
-                        history: &self.history,
-                        series: Series::Power,
-                    })
-                    .width(Length::Fill)
-                    .height(64),
-                    text(format!(
-                        "Watts out, and in fainter; the top line is {top:.0} W"
-                    ))
-                    .size(13)
-                    .style(theme::muted),
-                ]
-                .spacing(10),
-            );
-        }
-        if let Some(on) = status.super_battery {
-            battery = battery.push(switch("Super battery", on, Message::SuperBattery));
-        }
-        if let Some(limit) = self.charge_limit.or(status.charge_limit) {
-            battery = battery.push(charge_limit(limit));
-        }
-        put([2, 0], section("Battery", battery));
-
-        let mut devices = column![].spacing(12);
-        if let Some(on) = status.webcam {
-            devices = devices.push(switch("Camera", on, Message::Webcam));
-        }
-        if let Some(side) = &status.fn_key {
-            devices = devices.push(fn_key(side));
-        }
-        if let Some(on) = status.usb_share {
-            devices = devices.push(switch("Charge USB when off", on, Message::UsbShare));
-        }
-        if let Some(on) = status.local_dimming {
-            devices = devices.push(switch("Local dimming", on, Message::LocalDimming));
-        }
-        if status.keyboard_profiles.is_some() {
-            let current = status.keyboard_profile.as_deref().unwrap_or_default();
-            let (saved, standard) = keyboard_profiles(status);
-            let mut light = column![
-                row![
-                    text("Keyboard light").width(Length::Fill),
-                    small_button("Edit", Message::EditLights),
-                ]
-                .align_y(Alignment::Center),
-                grid(current, &standard, 5, Message::KeyboardProfile),
-            ]
-            .spacing(8);
-            if !saved.is_empty() {
-                light = light
-                    .push(text("Saved here").size(12).style(theme::muted))
-                    .push(grid(current, &saved, 5, Message::KeyboardProfile));
-            }
-            if let (Some(scenarios), Some(own)) = (&status.scenarios, &status.keyboard_scenarios) {
-                light = light.push(scenario_lights(scenarios, own, &standard, &saved));
-            }
-            if let Some(follows) = &status.power_light {
-                let hybrid = status.dgpu_awake.is_some();
-                light = light.push(power_light(follows, hybrid));
-                if let Some(on) = status.power_light_dgpu
-                    && hybrid
-                    && follows == "shift_mode"
-                {
-                    light = light.push(switch(
-                        "Show the dGPU waking, for five seconds",
-                        on,
-                        Message::PowerLightDgpu,
-                    ));
-                }
-                if follows != "profile" {
-                    light = light.push(power_colors(
-                        status,
-                        follows,
-                        self.power_color.as_deref(),
-                        &self.power_hex,
-                    ));
-                }
-            }
-            if let Some(on) = status.numpad_follows_numlock {
-                light = light.push(switch(
-                    "Numpad dark while NumLock is off",
-                    on,
-                    Message::NumpadFollowsNumlock,
-                ));
-            }
-            devices = devices.push(light);
-        }
-        if status.webcam.is_some()
-            || status.fn_key.is_some()
-            || status.usb_share.is_some()
-            || status.local_dimming.is_some()
-            || status.keyboard_profiles.is_some()
-        {
-            put([2, 1], section("Devices", devices));
-        }
-
-        let mut graphics = column![].spacing(12);
-        if let (Some(now), Some(next)) = (&status.gpu_mode, &status.gpu_mode_next) {
-            graphics = graphics.push(gpu_mode(now, next));
-        }
-        if let Some(dgpu) = dgpu(status) {
-            graphics = graphics.push(dgpu);
-        }
-        if status.gpu_mode.is_some() || status.dgpu_awake.is_some() {
-            put([2, 1], section("Graphics", graphics));
-        }
-
-        let hint = if self.copied {
-            "Copied, for services.ryukaze.settings".to_owned()
-        } else {
-            kept_hint(status)
-        };
-        let footer = row![
-            text(hint).size(12).style(theme::muted).width(Length::Fill),
-            small_button("Copy as Nix", Message::CopyAsNix),
-        ]
-        .spacing(6)
-        .padding([0, 4])
-        .align_y(Alignment::Center);
-
-        let columns = placed
-            .into_iter()
-            .map(|sections| column(sections).spacing(GAP).width(Length::Fill).into());
-        column![row(columns).spacing(GAP), footer]
-            .spacing(GAP)
-            .into()
+        responsive(move |size| self.layout(size.width)).into()
     }
 
     fn open(&mut self) -> Task<Message> {
         let (id, opened) = window::open(window::Settings {
-            size: (420.0, 700.0).into(),
+            size: (880.0, 680.0).into(),
             min_size: Some((360.0, 420.0).into()),
             icon: icon::window(),
             platform_specific: window::settings::PlatformSpecific {
@@ -988,21 +797,15 @@ impl App {
             Fan::Gpu => status.gpu_temp.zip(status.gpu_fan),
         };
 
-        let tabs = row(Fan::ALL.map(|fan| {
-            let chosen = fan == self.curve_fan;
-            button(
-                text(fan.to_string().to_uppercase())
-                    .size(13)
-                    .width(Length::Fill)
-                    .center(),
-            )
-            .on_press_maybe((!chosen).then_some(Message::CurveFan(fan)))
-            .padding([4, 12])
-            .width(72)
-            .style(theme::segment(chosen))
-            .into()
-        }))
-        .spacing(6);
+        let tabs = container(choices(
+            Fan::ALL
+                .map(|fan| (fan.to_string().to_uppercase(), Message::CurveFan(fan)))
+                .into(),
+            Fan::ALL.iter().position(|&fan| fan == self.curve_fan),
+            Fan::ALL.len(),
+            true,
+        ))
+        .width(152);
         let adaptive = status.adaptive_fans.unwrap_or(false);
         let graph = canvas(crate::curve::Editor {
             curve,
@@ -1013,7 +816,7 @@ impl App {
         .height(200);
         let hint = "Drag a dot: sideways for where a step starts, up or down for its speed";
         let actions = row![
-            text(hint).size(12).style(theme::muted).width(Length::Fill),
+            text(hint).size(14).style(theme::muted).width(Length::Fill),
             small_button("Reset", Message::CurveReset),
         ]
         .spacing(6)
@@ -1036,8 +839,6 @@ impl App {
         })
     }
 
-    /// Shows a profile from the editor on the keyboard; empty, the one
-    /// picked again.
     /// The keyboard light's profile shown.
     fn shown_lights(&self) -> Option<String> {
         match &self.status {
@@ -1062,8 +863,197 @@ impl App {
         )
     }
 
-    fn preview(&self, profile: String) -> Task<Message> {
-        self.call(move |client| async move { client.preview_keyboard_profile(&profile).await })
+    /// `editor` for this laptop, once it's read.
+    fn on_laptop(&self, mut editor: lights::Editor) -> lights::Editor {
+        if let Some(laptop) = &self.laptop {
+            editor.set_laptop(Arc::clone(laptop));
+        }
+        editor
+    }
+
+    /// Whether it runs NixOS, once that's known.
+    fn nixos(&self) -> bool {
+        self.laptop
+            .as_ref()
+            .is_some_and(|laptop| laptop.machine.nixos)
+    }
+
+    /// The profile `name` in the editor: the daemon's, or without one a
+    /// standard one by its name.
+    fn load_lights(&mut self, name: Option<String>) -> Task<Message> {
+        if self.client.is_none() {
+            self.lights = Some(self.on_laptop(lights::Editor::standard(
+                name.as_deref().unwrap_or("custom"),
+            )));
+            return Task::none();
+        }
+        match name {
+            Some(name) => self.read_lights(name),
+            None => self.update(Message::LightsRead(Err(String::new()))),
+        }
+    }
+
+    /// The Lighting page opened: what was left unsaved shown again, or else
+    /// the profile on the keyboard, which shows it already.
+    fn open_lights(&mut self) -> Task<Message> {
+        let shown = self.shown_lights();
+        match &self.lights {
+            Some(editor) if editor.unsaved() => {
+                let profile = editor.preview();
+                self.editing_lights = true;
+                self.preview(profile)
+            }
+            Some(editor) if shown.as_deref() == Some(editor.name()) => Task::none(),
+            _ => self.load_lights(shown),
+        }
+    }
+
+    /// The profile on the keyboard changed from `before`, by the daemon: an
+    /// unsaved edit shown again over it, else the editor follows it.
+    fn follow_keyboard(&mut self, before: Option<String>) -> Task<Message> {
+        let now = self.shown_lights();
+        let Some(editor) = &self.lights else {
+            return if self.page == Page::Lighting {
+                self.load_lights(now)
+            } else {
+                Task::none()
+            };
+        };
+        if now == before {
+            return Task::none();
+        }
+        if editor.unsaved() {
+            if !self.editing_lights {
+                return Task::none();
+            }
+            let profile = editor.preview();
+            return self.preview(profile);
+        }
+        if self.page == Page::Lighting {
+            self.load_lights(now)
+        } else {
+            Task::none()
+        }
+    }
+
+    /// The keyboard back to its profile, if the editor's changes are on it.
+    fn end_preview(&mut self) -> Task<Message> {
+        if !self.editing_lights {
+            return Task::none();
+        }
+        self.editing_lights = false;
+        self.preview(String::new())
+    }
+
+    /// What the editor asks for, done.
+    fn lights_outcome(&mut self, outcome: lights::Outcome) -> Task<Message> {
+        match outcome {
+            lights::Outcome::Nothing => Task::none(),
+            lights::Outcome::Preview(profile) => {
+                self.editing_lights = true;
+                self.preview(profile)
+            }
+            lights::Outcome::Save(profile) => {
+                let Some(client) = self.client.clone() else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        client
+                            .save_keyboard_profile(&profile)
+                            .await
+                            .map_err(client::describe)
+                    },
+                    Message::LightsSaved,
+                )
+            }
+            lights::Outcome::New => {
+                // "profile 2" if there's a "profile 1", and so on.
+                let names = match &self.status {
+                    Some(Ok(status)) => status.keyboard_profiles.clone().unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                let name = (1..)
+                    .map(|n| format!("profile {n}"))
+                    .find(|name| !names.contains(name))
+                    .unwrap_or_default();
+                let editor = self.on_laptop(lights::Editor::fresh(&name));
+                let profile = editor.preview();
+                self.lights = Some(editor);
+                self.editing_lights = true;
+                self.preview(profile)
+            }
+            // Picked, shown on the keyboard as it is, and opened.
+            lights::Outcome::Open(name) => {
+                let back = self.end_preview();
+                if let Some(Ok(status)) = &mut self.status {
+                    status.keyboard_profile = Some(name.clone());
+                }
+                let picked = name.clone();
+                let pick = self
+                    .call(move |client| async move { client.set_keyboard_profile(&picked).await });
+                let load = self.load_lights(Some(name));
+                Task::batch([back.chain(pick), load])
+            }
+            lights::Outcome::Delete(name) => {
+                let back = self.end_preview();
+                let Some(client) = self.client.clone() else {
+                    return back;
+                };
+                back.chain(Task::perform(
+                    async move {
+                        client
+                            .delete_keyboard_profile(&name)
+                            .await
+                            .map_err(client::describe)
+                    },
+                    Message::LightsDeleted,
+                ))
+            }
+            lights::Outcome::Revert => {
+                let back = self.end_preview();
+                let load = self.load_lights(self.shown_lights());
+                Task::batch([back, load])
+            }
+        }
+    }
+
+    /// Shows a profile from the editor on the keyboard; empty, the one
+    /// picked again. One at a time: those asked for meanwhile wait, and
+    /// only the last goes, so a quick run of changes doesn't pile up on
+    /// the controller.
+    fn preview(&mut self, profile: String) -> Task<Message> {
+        #[cfg(test)]
+        self.previews.push(profile.clone());
+        if self.previewing {
+            self.next_preview = Some(profile);
+            return Task::none();
+        }
+        let Some(client) = self.client.clone() else {
+            return Task::none();
+        };
+        self.previewing = true;
+        Task::perform(
+            async move { client.preview_keyboard_profile(&profile).await },
+            |result| Message::Previewed(result.map_err(client::describe)),
+        )
+    }
+
+    /// An unsaved edit taken off the keyboard by the daemon, as a new
+    /// scenario does: shown again.
+    fn keep_preview(&mut self) -> Task<Message> {
+        let dropped = matches!(
+            &self.status,
+            Some(Ok(status)) if status.keyboard_previewing == Some(false)
+        );
+        if !self.editing_lights || !dropped || self.previewing {
+            return Task::none();
+        }
+        let Some(editor) = &self.lights else {
+            return Task::none();
+        };
+        let profile = editor.preview();
+        self.preview(profile)
     }
 
     fn call<F, Fut>(&self, call: F) -> Task<Message>
@@ -1096,33 +1086,20 @@ pub fn ordered<'a>(modes: &'a [String], order: &[&str]) -> Vec<&'a String> {
     modes
 }
 
-fn section<'a>(title: &'a str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    let title = text(title.to_uppercase()).size(12).style(theme::muted);
-    container(column![title, content.into()].spacing(10))
-        .padding(16)
-        .width(Length::Fill)
-        .style(theme::card)
-        .into()
-}
-
 fn modes_row<'a>(
     current: &str,
     modes: &'a [String],
     order: &[&str],
     pick: fn(String) -> Message,
 ) -> Element<'a, Message> {
-    let mut buttons = row![].spacing(6);
-    for mode in ordered(modes, order) {
-        let chosen = mode == current;
-        buttons = buttons.push(
-            button(text(capitalize(mode)).width(Length::Fill).center())
-                .on_press_maybe((!chosen).then(|| pick(mode.clone())))
-                .padding([8, 12])
-                .width(Length::Fill)
-                .style(theme::segment(chosen)),
-        );
-    }
-    buttons.into()
+    let modes = ordered(modes, order);
+    let chosen = modes.iter().position(|&mode| mode == current);
+    let across = modes.len();
+    let labels = modes
+        .into_iter()
+        .map(|mode| (capitalize(mode), pick(mode.clone())))
+        .collect();
+    choices(labels, chosen, across, false)
 }
 
 /// The charge, what the battery is doing, and how worn it is.
@@ -1140,10 +1117,10 @@ fn battery_summary<'a>(status: &Status) -> Option<Element<'a, Message>> {
             row![
                 text(format!("{level}%")).size(26),
                 space::horizontal(),
-                text(health).size(13).style(theme::muted),
+                text(health).size(14).style(theme::muted),
             ]
             .align_y(Alignment::Center),
-            text(doing).size(13).style(theme::muted),
+            text(doing).size(14).style(theme::muted),
         ]
         .spacing(2)
         .into(),
@@ -1153,33 +1130,28 @@ fn battery_summary<'a>(status: &Status) -> Option<Element<'a, Message>> {
 /// Where Fn sits: a choice of two rather than a "swap", which would depend
 /// on where it started.
 fn fn_key<'a>(side: &str) -> Element<'a, Message> {
-    let choice = |value: &str, label| segment(label, side == value, Message::FnKey(value.into()));
-    column![
-        text("Fn key"),
-        row![
-            choice("left", "Left of Win"),
-            choice("right", "Right of Win")
-        ]
-        .spacing(6),
-    ]
-    .spacing(8)
-    .into()
+    let sides = [("left", "Left of Win"), ("right", "Right of Win")];
+    let labels = sides
+        .map(|(value, label)| (label.to_owned(), Message::FnKey(value.into())))
+        .into();
+    let chosen = sides.iter().position(|&(value, _)| value == side);
+    column![text("Fn key"), choices(labels, chosen, sides.len(), false)]
+        .spacing(8)
+        .into()
 }
 
 /// The MUX. The choice is the mode after a restart: a pick changes nothing
 /// before that.
-fn gpu_mode<'a>(now: &str, next: &str) -> Element<'a, Message> {
-    let choice = |value: &str, label| segment(label, next == value, Message::GpuMode(value.into()));
-    let hint = if now != next {
-        format!("Switches to {next} at the next restart")
-    } else if now == "hybrid" {
-        "The iGPU drives the screen; the dGPU wakes when needed".to_owned()
-    } else {
-        "The dGPU drives the screen and stays awake".to_owned()
+fn gpu_mode<'a>(now: &str, next: &str, modes: &[String]) -> Element<'a, Message> {
+    let hint = match now {
+        _ if now != next => format!("Switches to {next} at the next restart"),
+        "hybrid" => "The iGPU drives the screen; the dGPU wakes when needed".to_owned(),
+        "integrated" => "The iGPU drives the screen; the dGPU is off".to_owned(),
+        _ => "The dGPU drives the screen and stays awake".to_owned(),
     };
     column![
-        row![choice("hybrid", "Hybrid"), choice("discrete", "Discrete")].spacing(6),
-        text(hint).size(13).style(theme::muted),
+        grid(next, modes, modes.len(), Message::GpuMode),
+        text(hint).size(14).style(theme::muted),
     ]
     .spacing(8)
     .into()
@@ -1188,7 +1160,7 @@ fn gpu_mode<'a>(now: &str, next: &str) -> Element<'a, Message> {
 /// Whether the dGPU sleeps, for how long, and who keeps it up.
 fn dgpu<'a>(status: &Status) -> Option<Element<'a, Message>> {
     let awake = status.dgpu_awake?;
-    let line = text(format!("dGPU {}", report::dgpu_state(status)?)).size(13);
+    let line = text(format!("dGPU {}", report::dgpu_state(status)?)).size(14);
     Some(
         if awake {
             line
@@ -1200,34 +1172,26 @@ fn dgpu<'a>(status: &Status) -> Option<Element<'a, Message>> {
 }
 
 fn small_button<'a>(label: &'a str, press: Message) -> Element<'a, Message> {
-    button(text(label).size(13))
+    button(text(label).size(14))
         .on_press(press)
         .padding([4, 12])
-        .style(theme::segment(false))
-        .into()
+        .hover(theme::segment(false))
 }
 
 /// What the power button's light follows: the profile, the shift mode, or
 /// on a hybrid laptop the dGPU.
 fn power_light<'a>(follows: &str, hybrid: bool) -> Element<'a, Message> {
-    let mut choices = row![text("Power button").size(13).width(110)]
-        .spacing(4)
-        .align_y(Alignment::Center);
     let mut options = vec![("profile", "The profile's"), ("shift_mode", "The mode")];
     if hybrid {
         options.push(("dgpu", "The dGPU"));
     }
-    for (value, label) in options {
-        let chosen = follows == value;
-        choices = choices.push(
-            button(text(label).size(13).width(Length::Fill).center())
-                .on_press_maybe((!chosen).then(|| Message::PowerLight(value)))
-                .padding([4, 4])
-                .width(Length::Fill)
-                .style(theme::segment(chosen)),
-        );
-    }
-    choices.into()
+    let chosen = options.iter().position(|&(value, _)| value == follows);
+    let across = options.len();
+    let labels = options
+        .into_iter()
+        .map(|(value, label)| (label.to_owned(), Message::PowerLight(value)))
+        .collect();
+    choices(labels, chosen, across, true)
 }
 
 /// The power button's colours for what it follows: the shift modes', and
@@ -1253,7 +1217,7 @@ fn power_colors<'a>(
     }
     let swatch = |color: Option<&String>, size: f32| {
         let color = color
-            .and_then(|hex| hex.parse::<ryukaze_core::keyboard::Color>().ok())
+            .and_then(|hex| hex.parse::<ryukaze_core::lighting::Color>().ok())
             .map_or(iced::Color::TRANSPARENT, lights::led);
         container(space().width(size).height(size)).style(move |theme: &Theme| container::Style {
             background: Some(color.into()),
@@ -1269,13 +1233,13 @@ fn power_colors<'a>(
         let chosen = open == Some(name.as_str());
         cells = cells.push(
             button(
-                row![swatch(colors.get(name), 14.0), text(label.clone()).size(13)]
+                row![swatch(colors.get(name), 14.0), text(label.clone()).size(14)]
                     .spacing(6)
                     .align_y(Alignment::Center),
             )
             .on_press(Message::EditPowerColor(name.clone()))
             .padding([4, 8])
-            .style(theme::segment(chosen)),
+            .hover(theme::segment(chosen)),
         );
     }
     let mut column = column![cells.wrap().vertical_spacing(4)].spacing(6);
@@ -1284,8 +1248,9 @@ fn power_colors<'a>(
     {
         let mut palette = row![
             text_input("#rrggbb", hex)
+                .style(theme::field)
                 .on_input(Message::PowerHex)
-                .size(13)
+                .size(14)
                 .width(90),
         ]
         .spacing(6)
@@ -1344,9 +1309,7 @@ fn scenario_lights<'a>(
             )
         })
         .collect();
-    column![text("In the scenarios").size(13), cells(lists, 2)]
-        .spacing(6)
-        .into()
+    cells(lists, 2)
 }
 
 /// What a change here lasts: until the next start for what the config
@@ -1453,18 +1416,19 @@ fn pick<'a>(
     shown: Choice,
     on: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
-    pick_list(options, Some(shown), move |choice: Choice| on(choice.value))
-        .text_size(13)
-        .padding([4, 8])
-        .width(Length::Fill)
-        .style(theme::pick)
-        .menu_style(theme::menu)
-        .into()
+    anim::dropdown(
+        pick_list(options, Some(shown), move |choice: Choice| on(choice.value))
+            .text_size(15)
+            .padding([6, 10])
+            .width(Length::Fill),
+        theme::pick,
+        theme::menu,
+    )
 }
 
 /// A muted label over what it names.
 fn labelled<'a>(label: String, what: Element<'a, Message>) -> Element<'a, Message> {
-    column![text(label).size(12).style(theme::muted), what]
+    column![text(label).size(14).style(theme::muted), what]
         .spacing(4)
         .width(Length::Fill)
         .into()
@@ -1472,10 +1436,10 @@ fn labelled<'a>(label: String, what: Element<'a, Message>) -> Element<'a, Messag
 
 /// In rows of `across`, each as wide.
 fn cells<'a>(cells: Vec<Element<'a, Message>>, across: usize) -> Element<'a, Message> {
-    let mut rows = column![].spacing(8);
+    let mut rows = column![].spacing(CELL_GAP);
     let mut cells = cells.into_iter().peekable();
     while cells.peek().is_some() {
-        let mut line = row![].spacing(8);
+        let mut line = row![].spacing(CELL_GAP);
         for _ in 0..across {
             line = match cells.next() {
                 Some(cell) => line.push(cell),
@@ -1499,43 +1463,108 @@ pub fn keyboard_profiles(status: &Status) -> (Vec<String>, Vec<String>) {
         .partition(|name| saved.contains(name))
 }
 
-/// Choices in rows of `across`, every button as wide; the chosen one is
-/// filled and does nothing.
+/// Choices in rows of `across`, every button as wide.
 fn grid<'a>(
     current: &str,
     names: &[String],
     across: usize,
     pick: fn(String) -> Message,
 ) -> Element<'a, Message> {
-    let buttons = names
+    let chosen = names.iter().position(|name| name == current);
+    let labels = names
         .iter()
-        .map(|name| {
-            let chosen = name == current;
-            button(text(capitalize(name)).width(Length::Fill).center())
-                .on_press_maybe((!chosen).then(|| pick(name.clone())))
-                .padding([8, 4])
-                .width(Length::Fill)
-                .style(theme::segment(chosen))
-                .into()
-        })
+        .map(|name| (capitalize(name), pick(name.clone())))
         .collect();
-    cells(buttons, across)
+    choices(labels, chosen, across, false)
 }
 
-/// One of a row of choices; the chosen one is filled and does nothing.
-fn segment<'a>(label: &'a str, chosen: bool, pick: Message) -> Element<'a, Message> {
-    button(text(label).width(Length::Fill).center())
-        .on_press_maybe((!chosen).then_some(pick))
-        .padding([8, 12])
+/// Choices in rows of `across`, every button as wide, smaller text where
+/// `small`; the chosen one does nothing, and its fill slides to it.
+fn choices<'a>(
+    labels: Vec<(String, Message)>,
+    chosen: Option<usize>,
+    across: usize,
+    small: bool,
+) -> Element<'a, Message> {
+    let count = labels.len();
+    let labels_id: Vec<&str> = labels.iter().map(|(label, _)| label.as_str()).collect();
+    let labels_id = labels_id.join("\u{1f}");
+    let across = across.clamp(1, count.max(1));
+    let buttons = labels
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, pick))| {
+            let is_chosen = chosen == Some(index);
+            let label = text(label).width(Length::Fill).center();
+            let (label, padding) = if small {
+                (label.size(14), [4, 8])
+            } else {
+                (label, [8, 4])
+            };
+            button(label)
+                .on_press_maybe((!is_chosen).then_some(pick))
+                .padding(padding)
+                .width(Length::Fill)
+                .hover(theme::choice(is_chosen))
+        })
+        .collect();
+    let fills = anim::Choices {
+        id: anim::id(&labels_id),
+        count,
+        across,
+        chosen,
+        gap: CELL_GAP,
+    };
+    Stack::new()
         .width(Length::Fill)
-        .style(theme::segment(chosen))
+        .push(cells(buttons, across))
+        .push_under(canvas(fills).width(Length::Fill).height(Length::Fill))
         .into()
 }
 
-/// The whole row toggles, label included; a click on the switch itself is
-/// the switch's, so it doesn't toggle twice.
+/// Ctrl and a digit, unless a field took it: the page that far down the
+/// sidebar.
+fn hotkey(event: iced::Event, status: event::Status, _window: window::Id) -> Option<Message> {
+    use keyboard::key::{Code, Physical};
+    const DIGITS: [Code; 9] = [
+        Code::Digit1,
+        Code::Digit2,
+        Code::Digit3,
+        Code::Digit4,
+        Code::Digit5,
+        Code::Digit6,
+        Code::Digit7,
+        Code::Digit8,
+        Code::Digit9,
+    ];
+    let (
+        event::Status::Ignored,
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            physical_key: Physical::Code(code),
+            modifiers,
+            ..
+        }),
+    ) = (status, event)
+    else {
+        return None;
+    };
+    if modifiers != keyboard::Modifiers::CTRL {
+        return None;
+    }
+    DIGITS
+        .iter()
+        .position(|&digit| digit == code)
+        .map(Message::PageAt)
+}
+
+/// The whole row toggles, label included.
 fn switch<'a>(label: &'a str, on: bool, toggle: fn(bool) -> Message) -> Element<'a, Message> {
-    let switch = toggler(on).on_toggle(toggle).size(22).style(theme::switch);
+    let switch = canvas(anim::Switch {
+        on,
+        id: anim::id(label),
+    })
+    .width(anim::SWITCH.width)
+    .height(anim::SWITCH.height);
     mouse_area(row![text(label), space::horizontal(), switch].align_y(Alignment::Center))
         .on_press(toggle(!on))
         .interaction(mouse::Interaction::Pointer)
@@ -1560,7 +1589,7 @@ fn gauge<'a>(
         None => text("–").size(26).style(theme::muted),
     };
     let name = sensor.to_string().to_uppercase();
-    let mut gauge = column![text(name).size(13).style(theme::muted), reading].spacing(2);
+    let mut gauge = column![text(name).size(14).style(theme::muted), reading].spacing(2);
     if let Some(fan) = fan {
         gauge = gauge.push(
             column![
@@ -1568,7 +1597,7 @@ fn gauge<'a>(
                     Some(rpm) => format!("Fan {fan}% · {rpm} rpm"),
                     None => format!("Fan {fan}%"),
                 })
-                .size(13)
+                .size(14)
                 .style(theme::muted),
                 progress_bar(0.0..=100.0, f32::from(fan))
                     .girth(4)
@@ -1594,7 +1623,7 @@ fn charge_limit<'a>(percent: u8) -> Element<'a, Message> {
             .step(5u8)
             .on_release(Message::ChargeLimitReleased)
             .style(theme::level),
-        text(resumes).size(13).style(theme::muted),
+        text(resumes).size(14).style(theme::muted),
     ]
     .spacing(8)
     .into()
@@ -1623,7 +1652,7 @@ fn marks_sliders<'a>((cpu, gpu): (u8, u8)) -> Element<'a, Message> {
         mark("CPU", Fan::Cpu, cpu),
         mark("GPU", Fan::Gpu, gpu),
         text("On after 6 s at its mark, off after 10 s with both 10 °C under theirs")
-            .size(13)
+            .size(14)
             .style(theme::muted),
     ]
     .spacing(8)
@@ -1666,11 +1695,13 @@ pub fn capitalize(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced_test::simulator;
+    use iced_test::{Simulator, simulator};
+    use ryukaze_core::lighting::Color;
 
     fn app(status: Status) -> App {
         App {
             session: true,
+            demo: false,
             client: None,
             status: Some(Ok(status)),
             history: History::default(),
@@ -1685,10 +1716,199 @@ mod tests {
             copied: false,
             lights: None,
             editing_lights: false,
+            lighting_more: false,
+            previews: Vec::new(),
             scenarios: None,
             editing_scenarios: false,
             power_color: None,
             power_hex: String::new(),
+            previewing: false,
+            next_preview: None,
+            laptop: Some(Laptop::any()),
+            page: Page::Overview,
+            arrival: anim::arrived(),
+            now: Instant::now(),
+        }
+    }
+
+    /// The readme's window and keyboard light editor, as the demo's laptop
+    /// has them after ten minutes, into target/shots: `cargo test -p
+    /// ryukaze screenshots -- --ignored`, with `XDG_CONFIG_HOME` and
+    /// `XDG_CONFIG_DIRS` at an empty directory for the built-in colours.
+    #[test]
+    #[ignore]
+    fn screenshots() {
+        use iced::{
+            Size,
+            advanced::renderer::{Headless as _, Style},
+        };
+        use iced_runtime::{UserInterface, user_interface};
+        use resvg::tiny_skia::{IntSize, Pixmap};
+
+        const SCALE: f32 = 2.0;
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/shots");
+        std::fs::create_dir_all(&out).unwrap();
+        let mut renderer = crate::osd::software_renderer().unwrap();
+        let laptop = Arc::new(Laptop {
+            machine: crate::machine::Machine {
+                model: Some("Titan 18 HX".into()),
+                board: Some("MS-1824".into()),
+                os: Some("NixOS".into()),
+                nixos: true,
+                ..Default::default()
+            },
+            layout: Arc::new(crate::layouts::built_in("ms-1824.toml")),
+            logo: crate::bootlogo::read(),
+        });
+
+        // Ten minutes of readings, every two seconds, rising and falling.
+        let status = crate::demo::status();
+        let ten_minutes = || {
+            let mut history = History::default();
+            let start = Instant::now() - Duration::from_secs(600);
+            for tick in 0..300u32 {
+                let (cpu, gpu) = ((tick as f32 / 23.0).sin(), (tick as f32 / 31.0).cos());
+                let mut now = status.clone();
+                now.cpu_temp = Some((62.0 + 14.0 * cpu) as u8);
+                now.cpu_fan = Some((45.0 + 20.0 * cpu) as u8);
+                now.gpu_temp = Some((50.0 + 8.0 * gpu) as u8);
+                now.gpu_fan = Some((35.0 + 10.0 * gpu) as u8);
+                history.push(start + Duration::from_secs(2 * u64::from(tick)), &now);
+            }
+            history
+        };
+
+        // Drawn on the page's colour, cut below where it ends where `trim`.
+        let mut shoot =
+            |element: Element<'_, Message>, theme: &Theme, size: Size, name: &str, trim: bool| {
+                let background = theme::colors(theme).background;
+                let mut ui = UserInterface::build(
+                    element,
+                    size,
+                    user_interface::Cache::default(),
+                    &mut renderer,
+                );
+                ui.draw(
+                    &mut renderer,
+                    theme,
+                    &Style {
+                        text_color: theme::colors(theme).text,
+                    },
+                    mouse::Cursor::Unavailable,
+                );
+                let width = (size.width * SCALE) as u32;
+                let mut height = (size.height * SCALE) as u32;
+                let mut pixels = renderer.screenshot(Size::new(width, height), SCALE, background);
+                if trim {
+                    let page = background.into_rgba8();
+                    let row = (width * 4) as usize;
+                    let used = pixels
+                        .chunks(row)
+                        .rposition(|line| line.chunks(4).any(|pixel| pixel != page))
+                        .map_or(0, |last| last + 1);
+                    height = (used as u32 + (PAGE_PADDING * SCALE) as u32).min(height);
+                    pixels.truncate(height as usize * row);
+                }
+                Pixmap::from_vec(pixels, IntSize::from_wh(width, height).unwrap())
+                    .unwrap()
+                    .save_png(out.join(name))
+                    .unwrap();
+            };
+        for (dark, mode) in [(false, "light"), (true, "dark")] {
+            let mut app = App {
+                dark,
+                history: ten_minutes(),
+                laptop: Some(Arc::clone(&laptop)),
+                demo: true,
+                ..on(Page::Overview, status.clone())
+            };
+            let theme = app.theme(window::Id::unique());
+            shoot(
+                app.view(window::Id::unique()),
+                &theme,
+                Size::new(880.0, 680.0),
+                &format!("window-{mode}.png"),
+                false,
+            );
+            // The editor alone, over a wave.
+            if let Some(Ok(status)) = &mut app.status {
+                status.keyboard_profile = Some("wave".into());
+            }
+            let _ = app.update(Message::Page(Page::Lighting));
+            let Some(Ok(status)) = &app.status else {
+                unreachable!("the demo's status");
+            };
+            let (saved, standard) = keyboard_profiles(status);
+            let known = lights::Known {
+                standard,
+                saved,
+                shown: status.keyboard_profile.clone(),
+                parts: lights::parts(status.lighting_parts.as_deref()),
+                previewing: false,
+            };
+            // Every colour of the wave across the keys, one of them open.
+            let wave = "name = \"wave\"\neffect = \"wave\"\norigin = \"left\"\nwavelength = 15\n\
+                 colors = [\"#ff0000\", \"#ffff00\", \"#00ff00\", \"#00ffff\", \"#0000ff\", \"#ff00ff\"]\n".to_string();
+            let mut editor = app.on_laptop(lights::Editor::from_toml(&wave).unwrap());
+            let _ = editor.update(lights::Msg::Slot(lights::Slot::Round(0)));
+            app.lights = Some(editor);
+            let editor = app.lights.as_ref().unwrap();
+            let width = 640.0;
+            let element = container(editor.view(width, &known).map(Message::Lights))
+                .padding(PAGE_PADDING)
+                .width(width + 2.0 * PAGE_PADDING)
+                .into();
+            shoot(
+                element,
+                &theme,
+                Size::new(width + 2.0 * PAGE_PADDING, 2400.0),
+                &format!("lights-{mode}.png"),
+                true,
+            );
+        }
+    }
+
+    /// Previews asked for while one is on its way: only the last goes,
+    /// once it's there.
+    #[test]
+    fn sends_only_the_last_preview_of_a_run() {
+        let mut app = on(Page::Lighting, alpha17());
+        app.previewing = true;
+        let _ = app.preview("a".into());
+        let _ = app.preview("b".into());
+        assert_eq!(app.next_preview.as_deref(), Some("b"));
+        let _ = app.update(Message::Previewed(Ok(())));
+        assert!(app.next_preview.is_none());
+        assert_eq!(app.previews.last().map(String::as_str), Some("b"));
+    }
+
+    /// An unsaved edit the daemon took off the keyboard, for a new
+    /// scenario, goes back on.
+    #[test]
+    fn shows_an_edit_again_when_the_daemon_drops_it() {
+        let mut app = on(Page::Lighting, alpha17());
+        app.lights = Some(lights::Editor::new());
+        app.editing_lights = true;
+        let sent = app.previews.len();
+        let dropped = Status {
+            keyboard_previewing: Some(false),
+            ..alpha17()
+        };
+        let _ = app.update(Message::Status(Box::new(Ok(dropped))));
+        assert_eq!(app.previews.len(), sent + 1);
+        let shown = Status {
+            keyboard_previewing: Some(true),
+            ..alpha17()
+        };
+        let _ = app.update(Message::Status(Box::new(Ok(shown))));
+        assert_eq!(app.previews.len(), sent + 1);
+    }
+
+    /// On `page`, as its row in the sidebar opens it.
+    fn on(page: Page, status: Status) -> App {
+        App {
+            page,
+            ..app(status)
         }
     }
 
@@ -1707,8 +1927,17 @@ mod tests {
         }
     }
 
+    /// A window as tall as the page, for a click on anything on it.
+    fn tall(app: &App) -> Simulator<'_, Message> {
+        Simulator::with_size(
+            iced::Settings::default(),
+            (1024.0, 3000.0),
+            app.view(window::Id::unique()),
+        )
+    }
+
     fn clicks(app: &App, targets: &[&str]) -> Vec<Message> {
-        let mut ui = simulator(app.view(window::Id::unique()));
+        let mut ui = tall(app);
         for &target in targets {
             ui.click(target)
                 .unwrap_or_else(|_| panic!("no {target:?} on screen"));
@@ -1730,14 +1959,193 @@ mod tests {
         let mut status = alpha17();
         status.keyboard_profiles = Some(["orange", "rainbow", "typing"].map(Into::into).into());
         status.keyboard_profile = Some("orange".into());
-        let messages = clicks(&app(status), &["Orange", "Rainbow"]);
+        let mut lighting = app(status);
+        let _ = lighting.update(Message::Page(Page::Lighting));
+        let messages = clicks(&lighting, &["Orange", "Rainbow"]);
         assert!(matches!(&messages[..], [
-            Message::KeyboardProfile(name)
+            Message::Lights(lights::Msg::Open(name))
         ] if name == "rainbow"));
-        // Without a controller, no picker, and no Devices just for it.
+        // Picked, and opened in the editor.
+        for message in messages {
+            let _ = lighting.update(message);
+        }
+        assert_eq!(lighting.shown_lights().as_deref(), Some("rainbow"));
+        assert_eq!(lighting.lights.as_ref().unwrap().name(), "rainbow");
+        assert!(lighting.previews.is_empty());
+        // Without a controller, no Lighting.
         let without = app(alpha17());
         let mut ui = simulator(without.view(window::Id::unique()));
-        assert!(ui.find("Keyboard light").is_err());
+        assert!(ui.find("Lighting").is_err());
+    }
+
+    /// A Titan on the Lighting page's profile, `wave`, with its window.
+    fn titan_lighting() -> App {
+        let mut status = alpha17();
+        status.keyboard_profiles = Some(["wave", "cycle", "mine"].map(Into::into).into());
+        status.keyboard_saved_profiles = Some(vec!["mine".into()]);
+        status.keyboard_profile = Some("wave".into());
+        status.lighting_parts = Some(vec!["bar".into(), "logo".into()]);
+        let mut app = app(status);
+        app.window = Some(window::Id::unique());
+        let _ = app.update(Message::Page(Page::Lighting));
+        app
+    }
+
+    fn edit(app: &mut App) {
+        let _ = app.update(Message::Lights(lights::Msg::Swatch(Color([255, 0, 0]))));
+    }
+
+    /// The page opened on the profile shown sends nothing; an edit is
+    /// shown, and every way out takes it back, but only then.
+    #[test]
+    fn every_way_out_takes_the_preview_back() {
+        let mut app = titan_lighting();
+        assert_eq!(app.lights.as_ref().unwrap().name(), "wave");
+        assert!(app.previews.is_empty() && !app.editing_lights);
+        let _ = app.update(Message::Page(Page::Overview));
+        let _ = app.update(Message::Page(Page::Lighting));
+        assert!(app.previews.is_empty());
+
+        type WayOut = (&'static str, fn(&mut App));
+        let ways_out: [WayOut; 5] = [
+            ("another page", |app| {
+                let _ = app.update(Message::Page(Page::Cooling));
+            }),
+            ("the window closed", |app| {
+                let id = app.window.unwrap();
+                let _ = app.update(Message::WindowClosed(id));
+            }),
+            ("quit", |app| {
+                let _ = app.update(Message::Quit);
+            }),
+            ("revert", |app| {
+                let _ = app.update(Message::Lights(lights::Msg::Revert));
+            }),
+            ("another profile", |app| {
+                let _ = app.update(Message::Lights(lights::Msg::Open("cycle".into())));
+                let _ = app.update(Message::Lights(lights::Msg::Discard));
+            }),
+        ];
+        for (way, out) in ways_out {
+            let mut clean = titan_lighting();
+            out(&mut clean);
+            assert!(clean.previews.is_empty(), "{way}, nothing changed");
+
+            let mut edited = titan_lighting();
+            edit(&mut edited);
+            assert!(edited.editing_lights);
+            assert_eq!(edited.previews.len(), 1);
+            assert!(!edited.previews[0].is_empty());
+            out(&mut edited);
+            assert_eq!(edited.previews[1..], [String::new()], "{way}");
+            assert!(!edited.editing_lights, "{way}");
+        }
+
+        // Back on the page, the edit kept is shown again.
+        let mut app = titan_lighting();
+        edit(&mut app);
+        let _ = app.update(Message::Page(Page::Battery));
+        let _ = app.update(Message::Page(Page::Lighting));
+        assert!(app.editing_lights);
+        assert_eq!(app.previews.len(), 3);
+        assert_eq!(app.previews[2], app.previews[0]);
+        // Picked anew, the profile chosen.
+        let _ = app.update(Message::Lights(lights::Msg::Open("cycle".into())));
+        let _ = app.update(Message::Lights(lights::Msg::Discard));
+        assert_eq!(app.shown_lights().as_deref(), Some("cycle"));
+        let editor = app.lights.as_ref().unwrap();
+        assert!(editor.name() == "cycle" && !editor.unsaved());
+    }
+
+    /// Saved, the daemon shows and picks it, the preview gone with it.
+    #[test]
+    fn saved_it_is_picked() {
+        let mut app = titan_lighting();
+        edit(&mut app);
+        let _ = app.update(Message::Lights(lights::Msg::SaveAs("wave 2".into())));
+        let _ = app.update(Message::LightsSaved(Ok(())));
+        assert!(!app.editing_lights);
+        assert_eq!(app.shown_lights().as_deref(), Some("wave 2"));
+        assert!(!app.lights.as_ref().unwrap().unsaved());
+        assert_eq!(app.previews.len(), 1);
+
+        // Saved on the way to another: there after.
+        edit(&mut app);
+        let _ = app.update(Message::Lights(lights::Msg::Open("cycle".into())));
+        let _ = app.update(Message::Lights(lights::Msg::SaveAndLeave(None)));
+        assert!(app.editing_lights);
+        let _ = app.update(Message::LightsSaved(Ok(())));
+        assert_eq!(app.shown_lights().as_deref(), Some("cycle"));
+        assert_eq!(app.lights.as_ref().unwrap().name(), "cycle");
+        assert!(!app.editing_lights);
+
+        // Not saved: the edit stays on the keyboard, to take back.
+        edit(&mut app);
+        let _ = app.update(Message::Lights(lights::Msg::Save));
+        let _ = app.update(Message::LightsSaved(Err("no".into())));
+        assert!(app.editing_lights && app.lights.as_ref().unwrap().unsaved());
+    }
+
+    /// The profile changed by the daemon: a clean editor follows it, an
+    /// edit is shown again over it while on the page, and only then.
+    #[test]
+    fn follows_the_keyboard_unless_edited() {
+        let modes = |profile: &str| {
+            Message::ModesChanged(Box::new(Status {
+                keyboard_profile: Some(profile.into()),
+                keyboard_profiles: Some(["wave", "cycle", "mine"].map(Into::into).into()),
+                ..Status::default()
+            }))
+        };
+        let mut app = titan_lighting();
+        let _ = app.update(modes("cycle"));
+        assert_eq!(app.lights.as_ref().unwrap().name(), "cycle");
+        assert!(app.previews.is_empty());
+
+        edit(&mut app);
+        let _ = app.update(modes("wave"));
+        let editor = app.lights.as_ref().unwrap();
+        assert!(editor.name() == "cycle" && editor.unsaved());
+        assert_eq!(app.previews.len(), 2);
+        assert_eq!(app.previews[1], app.previews[0]);
+
+        let _ = app.update(Message::Page(Page::Overview));
+        let _ = app.update(modes("cycle"));
+        assert_eq!(app.previews.len(), 3);
+        assert!(!app.editing_lights);
+    }
+
+    /// Without the daemon, the page still shows the profile picked.
+    #[test]
+    fn the_demo_opens_its_profile() {
+        let mut demo = App {
+            demo: true,
+            ..app(crate::demo::status())
+        };
+        let _ = demo.update(Message::Page(Page::Lighting));
+        assert_eq!(demo.lights.as_ref().unwrap().name(), "breathe");
+        let messages = clicks(&demo, &["Static 2"]);
+        for message in messages {
+            let _ = demo.update(message);
+        }
+        assert_eq!(demo.shown_lights().as_deref(), Some("Static 2"));
+        assert_eq!(demo.lights.as_ref().unwrap().name(), "Static 2");
+    }
+
+    #[test]
+    fn automation_folded_away() {
+        let mut status = alpha17();
+        status.keyboard_profiles = Some(vec!["wave".into()]);
+        status.keyboard_profile = Some("wave".into());
+        status.numpad_follows_numlock = Some(false);
+        let mut app = app(status);
+        let _ = app.update(Message::Page(Page::Lighting));
+        let numpad = "Numpad dark while NumLock is off";
+        assert!(tall(&app).find(numpad).is_err());
+        let messages = clicks(&app, &["Automation"]);
+        assert!(matches!(&messages[..], [Message::LightingMore]));
+        let _ = app.update(Message::LightingMore);
+        assert!(tall(&app).find(numpad).is_ok());
     }
 
     #[test]
@@ -1759,11 +2167,10 @@ mod tests {
 
     #[test]
     fn toggles_by_label() {
-        let messages = clicks(&app(alpha17()), &["Cooler boost", "Super battery"]);
-        assert!(matches!(
-            &messages[..],
-            [Message::CoolerBoost(true), Message::SuperBattery(true)]
-        ));
+        let messages = clicks(&on(Page::Cooling, alpha17()), &["Cooler boost"]);
+        assert!(matches!(&messages[..], [Message::CoolerBoost(true)]));
+        let messages = clicks(&on(Page::Battery, alpha17()), &["Super battery"]);
+        assert!(matches!(&messages[..], [Message::SuperBattery(true)]));
     }
 
     #[test]
@@ -1776,19 +2183,22 @@ mod tests {
             battery_health: Some(96),
             ..alpha17()
         };
-        let holding = app(held);
+        let holding = on(Page::Battery, held);
         let mut ui = simulator(holding.view(window::Id::unique()));
         for shown in ["91%", "Held at the charge limit", "Health 96%"] {
             assert!(ui.find(shown).is_ok(), "{shown}");
         }
 
-        let charging = app(Status {
-            on_ac: Some(true),
-            battery_level: Some(40),
-            battery_state: Some("Charging".into()),
-            battery_watts: Some(44.6),
-            ..alpha17()
-        });
+        let charging = on(
+            Page::Battery,
+            Status {
+                on_ac: Some(true),
+                battery_level: Some(40),
+                battery_state: Some("Charging".into()),
+                battery_watts: Some(44.6),
+                ..alpha17()
+            },
+        );
         let mut ui = simulator(charging.view(window::Id::unique()));
         assert!(ui.find("Charging · 45 W").is_ok());
     }
@@ -1819,7 +2229,7 @@ mod tests {
             usb_share: Some(false),
             ..alpha17()
         };
-        let messages = clicks(&app(status), &["Charge USB when off"]);
+        let messages = clicks(&on(Page::Battery, status), &["Charge USB when off"]);
         assert!(matches!(&messages[..], [Message::UsbShare(true)]));
     }
 
@@ -1835,7 +2245,7 @@ mod tests {
         let shown =
             |app: &App, text: &str| simulator(app.view(window::Id::unique())).find(text).is_ok();
 
-        let mut marked = app(status.clone());
+        let mut marked = on(Page::Cooling, status.clone());
         assert!(shown(&marked, "95°C") && shown(&marked, "85°C"));
         let _ = marked.update(Message::BoostMarkDragged(Fan::Cpu, 90));
         assert!(shown(&marked, "90°C"));
@@ -1847,10 +2257,13 @@ mod tests {
         assert!(marked.boost_marks.is_none());
 
         // Only while it boosts by itself.
-        let off = app(Status {
-            auto_cooler_boost: Some(false),
-            ..status
-        });
+        let off = on(
+            Page::Cooling,
+            Status {
+                auto_cooler_boost: Some(false),
+                ..status
+            },
+        );
         assert!(!shown(&off, "95°C"));
     }
 
@@ -1861,10 +2274,11 @@ mod tests {
             gpu_mode_next: Some(next.into()),
             ..alpha17()
         };
-        let messages = clicks(&app(mode("hybrid", "hybrid")), &["Discrete", "Hybrid"]);
+        let system = |status| on(Page::System, status);
+        let messages = clicks(&system(mode("hybrid", "hybrid")), &["Discrete", "Hybrid"]);
         assert!(matches!(&messages[..], [Message::GpuMode(mode)] if mode == "discrete"));
 
-        let switching = app(mode("hybrid", "discrete"));
+        let switching = system(mode("hybrid", "discrete"));
         let mut ui = simulator(switching.view(window::Id::unique()));
         assert!(ui.find("Switches to discrete at the next restart").is_ok());
         // Back to where it is now takes the switch back.
@@ -1872,8 +2286,45 @@ mod tests {
         assert!(matches!(&messages[..], [Message::GpuMode(mode)] if mode == "hybrid"));
 
         assert!(
-            simulator(app(alpha17()).view(window::Id::unique()))
+            simulator(system(alpha17()).view(window::Id::unique()))
                 .find("Discrete")
+                .is_err()
+        );
+        assert!(
+            simulator(system(mode("hybrid", "hybrid")).view(window::Id::unique()))
+                .find("Integrated")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn gpu_modes_the_laptop_has() {
+        let titan = |now: &str, next: &str, modes: &[&str]| {
+            on(
+                Page::System,
+                Status {
+                    gpu_mode: Some(now.into()),
+                    gpu_mode_next: Some(next.into()),
+                    gpu_modes: Some(modes.iter().map(|&mode| mode.into()).collect()),
+                    ..alpha17()
+                },
+            )
+        };
+        let all = ["hybrid", "discrete", "integrated"];
+        let messages = clicks(&titan("discrete", "discrete", &all), &["Integrated"]);
+        assert!(matches!(&messages[..], [Message::GpuMode(mode)] if mode == "integrated"));
+
+        let integrated = titan("integrated", "integrated", &all);
+        let mut ui = simulator(integrated.view(window::Id::unique()));
+        assert!(
+            ui.find("The iGPU drives the screen; the dGPU is off")
+                .is_ok()
+        );
+
+        let two = titan("discrete", "discrete", &["hybrid", "discrete"]);
+        assert!(
+            simulator(two.view(window::Id::unique()))
+                .find("Integrated")
                 .is_err()
         );
     }
@@ -1887,7 +2338,7 @@ mod tests {
             ..alpha17()
         };
         let shown = |status: Status, line: &str| {
-            simulator(app(status).view(window::Id::unique()))
+            simulator(on(Page::System, status).view(window::Id::unique()))
                 .find(line)
                 .is_ok()
         };
@@ -1898,7 +2349,7 @@ mod tests {
         ));
         assert!(shown(dgpu(true, 4, &[]), "dGPU awake for 4 s"));
         // No dGPU: no Graphics either, without a MUX.
-        assert!(!shown(alpha17(), "GRAPHICS"));
+        assert!(!shown(alpha17(), "Graphics"));
     }
 
     #[test]
@@ -1908,13 +2359,16 @@ mod tests {
             fn_key: Some("right".into()),
             ..alpha17()
         };
-        let messages = clicks(&app(status), &["Camera", "Left of Win", "Right of Win"]);
+        let messages = clicks(
+            &on(Page::System, status),
+            &["Camera", "Left of Win", "Right of Win"],
+        );
         // The side it's on already isn't picked again.
         assert!(matches!(
             &messages[..],
             [Message::Webcam(false), Message::FnKey(side)] if side == "left"
         ));
-        let none = app(alpha17());
+        let none = on(Page::System, alpha17());
         let mut ui = simulator(none.view(window::Id::unique()));
         assert!(ui.find("Camera").is_err());
     }
@@ -1925,13 +2379,16 @@ mod tests {
             auto_cooler_boost: Some(false),
             ..alpha17()
         };
-        let messages = clicks(&app(status), &["Cooler boost when hot", "Cooler boost"]);
+        let messages = clicks(
+            &on(Page::Cooling, status),
+            &["Cooler boost when hot", "Cooler boost"],
+        );
         assert!(matches!(
             &messages[..],
             [Message::AutoCoolerBoost(true), Message::CoolerBoost(true)]
         ));
         // Not offered where the daemon doesn't say.
-        let app = app(alpha17());
+        let app = on(Page::Cooling, alpha17());
         let mut ui = simulator(app.view(window::Id::unique()));
         assert!(ui.find("Cooler boost when hot").is_err());
     }
@@ -1975,42 +2432,66 @@ mod tests {
 
     #[test]
     fn the_curve_editor_is_advanced_only() {
-        let editing = app(advanced());
+        let editing = on(Page::Cooling, advanced());
         let mut ui = simulator(editing.view(window::Id::unique()));
         assert!(ui.find("CPU").is_ok());
         assert!(ui.find("Reset").is_ok());
 
-        let auto = app(alpha17());
+        let auto = on(Page::Cooling, alpha17());
         let mut ui = simulator(auto.view(window::Id::unique()));
         assert!(ui.find("Reset").is_err());
     }
 
     #[test]
     fn adaptive_and_its_gpu_switch() {
-        let messages = clicks(&app(advanced()), &["GPU fan helps the CPU", "Adaptive"]);
+        let messages = clicks(
+            &on(Page::Cooling, advanced()),
+            &["GPU fan helps the CPU", "Adaptive"],
+        );
         assert!(matches!(
             &messages[..],
             [Message::GpuFollowsCpu(false), Message::AdaptiveFans(false)]
         ));
 
         // Stepping: no GPU switch, the EC goes its own way there.
-        let stepping = app(Status {
-            adaptive_fans: Some(false),
-            ..advanced()
-        });
+        let stepping = on(
+            Page::Cooling,
+            Status {
+                adaptive_fans: Some(false),
+                ..advanced()
+            },
+        );
         let mut ui = simulator(stepping.view(window::Id::unique()));
         assert!(ui.find("Adaptive").is_ok());
         assert!(ui.find("GPU fan helps the CPU").is_err());
     }
 
+    /// In a narrow window, where the System page has the config's line.
     #[test]
     fn copies_the_settings_as_nix() {
-        let mut app = app(alpha17());
-        let messages = clicks(&app, &["Copy as Nix"]);
-        assert!(matches!(&messages[..], [Message::CopyAsNix]));
+        fn narrow(app: &App) -> Simulator<'_, Message> {
+            Simulator::with_size(
+                iced::Settings::default(),
+                (600.0, 768.0),
+                app.view(window::Id::unique()),
+            )
+        }
+        let mut app = on(Page::System, alpha17());
+        app.laptop = Some(Arc::new(Laptop {
+            machine: crate::machine::Machine {
+                nixos: true,
+                ..Default::default()
+            },
+            ..Arc::unwrap_or_clone(Laptop::any())
+        }));
+        {
+            let mut ui = narrow(&app);
+            ui.click("Copy as Nix").unwrap();
+            let messages: Vec<Message> = ui.into_messages().collect();
+            assert!(matches!(&messages[..], [Message::CopyAsNix]));
+        }
 
-        let shown =
-            |app: &App, text: &str| simulator(app.view(window::Id::unique())).find(text).is_ok();
+        let shown = |app: &App, text: &str| narrow(app).find(text).is_ok();
         let _ = app.update(Message::CopyAsNix);
         assert!(shown(&app, "Copied, for services.ryukaze.settings"));
         // A change after the copy isn't in it.
@@ -2057,7 +2538,7 @@ mod tests {
 
     #[test]
     fn switches_fans_and_resets() {
-        let messages = clicks(&app(advanced()), &["GPU", "Reset"]);
+        let messages = clicks(&on(Page::Cooling, advanced()), &["GPU", "Reset"]);
         assert!(matches!(
             &messages[..],
             [Message::CurveFan(Fan::Gpu), Message::CurveReset]

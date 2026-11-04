@@ -7,7 +7,8 @@ use anyhow::{Context, Result, bail};
 use ryukaze_core::{
     COOLER_BOOST_MARKS,
     fans::{Curve, Fan},
-    keyboard::{self, Color, Effect, Lighting, Origin, Zone},
+    keyboard,
+    lighting::{self, Color, Effect, Lighting, Origin, Part, Zone},
     power_supply::Source,
 };
 use serde::{Deserialize, Serialize};
@@ -223,7 +224,7 @@ pub struct KeyboardProfile {
 
     /// Keys and groups of keys in their own colours, by name, still
     /// whatever the effects: a single key over a group, a smaller group
-    /// over a larger one.
+    /// over a larger one. `bar` and `logo` name the lights beside them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, KeyboardColor>,
 
@@ -337,8 +338,8 @@ impl EffectFields<'_> {
         }
 
         let colors: Vec<Color> = if self.colors.is_empty() {
-            keyboard::RAINBOW.to_vec()
-        } else if keyboard::COLORS.contains(&self.colors.len()) {
+            lighting::RAINBOW.to_vec()
+        } else if lighting::COLORS.contains(&self.colors.len()) {
             self.colors
                 .iter()
                 .map(|&KeyboardColor(color)| color)
@@ -347,26 +348,26 @@ impl EffectFields<'_> {
             return Err(format!(
                 "{whose}: {} colors; from {} to {}",
                 self.colors.len(),
-                keyboard::COLORS.start(),
-                keyboard::COLORS.end()
+                lighting::COLORS.start(),
+                lighting::COLORS.end()
             ));
         };
         // Unset, the default, or longer if the colours need it.
         let period = |default: u32, shortest: u32| match self.period_ms {
             None => Ok(default.max(shortest)),
-            Some(period) if (shortest..=*keyboard::PERIODS_MS.end()).contains(&period) => {
+            Some(period) if (shortest..=*lighting::PERIODS_MS.end()).contains(&period) => {
                 Ok(period)
             }
             Some(period) => Err(format!(
                 "{whose}: period_ms {period} is outside {shortest}..{}",
-                keyboard::PERIODS_MS.end()
+                lighting::PERIODS_MS.end()
             )),
         };
-        let round_shortest = keyboard::shortest_period_ms(colors.len());
+        let round_shortest = lighting::shortest_period_ms(colors.len());
         Ok(match effect {
             Static => Effect::Static,
             Breathe => Effect::Breathe {
-                period_ms: period(4000, *keyboard::PERIODS_MS.start())?,
+                period_ms: period(4000, *lighting::PERIODS_MS.start())?,
                 fade_to: self
                     .fade_to
                     .map_or(Color::OFF, |KeyboardColor(color)| color),
@@ -378,18 +379,18 @@ impl EffectFields<'_> {
             Wave => {
                 let wavelength = self
                     .wavelength
-                    .unwrap_or(keyboard::Wave::default().wavelength);
-                if !keyboard::WAVELENGTHS.contains(&wavelength) {
+                    .unwrap_or(lighting::Wave::default().wavelength);
+                if !lighting::WAVELENGTHS.contains(&wavelength) {
                     return Err(format!(
                         "{whose}: wavelength {wavelength} is outside {}..{}",
-                        keyboard::WAVELENGTHS.start(),
-                        keyboard::WAVELENGTHS.end()
+                        lighting::WAVELENGTHS.start(),
+                        lighting::WAVELENGTHS.end()
                     ));
                 }
                 Effect::Wave {
                     period_ms: period(3000, round_shortest)?,
                     colors,
-                    wave: keyboard::Wave {
+                    wave: lighting::Wave {
                         origin: match self.origin.unwrap_or(OriginName::Middle) {
                             OriginName::Middle => Origin::Middle,
                             OriginName::Left => Origin::Left,
@@ -407,11 +408,11 @@ impl EffectFields<'_> {
                     .flash
                     .ok_or_else(|| format!("{whose}: reactive needs a flash"))?;
                 let flash_ms = self.flash_ms.unwrap_or(500);
-                if !keyboard::FLASHES_MS.contains(&flash_ms) {
+                if !lighting::FLASHES_MS.contains(&flash_ms) {
                     return Err(format!(
                         "{whose}: flash_ms {flash_ms} is outside {}..{}",
-                        keyboard::FLASHES_MS.start(),
-                        keyboard::FLASHES_MS.end()
+                        lighting::FLASHES_MS.start(),
+                        lighting::FLASHES_MS.end()
                     ));
                 }
                 Effect::Reactive { flash, flash_ms }
@@ -420,19 +421,23 @@ impl EffectFields<'_> {
     }
 }
 
-/// The keys a list of names stands for.
-fn named_keys(
+/// The keys and the lights beside them a list of names stands for.
+fn named(
     names: impl IntoIterator<Item = impl AsRef<str>>,
     whose: &str,
-) -> Result<Vec<u8>, String> {
-    let mut keys = Vec::new();
+) -> Result<(Vec<u8>, Vec<Part>), String> {
+    let (mut keys, mut parts) = (Vec::new(), Vec::new());
     for name in names {
         let name = name.as_ref();
+        if let Some(part) = Part::named(name) {
+            parts.push(part);
+            continue;
+        }
         let named = keyboard::named(name)
-            .ok_or_else(|| format!("{whose}: no key or group is called {name:?}"))?;
+            .ok_or_else(|| format!("{whose}: no key, group or light is called {name:?}"))?;
         keys.extend(named);
     }
-    Ok(keys)
+    Ok((keys, parts))
 }
 
 impl KeyboardProfile {
@@ -455,16 +460,19 @@ impl KeyboardProfile {
     pub fn lighting(&self) -> Result<Lighting, String> {
         let whose = format!("keyboard profile {:?}", self.name);
         let effect = self.fields().effect(&whose)?;
-        let keys = self
-            .keys
-            .iter()
-            .map(|(key, &KeyboardColor(color))| Ok((named_keys([key], &whose)?, color)))
-            .collect::<Result<_, String>>()?;
-        if self.zones.len() > keyboard::ZONES {
+        let (mut keys, mut parts) = (Vec::new(), Vec::new());
+        for (name, &KeyboardColor(color)) in &self.keys {
+            let (named_keys, named_parts) = named([name], &whose)?;
+            if !named_keys.is_empty() {
+                keys.push((named_keys, color));
+            }
+            parts.extend(named_parts.into_iter().map(|part| (part, color)));
+        }
+        if self.zones.len() > lighting::ZONES {
             return Err(format!(
                 "{whose}: {} zones; the controller holds {} besides the profile's",
                 self.zones.len(),
-                keyboard::ZONES
+                lighting::ZONES
             ));
         }
         let zones = self
@@ -477,6 +485,7 @@ impl KeyboardProfile {
             effect,
             color: self.color.map(|KeyboardColor(color)| color),
             keys,
+            parts,
             zones,
         })
     }
@@ -502,8 +511,10 @@ impl KeyboardZone {
             flash: self.flash,
             flash_ms: self.flash_ms,
         };
+        let (keys, parts) = named(&self.keys, whose)?;
         Ok(Zone {
-            keys: named_keys(&self.keys, whose)?,
+            keys,
+            parts,
             effect: fields.effect(whose)?,
             color: self.color.map(|KeyboardColor(color)| color),
         })
@@ -1407,8 +1418,8 @@ mod tests {
             lightings[2].1.effect,
             Effect::Wave {
                 period_ms: 2500,
-                colors: keyboard::RAINBOW.to_vec(),
-                wave: keyboard::Wave::default()
+                colors: lighting::RAINBOW.to_vec(),
+                wave: lighting::Wave::default()
             }
         );
         let flash = Color([255; 3]);
@@ -1421,6 +1432,7 @@ mod tests {
                 },
                 color: Some(Color([0x30, 0x10, 0])),
                 keys: Vec::new(),
+                parts: Vec::new(),
                 zones: Vec::new(),
             }
         );
@@ -1508,6 +1520,36 @@ mod tests {
                 .contains(&"keyboard.power.follows".to_owned())
         );
         assert!(load("[keyboard.power]\nfollows = \"moon\"\n").is_err());
+    }
+
+    /// The light bar and the logo are named among the keys: still in their
+    /// own colours, or in a zone, or else with the profile.
+    #[test]
+    fn names_the_light_bar_and_the_logo_among_the_keys() {
+        let lighting = |toml: &str| toml::from_str::<KeyboardProfile>(toml).unwrap().lighting();
+        let green = Color([0, 0xff, 0]);
+        let own = lighting(
+            "name = \"a\"\neffect = \"cycle\"\n[keys]\nlogo = \"#00ff00\"\nwasd = \"#00ff00\"\n",
+        )
+        .unwrap();
+        assert_eq!(own.parts, vec![(Part::Logo, green)]);
+        assert_eq!(own.keys, vec![(vec![0x1a, 0x04, 0x16, 0x07], green)]);
+        let zoned = lighting(
+            "name = \"a\"\ncolor = \"#ff0000\"\n[[zones]]\nkeys = [\"bar\", \"numpad\"]\neffect = \"breathe\"\ncolor = \"#00ff00\"\n",
+        )
+        .unwrap();
+        assert_eq!(zoned.zones[0].parts, vec![Part::Bar]);
+        assert_eq!(zoned.zones[0].keys.len(), 17);
+        let only_bar = lighting(
+            "name = \"a\"\ncolor = \"#ff0000\"\n[[zones]]\nkeys = [\"bar\"]\neffect = \"cycle\"\n",
+        )
+        .unwrap();
+        assert!(only_bar.zones[0].keys.is_empty());
+        assert!(
+            lighting("name = \"a\"\ncolor = \"#ff0000\"\n[keys]\nlid = \"#ffffff\"\n").is_err()
+        );
+        // No longer fields of their own.
+        assert!(toml::from_str::<KeyboardProfile>("name = \"a\"\nbar = \"#ff0000\"\n").is_err());
     }
 
     #[test]
@@ -1620,7 +1662,7 @@ mod tests {
             Effect::Wave {
                 period_ms: 3000,
                 colors: vec![Color([255, 0, 0]), Color([0, 0, 255])],
-                wave: keyboard::Wave {
+                wave: lighting::Wave {
                     origin: Origin::Left,
                     inward: true,
                     wavelength: 60

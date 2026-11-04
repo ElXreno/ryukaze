@@ -1,6 +1,6 @@
 {
   lib,
-  rustPlatform,
+  craneLib,
   vulkan-loader,
   wayland,
   libxkbcommon,
@@ -24,41 +24,69 @@ let
     libXi
     libXrandr
   ];
+
+  common = {
+    pname = "ryukaze";
+    inherit (cargo.workspace.package) version;
+    strictDeps = true;
+    # ryukaze-gg-layouts is a package of its own (nix/gg-layouts.nix).
+    cargoExtraArgs = "--locked --workspace --exclude ryukaze-gg-layouts";
+
+    src = lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [
+        ../Cargo.toml
+        ../Cargo.lock
+        ../crates
+        ../data
+        # The config and theme tests parse the examples on its pages.
+        ../docs
+      ];
+    };
+  };
+
+  # The dependencies alone, built again only when Cargo.lock or a crate's
+  # manifest changes.
+  cargoArtifacts = craneLib.buildDepsOnly common;
+
+  # The tests draw in software, as in the dev shell.
+  checked = common // {
+    inherit cargoArtifacts;
+    ICED_TEST_BACKEND = "tiny-skia";
+  };
 in
-rustPlatform.buildRustPackage {
-  pname = "ryukaze";
-  inherit (cargo.workspace.package) version;
+craneLib.buildPackage (
+  common
+  // {
+    inherit cargoArtifacts;
+    # In the flake's checks instead.
+    doCheck = false;
 
-  src = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.unions [
-      ../Cargo.toml
-      ../Cargo.lock
-      ../crates
-      ../data
-      # The config and theme tests parse the examples on its pages.
-      ../docs
-    ];
-  };
+    postInstall = ''
+      install -Dm644 data/io.github.kontonkara.ryukaze.conf \
+        $out/share/dbus-1/system.d/io.github.kontonkara.ryukaze.conf
+      install -Dm644 data/ryukaze.desktop $out/share/applications/ryukaze.desktop
+      install -Dm644 data/ryukaze.svg $out/share/icons/hicolor/scalable/apps/ryukaze.svg
+      install -Dm644 -t $out/share/ryukaze/keyboards data/keyboards/*.toml
+    '';
 
-  cargoLock.lockFile = ../Cargo.lock;
+    postFixup = ''
+      patchelf --add-rpath ${lib.makeLibraryPath windowLibs} $out/bin/ryukaze
+    '';
 
-  postInstall = ''
-    install -Dm644 data/io.github.kontonkara.ryukaze.conf \
-      $out/share/dbus-1/system.d/io.github.kontonkara.ryukaze.conf
-    install -Dm644 data/ryukaze.desktop $out/share/applications/ryukaze.desktop
-    install -Dm644 data/ryukaze.svg $out/share/icons/hicolor/scalable/apps/ryukaze.svg
-  '';
+    passthru.tests = {
+      cargo = craneLib.cargoTest checked;
+      clippy = craneLib.cargoClippy (
+        checked // { cargoClippyExtraArgs = "--all-targets -- --deny warnings"; }
+      );
+    };
 
-  postFixup = ''
-    patchelf --add-rpath ${lib.makeLibraryPath windowLibs} $out/bin/ryukaze
-  '';
-
-  meta = {
-    description = "MSI laptop EC control: modes, charge limit, fans";
-    homepage = "https://github.com/kontonkara/ryukaze";
-    license = lib.licenses.mit;
-    platforms = lib.platforms.linux;
-    mainProgram = "ryukaze";
-  };
-}
+    meta = {
+      description = "MSI laptop EC control: modes, charge limit, fans";
+      homepage = "https://github.com/kontonkara/ryukaze";
+      license = lib.licenses.mit;
+      platforms = lib.platforms.linux;
+      mainProgram = "ryukaze";
+    };
+  }
+)

@@ -68,6 +68,14 @@ impl Profiles {
                     .await
                     .keyboard_for(modes.scenario.as_deref()),
             );
+            // A preview it ended is news too, for the editor showing it.
+            let after = service.get().await.modes();
+            if after != modes {
+                self.announced = Some(after.clone());
+                if let Err(err) = Service::modes_changed(service.signal_emitter(), after).await {
+                    warn!("announcing the modes: {err}");
+                }
+            }
         }
         report(service.get().await.refresh_power());
         let (sync, resync) = {

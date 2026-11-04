@@ -156,6 +156,16 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub numpad_follows_numlock: Option<bool>,
 
+    /// The lights beside the keys the laptop has, as profiles name them:
+    /// `bar`, `logo`.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub lighting_parts: Option<Vec<String>>,
+
+    /// An editor's profile on the keyboard, until the editor ends it or a
+    /// new scenario does.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub keyboard_previewing: Option<bool>,
+
     /// The scenario applied when the laptop goes on AC, and on battery:
     /// `""` for none, `*` for modes the config gives it of its own.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
@@ -174,14 +184,18 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub power_profiles_sync: Option<bool>,
 
-    /// Where the panel hangs: `hybrid` (off the iGPU) or `discrete` (off
-    /// the dGPU).
+    /// Where the panel hangs: `hybrid` (off the iGPU), `discrete` (off
+    /// the dGPU) or `integrated` (the dGPU off).
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub gpu_mode: Option<String>,
 
     /// Where it will hang after a restart.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub gpu_mode_next: Option<String>,
+
+    /// The GPU modes this laptop has.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub gpu_modes: Option<Vec<String>>,
 
     /// The discrete GPU of a hybrid laptop is awake, not runtime-suspended.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
