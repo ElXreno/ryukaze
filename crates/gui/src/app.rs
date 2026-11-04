@@ -924,7 +924,7 @@ impl App {
 
         let mut graphics = column![].spacing(12);
         if let (Some(now), Some(next)) = (&status.gpu_mode, &status.gpu_mode_next) {
-            graphics = graphics.push(gpu_mode(now, next));
+            graphics = graphics.push(gpu_mode(now, next, &report::gpu_modes(status)));
         }
         if let Some(dgpu) = dgpu(status) {
             graphics = graphics.push(dgpu);
@@ -1168,17 +1168,15 @@ fn fn_key<'a>(side: &str) -> Element<'a, Message> {
 
 /// The MUX. The choice is the mode after a restart: a pick changes nothing
 /// before that.
-fn gpu_mode<'a>(now: &str, next: &str) -> Element<'a, Message> {
-    let choice = |value: &str, label| segment(label, next == value, Message::GpuMode(value.into()));
-    let hint = if now != next {
-        format!("Switches to {next} at the next restart")
-    } else if now == "hybrid" {
-        "The iGPU drives the screen; the dGPU wakes when needed".to_owned()
-    } else {
-        "The dGPU drives the screen and stays awake".to_owned()
+fn gpu_mode<'a>(now: &str, next: &str, modes: &[String]) -> Element<'a, Message> {
+    let hint = match now {
+        _ if now != next => format!("Switches to {next} at the next restart"),
+        "hybrid" => "The iGPU drives the screen; the dGPU wakes when needed".to_owned(),
+        "integrated" => "The iGPU drives the screen; the dGPU is off".to_owned(),
+        _ => "The dGPU drives the screen and stays awake".to_owned(),
     };
     column![
-        row![choice("hybrid", "Hybrid"), choice("discrete", "Discrete")].spacing(6),
+        grid(next, modes, modes.len(), Message::GpuMode),
         text(hint).size(13).style(theme::muted),
     ]
     .spacing(8)
@@ -1874,6 +1872,38 @@ mod tests {
         assert!(
             simulator(app(alpha17()).view(window::Id::unique()))
                 .find("Discrete")
+                .is_err()
+        );
+        assert!(
+            simulator(app(mode("hybrid", "hybrid")).view(window::Id::unique()))
+                .find("Integrated")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn gpu_modes_the_laptop_has() {
+        let titan = |now: &str, next: &str, modes: &[&str]| Status {
+            gpu_mode: Some(now.into()),
+            gpu_mode_next: Some(next.into()),
+            gpu_modes: Some(modes.iter().map(|&mode| mode.into()).collect()),
+            ..alpha17()
+        };
+        let all = ["hybrid", "discrete", "integrated"];
+        let messages = clicks(&app(titan("discrete", "discrete", &all)), &["Integrated"]);
+        assert!(matches!(&messages[..], [Message::GpuMode(mode)] if mode == "integrated"));
+
+        let integrated = app(titan("integrated", "integrated", &all));
+        let mut ui = simulator(integrated.view(window::Id::unique()));
+        assert!(
+            ui.find("The iGPU drives the screen; the dGPU is off")
+                .is_ok()
+        );
+
+        let two = app(titan("discrete", "discrete", &["hybrid", "discrete"]));
+        assert!(
+            simulator(two.view(window::Id::unique()))
+                .find("Integrated")
                 .is_err()
         );
     }

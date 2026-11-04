@@ -15,7 +15,10 @@ use ryukaze_core::Status;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use zbus::{Connection, zvariant::Value};
 
-use crate::app::{FAN_ORDER, Message, SHIFT_ORDER, capitalize, ordered};
+use crate::{
+    app::{FAN_ORDER, Message, SHIFT_ORDER, capitalize, ordered},
+    report,
+};
 
 pub struct Tray {
     /// The last status the window's poll got, or why there was none.
@@ -217,7 +220,7 @@ impl ksni::Tray for Tray {
                     ));
                 }
                 if let (Some(now), Some(next)) = (&status.gpu_mode, &status.gpu_mode_next) {
-                    items.push(graphics_menu(now, next));
+                    items.push(graphics_menu(now, next, report::gpu_modes(status)));
                 }
             }
             Err(err) => items.push(
@@ -300,19 +303,13 @@ fn check(label: &str, on: bool, toggle: fn(bool) -> Message) -> MenuItem<Tray> {
 }
 
 /// The MUX: the pick is the mode after a restart, as in the window.
-fn graphics_menu(now: &str, next: &str) -> MenuItem<Tray> {
-    let modes = ["hybrid", "discrete"];
+fn graphics_menu(now: &str, next: &str, modes: Vec<String>) -> MenuItem<Tray> {
     let mut submenu = vec![
         RadioGroup {
             selected: modes
                 .iter()
-                .position(|mode| *mode == next)
+                .position(|mode| mode == next)
                 .unwrap_or(usize::MAX),
-            select: Box::new(move |tray: &mut Tray, index| {
-                if let Some(mode) = modes.get(index) {
-                    tray.send(Message::GpuMode((*mode).to_owned()));
-                }
-            }),
             options: modes
                 .iter()
                 .map(|mode| RadioItem {
@@ -320,6 +317,11 @@ fn graphics_menu(now: &str, next: &str) -> MenuItem<Tray> {
                     ..Default::default()
                 })
                 .collect(),
+            select: Box::new(move |tray: &mut Tray, index| {
+                if let Some(mode) = modes.get(index) {
+                    tray.send(Message::GpuMode(mode.clone()));
+                }
+            }),
         }
         .into(),
     ];

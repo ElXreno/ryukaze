@@ -9,7 +9,8 @@
   (1038:113a), and Fn+F9 needs a hwdb entry (see
   [using ryukaze](usage.md#the-fn-keys)).
 - MSI Titan 18 HX A2WJ (MS-1824), EC firmware 1824EMS1.509: the fan
-  curves and rpm, [Apex](#apex) and [local dimming](#local-dimming).
+  curves and rpm, [the GPU MUX](#the-gpu-mux), [Apex](#apex) and
+  [local dimming](#local-dimming).
 
 ## The EC's RAM
 
@@ -29,17 +30,29 @@ Titan).
 
 In hybrid the panel hangs off the iGPU, and the dGPU renders through it
 when asked and sleeps otherwise; in discrete it hangs off the dGPU, which
-stays awake. The switch takes a restart. On 17KKIMS1.115, as the firmware
-does it: ryukazed sets 0xD1 bit 0, the EC passes that on through ACPI
-(`_Q90`) to the BIOS, which flips the mode it keeps in CMOS and answers
-in 0xD1 (bit 1, and bit 2 for discrete); at power-off the EC copies the
-answer to 0x2E bit 6, which it sets the MUX from at power-on, and at the
-next boot the BIOS brings its Setup in line and restarts once more by
-itself. The BIOS flips rather than sets, so ryukazed asks only when the
-mode after a restart isn't already the one wanted, and waits for the
-answer. It doesn't write the `MsiDCVarData` EFI variable, as other MUX
-switchers do: the firmware reads that one for the Win/Fn swap, not for
-the MUX.
+stays awake; in integrated the dGPU is off altogether, and the outputs
+wired to it with it. The switch takes a restart. On 17KKIMS1.115, as the
+firmware does it: ryukazed sets 0xD1 bit 0, the EC passes that on through
+ACPI (`_Q90`) to the BIOS, which flips the mode it keeps in CMOS and
+answers in 0xD1 (bit 1, and bit 2 for discrete); at power-off the EC
+copies the answer to 0x2E bit 6, which it sets the MUX from at power-on,
+and at the next boot the BIOS brings its Setup in line and restarts once
+more by itself. The BIOS flips rather than sets, so ryukazed asks only
+when the mode after a restart isn't already the one wanted, and waits for
+the answer. It doesn't write the `MsiDCVarData` EFI variable there: that
+firmware reads it for the Win/Fn swap, not for the MUX.
+
+On 1824EMS1.509 the ask goes the same way, `_Q90` raising software SMI
+0x11, but the BIOS's handler for it (`MsiSGSmm` in E1824IMS.50E) takes the
+mode from bits 0 and 1 of `MsiDCVarData`'s data byte 5 (0 hybrid,
+1 discrete, 2 integrated), keeps it, and answers as above; asked for the
+mode it keeps already, it changes nothing. So ryukazed writes the mode
+there first, the rest of the variable as it was, and takes it back if no
+answer comes. The same byte has the mode set at power-on in bits 2 and 3,
+and, as MSI Center reads them, says the BIOS works this way in bit 4,
+that it has integrated in bit 5 and that it lacks discrete in bit 6:
+ryukazed offers the modes it has, and leaves the MUX out without bit 4.
+A plain restart is enough.
 
 ## The BIOS's turbo
 

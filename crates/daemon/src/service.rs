@@ -256,7 +256,8 @@ impl Service {
         let firmware = ec.firmware().unwrap_or_default();
         let usb_share =
             usb_share::usb_share(&firmware).map(|share| (RawEc::new(ec.sysfs()), share));
-        let gpu_mux = gpu_mux::gpu_mux(&firmware).map(|mux| (RawEc::new(ec.sysfs()), mux));
+        let gpu_mux =
+            gpu_mux::gpu_mux(&firmware, ec.sysfs()).map(|mux| (RawEc::new(ec.sysfs()), mux));
         let apex = apex::apex(&firmware).map(|apex| (RawEc::new(ec.sysfs()), apex));
         let local_dimming = local_dimming::local_dimming(&firmware)
             .map(|dimming| (RawEc::new(ec.sysfs()), dimming))
@@ -1581,6 +1582,10 @@ impl Service {
             local_dimming: self.local_dimming_now(),
             gpu_mode: mux(GpuMux::now),
             gpu_mode_next: mux(GpuMux::next),
+            gpu_modes: self
+                .gpu_mux
+                .as_ref()
+                .map(|(_, mux)| mux.modes().iter().map(ToString::to_string).collect()),
             dgpu_awake,
             dgpu_for_secs,
             dgpu_users,
@@ -1853,22 +1858,27 @@ impl Service {
         Ok(if on { "on" } else { "off" }.to_owned())
     }
 
-    /// `hybrid` or `discrete` from the next restart on. Waits for the
-    /// BIOS's answer, which comes through ACPI in a moment.
+    /// `hybrid`, `discrete` or `integrated` from the next restart on.
+    /// Waits for the BIOS's answer, which comes through ACPI in a moment.
     pub async fn set_gpu_mode(&mut self, mode: &str) -> fdo::Result<()> {
         let want = GpuMode::from_name(mode).ok_or_else(|| {
-            fdo::Error::InvalidArgs(format!("gpu mode {mode:?}: hybrid or discrete"))
+            fdo::Error::InvalidArgs(format!("gpu mode {mode:?}: hybrid, discrete or integrated"))
         })?;
         let (raw, mux) = self.gpu_mux.as_ref().ok_or_else(|| {
             fdo::Error::NotSupported("gpu_mode: this EC's map doesn't have the MUX".into())
         })?;
+        if !mux.modes().contains(&want) {
+            return Err(fdo::Error::NotSupported(format!(
+                "gpu_mode: this laptop has no {want} mode"
+            )));
+        }
         let failed = |e| raw_error("gpu_mode", e);
-        // The BIOS flips, so ask only to change what's coming.
+        // Where the BIOS flips, a second ask would take the first back.
         let before = mux.next(raw).map_err(failed)?;
         if before == want {
             return Ok(());
         }
-        mux.ask(raw).map_err(failed)?;
+        mux.ask(raw, want).map_err(failed)?;
         for _ in 0..30 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match mux.answer(raw).map_err(failed)? {
@@ -1884,6 +1894,7 @@ impl Service {
                 None => {}
             }
         }
+        mux.withdraw(before).map_err(failed)?;
         Err(fdo::Error::Failed(
             "gpu_mode: the EC didn't pass the switch on to the BIOS".into(),
         ))
@@ -3401,5 +3412,119 @@ mod tests {
         assert_eq!(gpu_modes(&other), (None, None));
         assert!(other.set_gpu_mode("discrete").await.is_err());
         assert_eq!(ram(elsewhere.path())[0xd1], 0);
+    }
+
+    const DC_VAR: &str = "firmware/efi/efivars/MsiDCVarData-dd96baaf-145e-4f56-b1cf-193256298e99";
+
+    /// The Titan 18 HX with `MsiDCVarData`'s byte 5 at `gpu`.
+    fn titan_mux(gpu: u8) -> tempfile::TempDir {
+        let sysfs = titan18hx("comfort", 0xc1, true);
+        let var = sysfs.path().join(DC_VAR);
+        fs::create_dir_all(var.parent().unwrap()).unwrap();
+        let mut raw = [0u8; 24];
+        raw[..11].copy_from_slice(&[0x07, 0, 0, 0, 0x01, 0x01, 0, 0x04, 0, gpu, 0x01]);
+        fs::write(var, raw).unwrap();
+        sysfs
+    }
+
+    fn gpu_byte(sysfs: &Path) -> u8 {
+        fs::read(sysfs.join(DC_VAR)).unwrap()[9]
+    }
+
+    /// The Titan's SMM as its handler for SMI 0x11 does it: takes the mode
+    /// asked for in `MsiDCVarData`, keeps it, and answers, until `done`.
+    fn titan_bios(sysfs: &Path, kept: u8) -> (Arc<AtomicBool>, thread::JoinHandle<()>) {
+        let ec = RawEc::new(sysfs);
+        let var = sysfs.join(DC_VAR);
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = done.clone();
+        let bios = thread::spawn(move || {
+            let mut kept = kept;
+            while !stop.load(Ordering::Relaxed) {
+                let mut switch = [0];
+                ec.read(0xd1, &mut switch).unwrap();
+                if switch[0] & 1 != 0 {
+                    let asked = fs::read(&var).unwrap()[9] & 0x03;
+                    let mut answer = switch[0] & !0x03;
+                    if asked != kept {
+                        kept = asked;
+                        answer = if kept == 1 {
+                            answer | 0x04
+                        } else {
+                            answer & !0x04
+                        };
+                    }
+                    ec.write(0xd1, &[answer | 0x02]).unwrap();
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        (done, bios)
+    }
+
+    #[tokio::test]
+    async fn gpu_mode_on_the_titan_is_kept() {
+        let sysfs = titan_mux(0x35);
+        let mut service = service(sysfs.path());
+        let both = |now: &str, next: &str| (Some(now.to_owned()), Some(next.to_owned()));
+        assert_eq!(gpu_modes(&service), both("discrete", "discrete"));
+        assert_eq!(
+            service.status().gpu_modes,
+            Some(vec![
+                "hybrid".into(),
+                "discrete".into(),
+                "integrated".into()
+            ])
+        );
+
+        let (done, bios) = titan_bios(sysfs.path(), 1);
+        service.set_gpu_mode("hybrid").await.unwrap();
+        assert_eq!(gpu_modes(&service), both("discrete", "hybrid"));
+        assert_eq!(gpu_byte(sysfs.path()), 0x34);
+        service.set_gpu_mode("integrated").await.unwrap();
+        assert_eq!(gpu_modes(&service), both("discrete", "integrated"));
+        assert_eq!(gpu_byte(sysfs.path()), 0x36);
+        assert_eq!(ram(sysfs.path())[0xd1] & 0x07, 0x02);
+
+        // Already coming: nothing is asked.
+        let before = ram(sysfs.path());
+        service.set_gpu_mode("integrated").await.unwrap();
+        assert_eq!(ram(sysfs.path()), before);
+
+        service.set_gpu_mode("discrete").await.unwrap();
+        assert_eq!(gpu_modes(&service), both("discrete", "discrete"));
+        assert_eq!(gpu_byte(sysfs.path()), 0x35);
+        assert_eq!(ram(sysfs.path())[0xd1] & 0x07, 0x06);
+        done.store(true, Ordering::Relaxed);
+        bios.join().unwrap();
+
+        // Where the panel is, only the EC writes.
+        assert_eq!(ram(sysfs.path())[0x2e], 0x0b);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gpu_mode_on_the_titan_needs_an_answer() {
+        let sysfs = titan_mux(0x35);
+        let mut titan = service(sysfs.path());
+        let err = titan.set_gpu_mode("hybrid").await.unwrap_err();
+        assert!(err.to_string().contains("didn't pass"), "{err}");
+        // The ask is taken back, so the next restart stays as it was.
+        assert_eq!(gpu_byte(sysfs.path()), 0x35);
+        assert_eq!(
+            gpu_modes(&titan),
+            (Some("discrete".into()), Some("discrete".into()))
+        );
+
+        // A mode the BIOS doesn't have isn't asked for.
+        let without = titan_mux(0x15);
+        let mut lacking = service(without.path());
+        let err = lacking.set_gpu_mode("integrated").await.unwrap_err();
+        assert!(err.to_string().contains("no integrated"), "{err}");
+        assert_eq!(gpu_byte(without.path()), 0x15);
+        assert_eq!(ram(without.path())[0xd1], 0);
+
+        // Without bit 4 the Titan's MUX isn't there.
+        let old = titan_mux(0x05);
+        assert_eq!(gpu_modes(&service(old.path())), (None, None));
     }
 }
