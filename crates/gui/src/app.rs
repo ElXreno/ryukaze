@@ -400,6 +400,12 @@ impl App {
                             self.preview(profile)
                         }
                     }
+                    // Not read: what's open stays, rather than a blank one
+                    // over it. Asked for nothing in particular, a blank one.
+                    Err(err) if !err.is_empty() && self.lights.is_some() => {
+                        self.error = Some(err);
+                        Task::none()
+                    }
                     Err(_) => {
                         let editor = lights::Editor::new();
                         let profile = editor.preview();
@@ -2020,6 +2026,16 @@ mod tests {
             kept_hint(&status),
             "Changes here are kept; the config sets cooler boost when hot, the charge limit and its marks again at every start"
         );
+    }
+
+    #[test]
+    fn a_profile_not_read_leaves_the_editor_as_it_is() {
+        let mut app = app(alpha17());
+        let profile = "name = \"mine\"\neffect = \"static\"\n".to_owned();
+        let _ = app.update(Message::LightsRead(Ok(profile)));
+        let _ = app.update(Message::LightsRead(Err("gone".into())));
+        assert_eq!(app.lights.as_ref().unwrap().name(), "mine");
+        assert_eq!(app.error.as_deref(), Some("gone"));
     }
 
     #[test]

@@ -55,8 +55,8 @@ bottom, puts the settings on the clipboard in the shape of
 Devices has the keyboard light's profiles, the standard ones and the
 config's, and under them those saved here. Edit, by them, opens its editor
 on the profile shown, or on what was left there unsaved, with the profiles
-above it to open another or start a new one: a picture of the keyboard, an
-effect with its colours, and a colour, from sliders, a hex code or a
+above it to open another or start a new one, which asks first if there
+are changes to lose: a picture of the keyboard, an effect with its colours, and a colour, from sliders, a hex code or a
 swatch, for whichever of them is picked. Keys picked on the picture, by a
 click, by dragging over them or by group, take the colour as their own;
 with none picked, it's the effect's. What it has shows on the keyboard as

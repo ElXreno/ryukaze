@@ -474,6 +474,15 @@ pub struct Editor {
     hex: String,
     /// Changed since it was opened or saved.
     unsaved: bool,
+    /// Where to go once it's said what becomes of the changes.
+    leaving: Option<Leaving>,
+}
+
+/// Another profile asked for with changes unsaved.
+#[derive(Debug, Clone, PartialEq)]
+enum Leaving {
+    New,
+    Open(String),
 }
 
 #[derive(Debug, Clone)]
@@ -510,6 +519,10 @@ pub enum Msg {
     New,
     /// Another of the daemon's, as it is.
     Open(String),
+    /// The changes dropped, for the profile asked for.
+    Discard,
+    /// The changes kept, and the profile asked for left.
+    Stay,
     Save,
     /// Saved under this name instead: a standard one's copy.
     SaveAs(String),
@@ -556,6 +569,7 @@ impl Editor {
             slot: Slot::Color,
             hex,
             unsaved: false,
+            leaving: None,
         }
     }
 
@@ -637,6 +651,8 @@ impl Editor {
     }
 
     pub fn update(&mut self, msg: Msg) -> Outcome {
+        // Anything else answers it: the changes stay.
+        let leaving = self.leaving.take();
         match msg {
             Msg::Pick(key, on) => {
                 if self.layer > 0 {
@@ -813,8 +829,23 @@ impl Editor {
                     Outcome::Save(self.toml())
                 };
             }
+            Msg::New | Msg::Open(_) if self.unsaved => {
+                self.leaving = Some(match msg {
+                    Msg::Open(name) => Leaving::Open(name),
+                    _ => Leaving::New,
+                });
+                return Outcome::Nothing;
+            }
             Msg::New => return Outcome::New,
             Msg::Open(name) => return Outcome::Open(name),
+            Msg::Discard => {
+                return match leaving {
+                    Some(Leaving::New) => Outcome::New,
+                    Some(Leaving::Open(name)) => Outcome::Open(name),
+                    None => Outcome::Nothing,
+                };
+            }
+            Msg::Stay => return Outcome::Nothing,
             Msg::SaveAs(name) => {
                 self.name = name;
                 return Outcome::Save(self.toml());
@@ -1085,14 +1116,23 @@ impl Editor {
              computer, and Delete forgets it again; Copy as Nix puts it on the clipboard for \
              services.ryukaze.settings.keyboard.profiles.",
         );
-        column![
-            header,
-            profiles,
-            body,
-            text(hint).size(12).style(theme::muted)
-        ]
-        .spacing(GAP)
-        .into()
+        let question = self.leaving.as_ref().map(|_| {
+            row![
+                text(format!("The changes to {name} aren't saved")).size(13),
+                small("Discard them", Msg::Discard),
+                small("Keep editing", Msg::Stay),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .wrap()
+            .vertical_spacing(6)
+        });
+        column![header, profiles]
+            .push(question)
+            .push(body)
+            .push(text(hint).size(12).style(theme::muted))
+            .spacing(GAP)
+            .into()
     }
 
     /// Under the picture: picking by group.
@@ -1822,11 +1862,56 @@ mod tests {
             editor.update(Msg::Delete),
             Outcome::Delete("two tone".into())
         );
-        assert_eq!(editor.update(Msg::New), Outcome::New);
         editor.saved();
         assert!(!editor.unsaved());
+        assert_eq!(editor.update(Msg::New), Outcome::New);
         let _ = editor.update(Msg::Name(" ".into()));
         assert_eq!(editor.update(Msg::Save), Outcome::Nothing);
+    }
+
+    #[test]
+    fn asks_before_dropping_changes() {
+        let open = || Msg::Open("wave".into());
+        let mut editor = Editor::new();
+        // Nothing to lose: straight there.
+        assert_eq!(editor.update(open()), Outcome::Open("wave".into()));
+
+        let _ = editor.update(Msg::Name("mine".into()));
+        assert_eq!(editor.update(open()), Outcome::Nothing);
+        assert_eq!(editor.leaving, Some(Leaving::Open("wave".into())));
+        assert_eq!(editor.update(Msg::Discard), Outcome::Open("wave".into()));
+
+        // Kept: nothing left of the question, and a discard goes nowhere.
+        assert_eq!(editor.update(Msg::New), Outcome::Nothing);
+        assert_eq!(editor.update(Msg::Stay), Outcome::Nothing);
+        assert_eq!(editor.leaving, None);
+        assert_eq!(editor.update(Msg::Discard), Outcome::Nothing);
+        assert!(editor.unsaved());
+
+        // Going on editing answers it too.
+        assert_eq!(editor.update(Msg::New), Outcome::Nothing);
+        let _ = editor.update(Msg::PickAll);
+        assert_eq!(editor.leaving, None);
+    }
+
+    #[test]
+    fn shows_the_question() {
+        let known = Known {
+            standard: vec!["wave".into()],
+            saved: Vec::new(),
+        };
+        let mut editor = Editor::new();
+        let _ = editor.update(Msg::Name("mine".into()));
+        let mut ui = iced_test::simulator(editor.view(1000.0, &known));
+        assert!(ui.find("Keep editing").is_err());
+        drop(ui);
+
+        let _ = editor.update(Msg::New);
+        let mut ui = iced_test::simulator(editor.view(1000.0, &known));
+        assert!(ui.find("The changes to mine aren't saved").is_ok());
+        ui.click("Discard them").unwrap();
+        let messages: Vec<Msg> = ui.into_messages().collect();
+        assert!(matches!(messages[..], [Msg::Discard]));
     }
 
     /// What ReadKeyboardProfile gives, as the daemon writes it.
