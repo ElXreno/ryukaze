@@ -111,6 +111,10 @@ dgpu_waking = true
 name = "static"
 color = "#ff6000"
 keys = { wasd = "#ff0000", arrows = "#ffffff" }
+# Where there's a light bar and a logo (the Titan 18 HX): still, in
+# `color` unless told.
+bar = "#ff0000"
+logo = "#ffffff"
 
 [[keyboard.profiles]]
 name = "breathe"

@@ -1,7 +1,8 @@
 # The keyboard's backlight
 
 On a controller checked, the SteelSeries KLC (1038:113a) of the Alpha 17
-C7VG, ryukazed lights the keys in profiles: a standard one for each effect
+C7VG, or the KLC (1038:1122) of the Titan 18 HX A2WJ with its light bar and
+logo, ryukazed lights the keys in profiles: a standard one for each effect
 (static, breathe, cycle, wave and reactive, white or the rainbow), the
 config's (see the [config](config.md)), and those saved in the window. The
 one shown is a scenario's own, from `keyboard.scenarios` or picked under
@@ -55,7 +56,17 @@ Keys: `a` to `z`, `0` to `9`, `f1` to `f12`, `esc`, `tab`, `capslock`,
 `delete`, `pageup`, `pagedown` (Home and End share them), `up`, `down`,
 `left`, `right`, `numlock`, `kp0` to `kp9`, `kpslash`, `kpasterisk`,
 `kpminus`, `kpplus`, `kpenter`, `kpdot`, `lctrl`, `lshift`, `lalt`, `win`,
-`ralt`, `rshift`, `fn`, `copilot`, and `power`, the power button's light.
+`ralt`, `rshift`, `fn`, `copilot` (or `rctrl`, where right Ctrl is), and
+`power`, the power button's light.
+
+## The Titan 18 HX
+
+Its controller's effects aren't checked yet, so there it shows every
+profile still: a profile's effect gives way to its `color`, or the first of
+its `colors`, and a zone's keys take the zone's `color`. Nothing goes to
+its flash. Its touchpad, lit from below (its light bar), and the logo on
+the lid show a profile's `bar` and `logo`, still, or its `color` where it
+has none of its own (see the [config](config.md)).
 
 Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
 Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`

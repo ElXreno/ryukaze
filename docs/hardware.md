@@ -9,8 +9,9 @@
   (1038:113a), and Fn+F9 needs a hwdb entry (see
   [using ryukaze](usage.md#the-fn-keys)).
 - MSI Titan 18 HX A2WJ (MS-1824), EC firmware 1824EMS1.509: the fan
-  curves and rpm, [the GPU MUX](#the-gpu-mux), [Apex](#apex) and
-  [local dimming](#local-dimming).
+  curves and rpm, [the GPU MUX](#the-gpu-mux), [Apex](#apex),
+  [local dimming](#local-dimming), and the keyboard's light still, with
+  the touchpad's light and logo (see [the keyboard's controller](#the-keyboards-controller)).
 
 ## The EC's RAM
 
@@ -149,3 +150,29 @@ all), the zero byte after it did nothing whatever its bits, nor did the
 effect a flashing key is on, and the flash's length only makes both flashes
 longer or shorter (0 ticks, no flash; 0xffff, lit for good after the first
 press).
+
+On the Titan 18 HX A2WJ (board MS-1824) the keyboard's controller is a KLC
+1038:1122, and the touchpad's light (lit from below, MSI's light bar
+there) and the logo on the lid are on an ALC beside it, 1038:1169, both
+with firmware 2.61 (`10 00` reads it, minor then major) and the same
+reports as the 113a. 1122 is on many MSI laptops with other keyboards, so
+ryukazed takes it only on that board. Checked on it, live: a still report
+there colours the keys it lists, its third byte how many entries the
+controller reads, until the next brightness key redraws the keyboard a few
+seconds later; a table of still slots, then `0d 00 02`, shows at once and
+stays through that. There a table's count picks one of four regions,
+whose keys alone it takes: 42 for the letters, digits and F1 to F6, 11 for
+Enter, `\`, the key by right Alt and the power button, 24 for the other
+keys of the main board, Win, Copilot and Fn among them, and 36 for F7 on,
+the navigation keys, the arrows and the numpad; a key in another region's
+table never shows, and the slots left over go to key 0xff. A table changes
+only the keys it lists. Effects (`0b`) ryukazed doesn't send there yet, nor
+`09`: one effect with no steps once left another laptop's 1122 dark for
+good, and how its flash takes a save isn't known. `51 00 [r] [g] [b]`
+scales each channel at full; ryukazed gives it MSI's scale for the Titan at
+every start, which it already had.
+
+The ALC's zones are 0 to 4 for the touchpad, in rows from the keyboard's
+edge to the front, and 5 for the logo: one report of `0e 00 06 00` and a
+still slot each, as above but for the zone in the key's place, then
+`0d 00 02`, shows them; zones left out keep their colours.

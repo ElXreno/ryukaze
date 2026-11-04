@@ -8,6 +8,7 @@ use ryukaze_core::{
     COOLER_BOOST_MARKS,
     fans::{Curve, Fan},
     keyboard::{self, Color, Effect, Lighting, Origin, Zone},
+    lightbar,
     power_supply::Source,
 };
 use serde::{Deserialize, Serialize};
@@ -231,6 +232,13 @@ pub struct KeyboardProfile {
     /// earlier.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub zones: Vec<KeyboardZone>,
+
+    /// The light bar and the logo, where there are: still, in `color`
+    /// unless told.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bar: Option<KeyboardColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<KeyboardColor>,
 }
 
 /// Keys, by name, with an effect of their own: what a profile takes, but
@@ -478,6 +486,18 @@ impl KeyboardProfile {
             color: self.color.map(|KeyboardColor(color)| color),
             keys,
             zones,
+        })
+    }
+
+    /// The light bar's and the logo's colours: their own, or the profile's
+    /// `color`, or the other's; none where none of them has one.
+    pub fn lights(&self) -> Option<lightbar::Lights> {
+        let color =
+            |own: Option<KeyboardColor>| own.or(self.color).map(|KeyboardColor(color)| color);
+        let (bar, logo) = (color(self.bar), color(self.logo));
+        Some(lightbar::Lights {
+            bar: bar.or(logo)?,
+            logo: logo.or(bar)?,
         })
     }
 }
@@ -1508,6 +1528,37 @@ mod tests {
                 .contains(&"keyboard.power.follows".to_owned())
         );
         assert!(load("[keyboard.power]\nfollows = \"moon\"\n").is_err());
+    }
+
+    #[test]
+    fn light_bar_and_logo_follow_the_profile_unless_told() {
+        let lights = |toml: &str| toml::from_str::<KeyboardProfile>(toml).unwrap().lights();
+        let red = Color([0xff, 0, 0]);
+        let green = Color([0, 0xff, 0]);
+        assert_eq!(
+            lights("name = \"a\"\ncolor = \"#ff0000\"\n"),
+            Some(lightbar::Lights {
+                bar: red,
+                logo: red
+            })
+        );
+        assert_eq!(
+            lights("name = \"a\"\ncolor = \"#ff0000\"\nlogo = \"#00ff00\"\n"),
+            Some(lightbar::Lights {
+                bar: red,
+                logo: green
+            })
+        );
+        // A cycle has no colour: the one told goes for both.
+        assert_eq!(
+            lights("name = \"a\"\neffect = \"cycle\"\nbar = \"#00ff00\"\n"),
+            Some(lightbar::Lights {
+                bar: green,
+                logo: green
+            })
+        );
+        assert_eq!(lights("name = \"a\"\neffect = \"cycle\"\n"), None);
+        assert!(toml::from_str::<KeyboardProfile>("name = \"a\"\nbar = \"red\"\n").is_err());
     }
 
     #[test]
