@@ -23,6 +23,7 @@
     {
       packages = forAllSystems (pkgs: {
         default = pkgs.callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
+        gg-layouts = pkgs.callPackage ./nix/gg-layouts.nix { craneLib = crane.mkLib pkgs; };
       });
 
       nixosModules.default = import ./nix/module.nix self;
@@ -31,7 +32,18 @@
       # (nix/test.nix).
       checks =
         nixpkgs.lib.recursiveUpdate
-          (forAllSystems (pkgs: self.packages.${pkgs.stdenv.hostPlatform.system}.default.tests))
+          (
+            forAllSystems (
+              pkgs:
+              let
+                packages = self.packages.${pkgs.stdenv.hostPlatform.system};
+              in
+              packages.default.tests
+              // nixpkgs.lib.mapAttrs' (
+                name: nixpkgs.lib.nameValuePair "gg-layouts-${name}"
+              ) packages.gg-layouts.tests
+            )
+          )
           {
             x86_64-linux.vm = import ./nix/test.nix {
               pkgs = nixpkgs.legacyPackages.x86_64-linux;

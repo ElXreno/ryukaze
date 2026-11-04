@@ -2,7 +2,8 @@
 //! it reports, the sysfs it reads (msi-ec, power supplies, the dGPU), the
 //! EC RAM behind ec_sys for what msi-ec lacks (the fan curves, USB Power
 //! Share, the GPU MUX, Apex, local dimming), MSI's EFI variable and the
-//! lighting controllers, the keyboard's and the light bar's.
+//! lighting controllers, the keyboard's and the light bar's, and the
+//! keyboard pictures' layout files.
 
 pub mod apex;
 pub mod dgpu;
@@ -10,6 +11,7 @@ pub mod efivar;
 pub mod fans;
 pub mod gpu_mux;
 pub mod keyboard;
+pub mod layout;
 pub mod lightbar;
 pub mod lighting;
 pub mod local_dimming;

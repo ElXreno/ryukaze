@@ -39,13 +39,26 @@ struct Model {
     zones: &'static [Zone],
 }
 
-/// The Titan's touchpad rows, from the keyboard to the front: 0.86 of a key
-/// apart, the first 1.4 keys below the last row of keys.
+/// How many rows the Titan's touchpad lights.
+pub const BAR_ROWS: u8 = 5;
+
+/// Where the Titan's touchpad row `id` lies, from the keyboard to the front:
+/// 0.86 of a key apart, the first 1.4 keys below the last row of keys.
+pub const fn bar_row_at(id: u8) -> [u16; 2] {
+    [ACROSS / 2, 1379 + 206 * id as u16]
+}
+
+/// Where the Titan's logo lies: on the lid, above the keys, about a tenth
+/// of the way across them from the left as seen from the keys (MSI's
+/// picture of the lid has it a sixth of the way across a lid wider than
+/// the keys).
+pub const LOGO_AT: [u16; 2] = [ACROSS / 10, 0];
+
 const fn bar_row(id: u8) -> Zone {
     Zone {
         id,
         part: Part::Bar,
-        at: [ACROSS / 2, 1379 + 206 * id as u16],
+        at: bar_row_at(id),
     }
 }
 
@@ -64,7 +77,7 @@ const MODELS: [Model; 1] = [
             Zone {
                 id: 5,
                 part: Part::Logo,
-                at: [ACROSS / 2, 0],
+                at: LOGO_AT,
             },
         ],
     },
@@ -93,6 +106,14 @@ pub fn find(sysfs: &Path, dev: &Path) -> Option<Alc> {
 impl Alc {
     pub fn node(&self) -> &Path {
         &self.node
+    }
+
+    /// The parts it lights, each once, in the order profiles name them.
+    pub fn parts(&self) -> Vec<Part> {
+        Part::ALL
+            .into_iter()
+            .filter(|part| self.model.zones.iter().any(|zone| zone.part == *part))
+            .collect()
     }
 
     /// The bar and the logo as `lighting` has them.
@@ -198,6 +219,7 @@ mod tests {
         board(sysfs.path(), "MS-1824");
         let alc = find(sysfs.path(), dev).unwrap();
         assert_eq!(alc.node(), Path::new("/dev/hidraw2"));
+        assert_eq!(alc.parts(), [Part::Bar, Part::Logo]);
     }
 
     const TITAN: &Model = &MODELS[0];

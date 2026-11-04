@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/core",
   "crates/daemon",
+  "crates/gg-layouts",
   "crates/gui",
 ]
 
@@ -18,15 +19,18 @@ anyhow = "1"
 futures-util = { version = "0.3", default-features = false }
 # Software rendering only: a GPU renderer opens Vulkan/GL, and on a hybrid
 # laptop that can wake the discrete GPU for a small settings window.
-iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "wayland", "x11", "tokio", "crisp", "canvas", "advanced"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "wayland", "x11", "tokio", "crisp", "canvas", "advanced", "image-without-codecs"] }
 # The OSD draws iced off screen, for a layer-shell surface of its own.
 iced_runtime = "0.14"
+image-webp = "0.2"
 ksni = { version = "0.3.6", default-features = false, features = ["tokio"] }
+png = "0.18"
 # 0.45 draws with the same tiny-skia as iced.
 resvg = { version = "0.45", default-features = false }
 rustix = "1.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1_smol = "1"
 # The OSD's layer shell, as winit has it: no xkbcommon.
 smithay-client-toolkit = { version = "0.19.2", default-features = false, features = ["calloop"] }
 tempfile = "3"

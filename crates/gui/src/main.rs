@@ -1,22 +1,31 @@
 //! ryukaze: a window and a tray icon onto ryukazed.
 
+mod anim;
 mod app;
 mod appearance;
+mod bootlogo;
 mod client;
 mod curve;
+mod demo;
 mod history;
 mod icon;
 mod instance;
+mod laptop;
+mod layouts;
 mod lights;
+mod machine;
 mod nix;
 mod osd;
+mod picker;
 mod renderer;
 mod report;
 mod scenarios;
+mod system;
 mod theme;
+mod tip;
 mod tray;
 
-const USAGE: &str = "usage: ryukaze [--hidden] [--session] [--next-scenario | --next-keyboard-profile | --toggle-local-dimming | --osd | --status [--json]]";
+const USAGE: &str = "usage: ryukaze [--hidden] [--session] [--demo] [--next-scenario | --next-keyboard-profile | --toggle-local-dimming | --osd | --status [--json]]";
 
 fn main() -> iced::Result {
     for (var, value) in renderer::choose() {
@@ -25,7 +34,7 @@ fn main() -> iced::Result {
     }
     let (mut session, mut hidden, mut next_scenario, mut osd) = (false, false, false, false);
     let (mut next_keyboard_profile, mut toggle_local_dimming) = (false, false);
-    let (mut status, mut json) = (false, false);
+    let (mut status, mut json, mut demo) = (false, false, false);
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             // Start in the tray only, as at login.
@@ -43,6 +52,8 @@ fn main() -> iced::Result {
             // Print what the window shows and exit; as JSON for scripts.
             "--status" => status = true,
             "--json" => json = true,
+            // The window over a made-up laptop, ryukazed left alone.
+            "--demo" => demo = true,
             _ => usage(&format!("unknown argument {arg:?}")),
         }
     }
@@ -87,13 +98,13 @@ fn main() -> iced::Result {
         }));
     }
 
-    if instance::hand_over(hidden) {
+    if !demo && instance::hand_over(hidden) {
         return Ok(());
     }
     theme::load();
 
     iced::daemon(
-        move || app::App::new(session, hidden),
+        move || app::App::new(session, hidden, demo),
         app::App::update,
         app::App::view,
     )

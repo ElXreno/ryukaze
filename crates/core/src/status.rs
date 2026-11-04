@@ -156,6 +156,11 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub numpad_follows_numlock: Option<bool>,
 
+    /// The lights beside the keys the laptop has, as profiles name them:
+    /// `bar`, `logo`.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub lighting_parts: Option<Vec<String>>,
+
     /// The scenario applied when the laptop goes on AC, and on battery:
     /// `""` for none, `*` for modes the config gives it of its own.
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]

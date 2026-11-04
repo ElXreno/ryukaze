@@ -29,6 +29,8 @@ let
     pname = "ryukaze";
     inherit (cargo.workspace.package) version;
     strictDeps = true;
+    # ryukaze-gg-layouts is a package of its own (nix/gg-layouts.nix).
+    cargoExtraArgs = "--locked --workspace --exclude ryukaze-gg-layouts";
 
     src = lib.fileset.toSource {
       root = ../.;
@@ -65,6 +67,7 @@ craneLib.buildPackage (
         $out/share/dbus-1/system.d/io.github.kontonkara.ryukaze.conf
       install -Dm644 data/ryukaze.desktop $out/share/applications/ryukaze.desktop
       install -Dm644 data/ryukaze.svg $out/share/icons/hicolor/scalable/apps/ryukaze.svg
+      install -Dm644 -t $out/share/ryukaze/keyboards data/keyboards/*.toml
     '';
 
     postFixup = ''

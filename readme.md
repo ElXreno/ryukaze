@@ -8,7 +8,7 @@ from scratch in Rust.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/window-dark.png">
-  <img alt="The window, wide: sensors, scenario and performance, fans, battery, devices and graphics" src="docs/images/window-light.png">
+  <img alt="The window: its pages in a sidebar, and the overview, with the temperatures, the battery, the keyboard light, and the scenario, performance and fans" src="docs/images/window-light.png">
 </picture>
 
 `ryukazed` is a small root daemon and the only process that touches the
@@ -38,7 +38,7 @@ The keyboard light's editor, shown on the keyboard as it goes:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/lights-dark.png">
-  <img alt="The keyboard light's editor: the keys in a wave's colours, with the effect and the colour beside them" src="docs/images/lights-light.png">
+  <img alt="The keyboard light's editor: the lid with its logo over the deck, the keys and the touchpad in a wave's colours, and the effect under them" src="docs/images/lights-light.png">
 </picture>
 
 And the card on screen when the modes change, as on Fn+F7:
@@ -110,6 +110,8 @@ start. The tray icon and the card start with sessions that have
 - [Config](docs/config.md): `/etc/ryukaze/config.toml`, every key
 - [The advanced fan mode](docs/fans.md)
 - [The keyboard's backlight](docs/keyboard.md): effects, keys, zones
+- [Keyboard layouts from GG](docs/gg-layouts.md): pictures for other
+  laptops, from a SteelSeries GG install of one's own
 - [D-Bus API](docs/dbus.md)
 - [Hardware notes](docs/hardware.md): what's tested, the EC's RAM, the GPU
   MUX, the keyboard's controller

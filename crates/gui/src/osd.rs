@@ -51,14 +51,20 @@ use smithay_client_toolkit::{
 };
 
 use crate::{
+    anim,
     app::capitalize,
     appearance, client,
     theme::{self, Colors},
 };
 
-/// How long a card stays, and how long it takes to come and to go.
+/// How long a card stays.
 const SHOWN: Duration = Duration::from_millis(1600);
-const FADE: Duration = Duration::from_millis(180);
+
+/// How long a card takes to come and to go, and a choice on it to move:
+/// none where the desktop asks for less motion.
+fn fade() -> Duration {
+    anim::lasting(180)
+}
 
 /// The surface, in logical pixels: the card sits at its bottom, with room
 /// for its shadow; the rest is see-through, and clicks go through it all.
@@ -124,7 +130,7 @@ enum Heard {
     /// The modes at start, to tell later changes from.
     Start(Status),
     Modes(Status),
-    Dark(bool),
+    Look(appearance::Change),
 }
 
 /// ryukazed's mode changes and the desktop's light or dark, on a thread
@@ -149,7 +155,7 @@ fn listen(session: bool, heard: channel::Sender<Heard>) {
         }
         let mut events = pin!(stream::select(
             client::modes(&session).map(Heard::Modes),
-            appearance::dark().map(Heard::Dark),
+            appearance::changes().map(Heard::Look),
         ));
         while let Some(event) = events.next().await {
             if heard.send(event).is_err() {
@@ -162,7 +168,7 @@ fn listen(session: bool, heard: channel::Sender<Heard>) {
 /// iced's software renderer, off screen, asked for by name: wgpu's would
 /// take the fastest GPU it finds, a discrete one too. Making it awaits
 /// nothing.
-fn software_renderer() -> Result<iced::Renderer, String> {
+pub(crate) fn software_renderer() -> Result<iced::Renderer, String> {
     let new = pin!(<iced::Renderer as Headless>::new(
         theme::font(),
         Pixels(16.0),
@@ -197,6 +203,9 @@ struct Osd {
 struct Shown {
     layer: LayerSurface,
     card: Card,
+    /// The card it took the place of, and when, while what's in force
+    /// moves from the one to the other.
+    before: Option<(Card, Instant)>,
     /// Nothing is drawn before the compositor's first configure.
     configured: bool,
     phase: Phase,
@@ -227,18 +236,25 @@ impl Osd {
                     self.show(card);
                 }
             }
-            Heard::Dark(dark) => {
-                self.dark = dark;
+            Heard::Look(change) => {
+                match change {
+                    appearance::Change::Dark(dark) => self.dark = dark,
+                    appearance::Change::Accent(accent) => theme::set_accent(accent),
+                    appearance::Change::Reduced(reduced) => anim::set_reduced(reduced),
+                    appearance::Change::Other => theme::read_desktop(),
+                }
                 self.draw();
             }
         }
     }
 
-    /// A card already up is swapped in place, without fading again.
+    /// A card already up is swapped in place, without fading again, what's
+    /// in force moving over.
     fn show(&mut self, card: Card) {
         match &mut self.shown {
             Some(shown) => {
-                shown.card = card;
+                let before = std::mem::replace(&mut shown.card, card);
+                shown.before = Some((before, Instant::now()));
                 shown.until = Instant::now() + SHOWN;
                 if let Phase::Out(_) = shown.phase {
                     shown.phase = Phase::Full;
@@ -265,9 +281,10 @@ impl Osd {
                 self.shown = Some(Shown {
                     layer,
                     card,
+                    before: None,
                     configured: false,
                     phase: Phase::In(Instant::now()),
-                    until: Instant::now() + FADE + SHOWN,
+                    until: Instant::now() + fade() + SHOWN,
                     scale: 1,
                 });
             }
@@ -302,11 +319,7 @@ impl Osd {
     }
 
     fn theme(&self) -> Theme {
-        if theme::is_dark(self.dark) {
-            Theme::Dark
-        } else {
-            Theme::Light
-        }
+        theme::theme(theme::is_dark(self.dark))
     }
 
     /// The card at its point in the fade; while it fades, the next frame
@@ -337,8 +350,24 @@ impl Osd {
                 1.0 - smooth(t)
             }
         };
+        let moved = shown.before.as_ref().map(|(_, at)| progress(*at));
+        if moved.is_some_and(|t| t >= 1.0) {
+            shown.before = None;
+        }
+        let before = shown
+            .before
+            .as_ref()
+            .zip(moved)
+            .map(|((card, _), t)| (card, smooth(t)));
         let scale = shown.scale.max(1);
-        let pixels = render(&mut self.renderer, &shown.card, &theme, opacity, scale);
+        let pixels = render(
+            &mut self.renderer,
+            &shown.card,
+            before,
+            &theme,
+            opacity,
+            scale,
+        );
         let (width, height) = (SIZE.0 as i32 * scale, SIZE.1 as i32 * scale);
         let Ok((buffer, canvas)) =
             self.pool
@@ -350,7 +379,7 @@ impl Osd {
         let surface = shown.layer.wl_surface();
         surface.set_buffer_scale(scale);
         surface.damage_buffer(0, 0, width, height);
-        if !matches!(shown.phase, Phase::Full) {
+        if !matches!(shown.phase, Phase::Full) || shown.before.is_some() {
             surface.frame(&self.qh, surface.clone());
         }
         if buffer.attach_to(surface).is_ok() {
@@ -361,7 +390,11 @@ impl Osd {
 
 /// How far into the fade that started at `start`, 0 to 1.
 fn progress(start: Instant) -> f32 {
-    (start.elapsed().as_secs_f32() / FADE.as_secs_f32()).min(1.0)
+    let fade = fade();
+    if fade.is_zero() {
+        return 1.0;
+    }
+    (start.elapsed().as_secs_f32() / fade.as_secs_f32()).min(1.0)
 }
 
 /// No jolt at either end.
@@ -382,13 +415,14 @@ fn argb(rgba: &[u8], canvas: &mut [u8]) {
 fn render(
     renderer: &mut iced::Renderer,
     card: &Card,
+    before: Option<(&Card, f32)>,
     theme: &Theme,
     opacity: f32,
     scale: i32,
 ) -> Vec<u8> {
-    let colors = Faded(*theme::colors(theme), opacity);
+    let colors = Faded(theme::colors(theme), opacity);
     let element: Element<'_, ()> = container(
-        container(colors.card(card))
+        container(colors.card(card, before))
             .padding([12, 18])
             .style(move |_| colors.panel()),
     )
@@ -480,6 +514,37 @@ fn card(before: &Status, after: &Status) -> Option<Card> {
     None
 }
 
+/// How far `each` of `card`'s choices is the one in force, 0 to 1, moving
+/// over from `before`'s the given part of the way; for a switch, how far
+/// on it is.
+fn in_force(card: &Card, before: Option<(&Card, f32)>, each: &str) -> f32 {
+    let now = |card: &Card| match card {
+        Card::Choice { name, .. } => f32::from(u8::from(name == each)),
+        Card::Switch(_, on) => f32::from(u8::from(*on)),
+        Card::Mode(..) => 0.0,
+    };
+    match before {
+        Some((before, moved)) if same_kind(card, before) => {
+            now(before) + (now(card) - now(before)) * moved
+        }
+        _ => now(card),
+    }
+}
+
+/// The same choice or switch, another of its values.
+fn same_kind(card: &Card, other: &Card) -> bool {
+    match (card, other) {
+        (
+            Card::Choice { heading, all, .. },
+            Card::Choice {
+                heading: h, all: a, ..
+            },
+        ) => heading == h && all == a,
+        (Card::Switch(name, _), Card::Switch(other, _)) => name == other,
+        _ => false,
+    }
+}
+
 /// The theme's colours, faded by the card's opacity.
 #[derive(Clone, Copy)]
 struct Faded(Colors, f32);
@@ -517,14 +582,10 @@ impl Faded {
             .into()
     }
 
-    /// A rounded label, filled when it's the one in force.
-    fn pill<'a>(&self, label: String, on: bool) -> Element<'a, ()> {
-        let (fill, ink) = if on {
-            (self.0.strong, self.0.on_strong)
-        } else {
-            (self.0.idle, self.0.muted)
-        };
-        let (fill, ink) = (self.of(fill), self.of(ink));
+    /// A rounded label, filled `on` of the way as the one in force.
+    fn pill<'a>(&self, label: String, on: f32) -> Element<'a, ()> {
+        let fill = self.of(anim::mix(self.0.idle, self.0.strong, on));
+        let ink = self.of(anim::mix(self.0.muted, self.0.on_strong, on));
         container(text(label).size(14).color(ink))
             .padding([5, 12])
             .style(move |_| container::Style {
@@ -538,13 +599,15 @@ impl Faded {
             .into()
     }
 
-    fn card<'a>(&self, card: &Card) -> Element<'a, ()> {
+    /// `card`, what's in force moving over from `before`'s, the given part
+    /// of the way.
+    fn card<'a>(&self, card: &Card, before: Option<(&Card, f32)>) -> Element<'a, ()> {
         match card {
             Card::Choice { heading, name, all } if all.contains(name) => column![
                 self.heading(heading),
                 row(all
                     .iter()
-                    .map(|each| self.pill(capitalize(each), each == name)))
+                    .map(|each| self.pill(capitalize(each), in_force(card, before, each))))
                 .spacing(6),
             ]
             .spacing(8)
@@ -558,7 +621,10 @@ impl Faded {
             }
             Card::Switch(name, on) => row![
                 text(*name).size(16),
-                self.pill(if *on { "On" } else { "Off" }.to_owned(), *on),
+                self.pill(
+                    if *on { "On" } else { "Off" }.to_owned(),
+                    in_force(card, before, "")
+                ),
             ]
             .spacing(14)
             .align_y(Alignment::Center)
@@ -736,7 +802,7 @@ mod tests {
     fn see_through_around_the_card() {
         let mut renderer = software_renderer().unwrap();
         let card = Card::Switch("Cooler boost", true);
-        let pixels = render(&mut renderer, &card, &Theme::Dark, 1.0, 1);
+        let pixels = render(&mut renderer, &card, None, &Theme::Dark, 1.0, 1);
         let alpha = |x: u32, y: u32| pixels[((y * SIZE.0 + x) * 4 + 3) as usize];
         assert_eq!(alpha(0, 0), 0, "a corner of the surface");
         assert_eq!(
@@ -746,7 +812,7 @@ mod tests {
         );
 
         // Half faded: about half see-through, its shadow under it.
-        let pixels = render(&mut renderer, &card, &Theme::Dark, 0.5, 1);
+        let pixels = render(&mut renderer, &card, None, &Theme::Dark, 0.5, 1);
         let middle =
             pixels[(((SIZE.1 - SHADOW as u32 - 4) * SIZE.0 + SIZE.0 / 2) * 4 + 3) as usize];
         assert!((110..=160).contains(&middle), "{middle}");
@@ -755,6 +821,26 @@ mod tests {
         argb(&[1, 2, 3, 4], &mut canvas);
         assert_eq!(canvas, [3, 2, 1, 4]);
     }
+    /// Fn+F7 again: the fill moves from the scenario before to the next.
+    #[test]
+    fn moves_whats_in_force() {
+        let choice = |name: &str| Card::Choice {
+            heading: "Scenario",
+            name: name.into(),
+            all: ["silent", "balanced", "performance"].map(Into::into).into(),
+        };
+        let (before, after) = (choice("silent"), choice("balanced"));
+        let half = Some((&before, 0.5));
+        assert_eq!(in_force(&after, half, "silent"), 0.5);
+        assert_eq!(in_force(&after, half, "balanced"), 0.5);
+        assert_eq!(in_force(&after, half, "performance"), 0.0);
+        assert_eq!(in_force(&after, None, "balanced"), 1.0);
+        let boost = Card::Switch("Cooler boost", true);
+        assert_eq!(in_force(&boost, Some((&before, 0.2)), ""), 1.0);
+        let off = Card::Switch("Cooler boost", false);
+        assert!((in_force(&boost, Some((&off, 0.25)), "") - 0.25).abs() < 1e-6);
+    }
+
     /// The readme's card, into target/shots: `cargo test -p ryukaze
     /// screenshots -- --ignored`, with `XDG_CONFIG_HOME` and
     /// `XDG_CONFIG_DIRS` at an empty directory for the built-in colours.
@@ -771,7 +857,7 @@ mod tests {
             all: ["silent", "balanced", "performance"].map(Into::into).into(),
         };
         for (theme, mode) in [(Theme::Light, "light"), (Theme::Dark, "dark")] {
-            let pixels = render(&mut renderer, &card, &theme, 1.0, 2);
+            let pixels = render(&mut renderer, &card, None, &theme, 1.0, 2);
             let size = IntSize::from_wh(SIZE.0 * 2, SIZE.1 * 2).unwrap();
             Pixmap::from_vec(pixels, size)
                 .unwrap()

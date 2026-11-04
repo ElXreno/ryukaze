@@ -20,11 +20,10 @@ every push, with rustfmt, nixfmt and clippy.
 
 ## The readme's pictures
 
-The window and the editor in `docs/images` are screenshots of the window
-in its built-in colours: with `XDG_CONFIG_DIRS` at an empty directory and
-`XDG_CONFIG_HOME` at one with only `ryukaze/theme.toml` saying `mode`,
-open ten minutes for the graphs, a second one for the other mode under
-`dbus-run-session` so it doesn't hand over to the first. The card is drawn:
+The pictures in `docs/images`, the window, the keyboard light's editor
+and the card, are drawn without a screen, over the demo's laptop
+(`ryukaze --demo`) in the built-in colours, with the logo the firmware
+gives where it gives one:
 
 ```sh
 XDG_CONFIG_HOME=/var/empty XDG_CONFIG_DIRS=/var/empty \

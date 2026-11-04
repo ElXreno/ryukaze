@@ -7,6 +7,7 @@ use iced::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::anim::Hover;
 use crate::{
     app::{FAN_ORDER, SHIFT_ORDER, capitalize},
     theme,
@@ -141,7 +142,7 @@ impl Editor {
             button(text("Save").size(13))
                 .on_press(Msg::Save)
                 .padding([4, 10])
-                .style(theme::segment(self.unsaved)),
+                .hover(theme::segment(self.unsaved)),
             small("Done", Msg::Done),
         ]
         .spacing(8)
@@ -186,6 +187,7 @@ impl Editor {
         let name = column![
             text("Name").size(12).style(theme::muted),
             text_input("a name", &scenario.name)
+                .style(theme::field)
                 .on_input(move |name| Msg::Name(i, name))
                 .size(13)
                 .width(160),
@@ -226,15 +228,15 @@ impl Editor {
             button(text("\u{2191}").size(13))
                 .on_press_maybe((i > 0).then_some(Msg::Up(i)))
                 .padding([4, 10])
-                .style(theme::segment(false)),
+                .hover(theme::segment(false)),
             button(text("\u{2193}").size(13))
                 .on_press_maybe((i < last).then_some(Msg::Down(i)))
                 .padding([4, 10])
-                .style(theme::segment(false)),
+                .hover(theme::segment(false)),
             button(text("Delete").size(13))
                 .on_press_maybe((last > 0).then_some(Msg::Remove(i)))
                 .padding([4, 10])
-                .style(theme::segment(false)),
+                .hover(theme::segment(false)),
         ]
         .spacing(4);
         let card: Element<'a, Msg> = if wide {
@@ -288,16 +290,14 @@ fn choice<'a>(label: String, chosen: bool, pick: Msg) -> Element<'a, Msg> {
         .on_press_maybe((!chosen).then_some(pick))
         .padding([4, 4])
         .width(Length::Fill)
-        .style(theme::segment(chosen))
-        .into()
+        .hover(theme::segment(chosen))
 }
 
 fn small<'a>(label: &'a str, press: Msg) -> Element<'a, Msg> {
     button(text(label).size(13))
         .on_press(press)
         .padding([4, 10])
-        .style(theme::segment(false))
-        .into()
+        .hover(theme::segment(false))
 }
 
 #[cfg(test)]

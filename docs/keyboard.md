@@ -64,6 +64,67 @@ Groups: `letters`, `digits`, `function` (F1 to F12), `navigation` (PrtSc,
 Scroll Lock, Insert, Delete, PgUp, PgDn), `arrows`, `numpad`, `modifiers`
 (Ctrl, Shift, Alt, Win, Copilot, Fn) and `wasd`.
 
+## The picture
+
+The window draws the keyboard from a layout: the Titan 18 HX's for its
+board, `MS-1824`, and the Alpha 17 C7VG's for any other laptop. A layout
+is a TOML file: its `name`, the DMI board names it's for in `boards`
+(`/sys/class/dmi/id/board_name`) and the CHIDs in `chids` (Windows'
+HardwareID-9, of `sys_vendor` and `product_name`; with neither, any
+laptop's), each key in `keys`
+with its HID usage `hid`, its `label` and its box, `x` and `y` from the
+top left and `w` and `h`, in key widths, and where there are the
+touchpad's box and its rows of light in `[touchpad]`, the deck's box in
+`[deck]`, keys and touchpad on it, and in `[logo]` the lid's width to its
+height, `lid`, and the logo's box on it as parts of the lid seen from the
+keys, drawn when the laptop has them. With a deck, the keys and the
+touchpad are drawn on it where they are, and the lid above it, as wide;
+without, the touchpad under the keys and the lid over them, close. Keys
+are the ones the config names, each once, none over another:
+
+```toml
+name = "My laptop"
+boards = ["MS-1234"]
+keys = [
+  { hid = 0x29, label = "Esc", x = 0, y = 0, w = 1, h = 0.6 },
+  { hid = 0x3a, label = "F1", x = 1, y = 0, w = 1, h = 0.6 },
+]
+
+[touchpad]
+x = 6
+y = 7.5
+w = 7
+h = 4.3
+rows = 5
+
+[deck]
+x = -1.5
+y = -1.2
+w = 21.4
+h = 13.8
+
+[logo]
+lid = 1.3
+x = 0.1
+y = 0.35
+w = 0.11
+h = 0.2
+```
+
+A new laptop takes a file and no rebuild: the window reads the `.toml`
+files in `ryukaze/keyboards` under `$XDG_DATA_HOME` (`~/.local/share`),
+then under the `share` beside the program's own `bin` (its package's, on
+NixOS too), then under each of `$XDG_DATA_DIRS`
+(`/usr/local/share:/usr/share`), at
+start, and the first for the laptop's board or CHID wins, over the
+built-in ones too; the first with no `boards` and no `chids` stands in
+for any other. One that doesn't
+read or check out is told of on stderr and left out. The built-in ones are
+[`data/keyboards`](../data/keyboards), installed to
+`share/ryukaze/keyboards`, made from SteelSeries GG's pictures by
+[ryukaze-gg-layouts](gg-layouts.md), which makes them for other MSI
+laptops too.
+
 ## The Titan 18 HX
 
 Its controller runs the same effects, but nothing goes to its flash, as

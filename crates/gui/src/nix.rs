@@ -18,7 +18,7 @@ pub enum Value {
 
 /// The settings `status` reports, as attributes to go inside
 /// `settings = { … };`.
-pub fn settings(status: &Status, curves: &[(Fan, Curve)]) -> String {
+pub fn settings(status: &Status, curves: &[(Fan, Curve)], profiles: Vec<Value>) -> String {
     let int = |n: u8| Value::Int(n.into());
     let mut top = Vec::new();
     put(&mut top, "charge_limit", status.charge_limit.map(int));
@@ -61,6 +61,12 @@ pub fn settings(status: &Status, curves: &[(Fan, Curve)]) -> String {
     if !fans.is_empty() {
         top.push(("fans".into(), Value::Attrs(fans)));
     }
+    if !profiles.is_empty() {
+        top.push((
+            "keyboard".into(),
+            Value::Attrs(vec![("profiles".into(), Value::List(profiles))]),
+        ));
+    }
 
     let mut nix = String::new();
     attrs(&mut nix, &top, 0);
@@ -68,6 +74,7 @@ pub fn settings(status: &Status, curves: &[(Fan, Curve)]) -> String {
 }
 
 /// An attribute set of its own, `{ … }`, for an element of a list.
+#[cfg(test)]
 pub fn attrset(entries: &[(String, Value)]) -> String {
     let mut nix = String::from("{\n");
     attrs(&mut nix, entries, 1);
@@ -89,11 +96,29 @@ fn name(key: &str) -> String {
         .next()
         .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '\''));
-    if bare {
-        key.to_owned()
-    } else {
-        format!("{key:?}")
+    if bare { key.to_owned() } else { string(key) }
+}
+
+/// `text` as a Nix string: quoted, with `\`, `"` and `${` escaped and the
+/// control characters Nix has escapes for written as them; anything else
+/// as it is.
+fn string(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            '$' if chars.peek() == Some(&'{') => quoted.push_str("\\$"),
+            c => quoted.push(c),
+        }
     }
+    quoted.push('"');
+    quoted
 }
 
 /// A value that goes on one line.
@@ -101,7 +126,7 @@ fn scalar(value: &Value) -> String {
     match value {
         Value::Bool(on) => on.to_string(),
         Value::Int(n) => n.to_string(),
-        Value::Str(text) => format!("{text:?}"),
+        Value::Str(text) => string(text),
         Value::List(_) | Value::Attrs(_) => unreachable!("not a scalar"),
     }
 }
@@ -112,12 +137,18 @@ fn attrs(nix: &mut String, attrs: &[(String, Value)], depth: usize) {
     for (key, value) in attrs {
         let _ = write!(nix, "{:indent$}{} = ", "", name(key), indent = depth * 2);
         match value {
-            Value::List(values) if values.len() == 1 => {
+            Value::List(values) if values.len() == 1 && !matches!(values[0], Value::Attrs(_)) => {
                 let _ = writeln!(nix, "[ {} ];", scalar(&values[0]));
             }
             Value::List(values) => {
                 nix.push_str("[\n");
                 for value in values {
+                    if let Value::Attrs(inner) = value {
+                        let _ = writeln!(nix, "{:indent$}{{", "", indent = depth * 2 + 2);
+                        self::attrs(nix, inner, depth + 2);
+                        let _ = writeln!(nix, "{:indent$}}}", "", indent = depth * 2 + 2);
+                        continue;
+                    }
                     let _ = writeln!(
                         nix,
                         "{:indent$}{}",
@@ -144,6 +175,17 @@ fn attrs(nix: &mut String, attrs: &[(String, Value)], depth: usize) {
 mod tests {
     use super::*;
 
+    /// Text Nix reads back as it was, `${` and the joiners included.
+    #[test]
+    fn writes_strings_nix_reads_back() {
+        assert_eq!(string("a${b}"), r#""a\${b}""#);
+        assert_eq!(string("$x {y}"), r#""$x {y}""#);
+        assert_eq!(string("q\"\\"), r#""q\"\\""#);
+        assert_eq!(string("\u{2764}\u{fe0f}"), "\"\u{2764}\u{fe0f}\"");
+        assert_eq!(string("a\nb"), r#""a\nb""#);
+        assert_eq!(name("my key"), r#""my key""#);
+    }
+
     #[test]
     fn writes_what_is_there() {
         let status = Status {
@@ -158,7 +200,7 @@ mod tests {
             ..Status::default()
         };
         let cpu = Curve::new(&[50, 57, 64, 71, 78, 85], &[0, 40, 45, 50, 57, 65, 80]).unwrap();
-        let nix = settings(&status, &[(Fan::Cpu, cpu)]);
+        let nix = settings(&status, &[(Fan::Cpu, cpu)], Vec::new());
         assert_eq!(
             nix,
             r#"charge_limit = 80;
@@ -241,6 +283,14 @@ fans = {
             charge_limit: Some(100),
             ..Status::default()
         };
-        assert_eq!(settings(&status, &[]), "charge_limit = 100;\n");
+        assert_eq!(settings(&status, &[], Vec::new()), "charge_limit = 100;\n");
+        let profile = Value::Attrs(vec![
+            ("name".into(), Value::Str("mine".into())),
+            ("color".into(), Value::Str("#ff6000".into())),
+        ]);
+        assert_eq!(
+            settings(&status, &[], vec![profile]),
+            "charge_limit = 100;\nkeyboard = {\n  profiles = [\n    {\n      name = \"mine\";\n      color = \"#ff6000\";\n    }\n  ];\n};\n"
+        );
     }
 }

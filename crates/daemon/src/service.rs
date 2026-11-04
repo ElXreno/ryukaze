@@ -1576,6 +1576,15 @@ impl Service {
             keyboard_profiles: keyboard.and(self.keyboard_names()),
             keyboard_saved_profiles: keyboard.map(|()| self.keyboard_saved_names()),
             numpad_follows_numlock: keyboard.map(|()| self.numpad_follows),
+            lighting_parts: keyboard.and_then(|()| {
+                let alc = lightbar::find(self.ec.sysfs(), &self.dev)?;
+                Some(
+                    alc.parts()
+                        .iter()
+                        .map(|part| part.name().to_owned())
+                        .collect(),
+                )
+            }),
             power_light: keyboard.map(|()| self.power_follows.name().to_owned()),
             power_light_dgpu: keyboard.map(|()| self.power_dgpu_waking),
             power_colors: keyboard.map(|()| {
