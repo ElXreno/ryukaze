@@ -1,6 +1,5 @@
 //! Kernel uevents: the AC adapter coming and going, msi-ec binding, and
-//! hidraw devices appearing (the keyboard's backlight controller among
-//! them).
+//! SteelSeries hidraw devices appearing (the backlight controllers).
 //! The same events udev rules would match, read straight from netlink.
 
 use std::{io, thread};
@@ -9,6 +8,7 @@ use rustix::{
     io::Errno,
     net::{AddressFamily, RecvFlags, SocketFlags, SocketType, bind, netlink, recv, socket_with},
 };
+use ryukaze_core::steelseries;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 
@@ -18,7 +18,7 @@ pub enum Event {
     Mains,
     /// msi-ec bound to its device: the driver was (re)loaded.
     MsiEcBound,
-    /// A hidraw device appeared.
+    /// A SteelSeries hidraw device appeared.
     Hidraw,
 }
 
@@ -62,8 +62,13 @@ pub fn listen(events: UnboundedSender<Event>) -> io::Result<()> {
 /// A uevent is `ACTION@DEVPATH` and then `KEY=VALUE` fields, all
 /// NUL-terminated.
 fn parse(message: &[u8]) -> Option<Event> {
+    let mut fields = message.split(|&byte| byte == 0);
+    let path = std::str::from_utf8(fields.next()?)
+        .ok()?
+        .split_once('@')
+        .map_or("", |(_, path)| path);
     let (mut action, mut subsystem, mut driver, mut supply_type) = ("", "", "", "");
-    for field in message.split(|&byte| byte == 0).skip(1) {
+    for field in fields {
         let Some((key, value)) = std::str::from_utf8(field).ok()?.split_once('=') else {
             continue;
         };
@@ -78,9 +83,22 @@ fn parse(message: &[u8]) -> Option<Event> {
     match (subsystem, action) {
         ("power_supply", "add" | "change") if supply_type == "Mains" => Some(Event::Mains),
         ("platform", "bind") if driver == "msi-ec" => Some(Event::MsiEcBound),
-        ("hidraw", "add") => Some(Event::Hidraw),
+        ("hidraw", "add") if steelseries_made(path) => Some(Event::Hidraw),
         _ => None,
     }
+}
+
+/// Whether a device path runs through a SteelSeries HID device, whose
+/// directory is `BUS:VENDOR:PRODUCT.INSTANCE` in hex.
+fn steelseries_made(path: &str) -> bool {
+    path.split('/').any(|part| {
+        let mut ids = part.split(':');
+        matches!(
+            (ids.next(), ids.next(), ids.next(), ids.next()),
+            (Some(bus), Some(vendor), Some(_), None)
+                if bus.len() == 4 && u16::from_str_radix(vendor, 16) == Ok(steelseries::VENDOR)
+        )
+    })
 }
 
 #[cfg(test)]
@@ -147,6 +165,14 @@ mod tests {
             "SUBSYSTEM=platform",
         ]);
         assert_eq!(parse(&unbind), None);
+
+        let security_key = message(&[
+            "add@/devices/pci0000:80/0000:80:14.0/usb1/1-6/1-6:1.0/0003:1050:0407.0021/hidraw/hidraw0",
+            "ACTION=add",
+            "SUBSYSTEM=hidraw",
+            "DEVNAME=hidraw0",
+        ]);
+        assert_eq!(parse(&security_key), None);
         assert_eq!(parse(b"garbage"), None);
     }
 }
