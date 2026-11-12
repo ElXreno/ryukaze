@@ -6,6 +6,7 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 use anyhow::{Context, Result, bail};
 use ryukaze_core::{
     COOLER_BOOST_MARKS,
+    epp::Epp,
     fans::{Curve, Fan},
     keyboard,
     lighting::{self, Color, Effect, Lighting, Origin, Part, Zone},
@@ -1036,6 +1037,10 @@ pub struct Profile {
     pub fan_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub super_battery: Option<bool>,
+    /// The CPU's energy-performance preference, held against whatever
+    /// else writes one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epp: Option<Epp>,
 }
 
 /// A [`Profile`] with a name, written out in full in the config: serde
@@ -1050,6 +1055,10 @@ pub struct Scenario {
     pub fan_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub super_battery: Option<bool>,
+    /// The CPU's energy-performance preference, held against whatever
+    /// else writes one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epp: Option<Epp>,
 }
 
 /// MSI Center's scenarios, for an EC without configured ones: (name, shift
@@ -1068,6 +1077,7 @@ impl Scenario {
             shift_mode: self.shift_mode.clone(),
             fan_mode: self.fan_mode.clone(),
             super_battery: self.super_battery,
+            epp: self.epp.clone(),
         }
     }
 }
@@ -1302,6 +1312,18 @@ mod tests {
             load("[[scenarios]]\nname = \"a\"\nshift_mode = \"eco\"\n[[scenarios]]\nname = \"a\"\nshift_mode = \"turbo\"\n")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn reads_the_cpu_preference_as_a_name_or_a_number() {
+        let config = load(
+            "[[scenarios]]\nname = \"games\"\nshift_mode = \"turbo\"\nepp = 132\n[profiles.battery]\nepp = \"power\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.scenarios[0].epp, Some(Epp::Raw(132)));
+        let battery = config.profiles.get(Source::Battery).unwrap();
+        assert_eq!(battery.epp, Some(Epp::Named("power".into())));
+        assert!(load("[profiles.ac]\nepp = 256\n").is_err());
     }
 
     #[test]

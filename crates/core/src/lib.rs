@@ -1,5 +1,6 @@
 //! Shared by ryukazed and its clients: the daemon's D-Bus names, the status
-//! it reports, the sysfs it reads (msi-ec, power supplies, the dGPU), the
+//! it reports, the sysfs it reads (msi-ec, power supplies, the dGPU, the
+//! CPU's energy-performance preference), the
 //! EC RAM behind ec_sys for what msi-ec lacks (the fan curves, USB Power
 //! Share, the GPU MUX, Apex, local dimming), MSI's EFI variable and the
 //! lighting controllers, the keyboard's and the light bar's, and the
@@ -8,6 +9,7 @@
 pub mod apex;
 pub mod dgpu;
 pub mod efivar;
+pub mod epp;
 pub mod fans;
 pub mod gpu_mux;
 pub mod keyboard;

@@ -46,6 +46,13 @@ super_battery = true
 # above. Without any: silent (eco, silent fans), balanced (comfort, auto)
 # and performance (turbo, auto), super battery off, those this EC has. The
 # window edits them too, unless they're set here.
+#
+# epp, here or in a profile above, is the CPU's energy-performance
+# preference: a name from cpufreq's
+# energy_performance_available_preferences, or with intel_pstate a number,
+# 0 for all performance to 255 for all saving. power-profiles-daemon sets
+# one with each of its profiles; this one is written again after it.
+# Without it the preference is left to whoever else sets it.
 [[scenarios]]
 name = "quiet"
 shift_mode = "eco"
@@ -56,6 +63,7 @@ name = "games"
 shift_mode = "turbo"
 fan_mode = "advanced"
 super_battery = false
+epp = "performance"
 
 # Cooler boost by itself, in any fan mode: on once the CPU or GPU has
 # stayed at its mark for 6 s, off once both have been 10 °C below for

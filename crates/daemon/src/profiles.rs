@@ -102,15 +102,18 @@ impl Profiles {
         let sync = service.get().await.power_profiles_sync();
         match event {
             power_profiles::Event::Profile(profile) => {
-                if !link.heard(&profile) || !sync {
-                    return;
+                if link.heard(&profile) && sync {
+                    let followed = service.get_mut().await.follow_power_profile(&profile);
+                    match followed {
+                        Ok(Some(applied)) => {
+                            info!("power-profiles-daemon: {profile}, so {applied}");
+                        }
+                        Ok(None) => {}
+                        Err(err) => warn!("power-profiles-daemon: {profile}: {err}"),
+                    }
                 }
-                let followed = service.get_mut().await.follow_power_profile(&profile);
-                match followed {
-                    Ok(Some(applied)) => info!("power-profiles-daemon: {profile}, so {applied}"),
-                    Ok(None) => {}
-                    Err(err) => warn!("power-profiles-daemon: {profile}: {err}"),
-                }
+                // It wrote its profile's preference over the one set here.
+                report(service.get().await.put_epp());
             }
             // It starts from the profile it saved: tell it this one.
             power_profiles::Event::Started => {
@@ -123,6 +126,7 @@ impl Profiles {
                 {
                     link.push(shift_mode).await;
                 }
+                report(service.get().await.put_epp());
             }
         }
     }

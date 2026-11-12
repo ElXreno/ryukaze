@@ -5,6 +5,7 @@ use iced::{
     Alignment, Element, Length,
     widget::{button, column, container, row, space, text, text_input},
 };
+use ryukaze_core::epp::Epp;
 use serde::{Deserialize, Serialize};
 
 use crate::anim::Hover;
@@ -23,6 +24,9 @@ pub struct Scenario {
     pub fan_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub super_battery: Option<bool>,
+    /// Kept as the config has it: the editor has no pick for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epp: Option<Epp>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -303,6 +307,20 @@ fn small<'a>(label: &'a str, press: Msg) -> Element<'a, Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keeps_a_preference_it_has_no_pick_for() {
+        let read = "[[scenarios]]\nname = \"performance\"\nshift_mode = \"turbo\"\nepp = 132\n";
+        let mut editor = Editor::from_toml(read).unwrap();
+        let _ = editor.update(Msg::FanMode(0, Some("advanced".into())));
+        let Outcome::Save(sent) = editor.update(Msg::Save) else {
+            panic!("no save");
+        };
+        assert_eq!(
+            sent,
+            "[[scenarios]]\nname = \"performance\"\nshift_mode = \"turbo\"\nfan_mode = \"advanced\"\nepp = 132\n"
+        );
+    }
 
     #[test]
     fn edits_and_writes_them_back() {

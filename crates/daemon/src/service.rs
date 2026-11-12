@@ -11,6 +11,7 @@ use ryukaze_core::{
     COOLER_BOOST_MARKS, Status,
     apex::{self, APEX, Apex},
     dgpu::{self, Dgpu},
+    epp::{self, Epp},
     fans::{self, Curve, Fan, Layout},
     gpu_mux::{self, GpuMode, GpuMux},
     keyboard::{self, Klc},
@@ -108,6 +109,9 @@ pub struct Service {
     ppd_found: bool,
     ppd_sync: bool,
     ppd_resync: bool,
+    /// The CPU's preference the profile applied last asked for, written
+    /// again after power-profiles-daemon writes its own.
+    epp: Option<String>,
     /// Where the controller's hidraw node is.
     dev: PathBuf,
 }
@@ -253,6 +257,7 @@ fn built_in_scenarios(ec: &MsiEc) -> Vec<Scenario> {
             shift_mode: Some(shift.into()),
             fan_mode: Some(fan.into()),
             super_battery,
+            epp: None,
         })
         .collect()
 }
@@ -315,15 +320,21 @@ impl Service {
             ppd_found: false,
             ppd_sync: true,
             ppd_resync: false,
+            epp: None,
             dev: PathBuf::from("/dev"),
         }
     }
 
     /// The modes `profile` sets: super battery left before the shift mode
-    /// goes up, and entered after it comes down. All are tried; the first
-    /// failure is returned and the others logged.
+    /// goes up, and entered after it comes down, then the CPU's preference
+    /// where it sets one. All are tried; the first failure is returned and
+    /// the others logged.
     pub fn apply_profile(&mut self, profile: &Profile) -> fdo::Result<()> {
         let profile = &self.fit(self.resolve(profile)?);
+        let epp = |service: &mut Self| {
+            service.epp = profile.epp.as_ref().map(ToString::to_string);
+            Some(service.put_epp())
+        };
         let super_battery = |service: &mut Self| {
             profile
                 .super_battery
@@ -338,9 +349,19 @@ impl Service {
             Some(service.set_shift_mode(mode))
         };
         let results = if profile.super_battery == Some(true) {
-            [shift_mode(self), fan_mode(self), super_battery(self)]
+            [
+                shift_mode(self),
+                fan_mode(self),
+                super_battery(self),
+                epp(self),
+            ]
         } else {
-            [super_battery(self), fan_mode(self), shift_mode(self)]
+            [
+                super_battery(self),
+                fan_mode(self),
+                shift_mode(self),
+                epp(self),
+            ]
         };
         let mut errors = results.into_iter().flatten().filter_map(Result::err);
         let first = errors.next();
@@ -411,7 +432,25 @@ impl Service {
             shift_mode: profile.shift_mode.clone().or(modes.shift_mode),
             fan_mode: profile.fan_mode.clone().or(modes.fan_mode),
             super_battery: profile.super_battery.or(modes.super_battery),
+            epp: profile.epp.clone().or(modes.epp),
         })
+    }
+
+    /// The CPU's preference the profile applied last asked for, if any:
+    /// at its application, and again whenever power-profiles-daemon has
+    /// written the one of its own profile.
+    pub fn put_epp(&self) -> fdo::Result<()> {
+        let Some(want) = &self.epp else {
+            return Ok(());
+        };
+        let sysfs = self.ec.sysfs();
+        let before = epp::get(sysfs).map_err(|e| epp_error(want, e))?;
+        if before.as_ref() == Some(want) {
+            return Ok(());
+        }
+        epp::set(sysfs, want).map_err(|e| epp_error(want, e))?;
+        info!("epp: {} -> {want}", before.as_deref().unwrap_or("several"));
+        Ok(())
     }
 
     /// Follows power-profiles-daemon to `profile`, unless the shift mode
@@ -662,6 +701,7 @@ impl Service {
         let shift_modes = self.shift_modes_here().ok();
         let fan_modes = self.ec.fan_modes().ok();
         let super_battery = self.ec.super_battery().is_ok();
+        let epp_names = epp::names(self.ec.sysfs());
         for (i, scenario) in scenarios.iter().enumerate() {
             let name = &scenario.name;
             if name.trim().is_empty() {
@@ -681,6 +721,16 @@ impl Service {
             }
             if scenario.super_battery.is_some() && !super_battery {
                 return Err(format!("{name}: this EC has no super battery"));
+            }
+            match (&scenario.epp, &epp_names) {
+                (None, _) | (Some(Epp::Raw(_)), Ok(_)) => {}
+                (Some(Epp::Named(epp)), Ok(names)) if names.contains(epp) => {}
+                (Some(Epp::Named(epp)), Ok(names)) => {
+                    return Err(format!("{name}: {epp} is not one of: {}", names.join(", ")));
+                }
+                (Some(_), Err(_)) => {
+                    return Err(format!("{name}: this CPU's cpufreq driver has no epp"));
+                }
             }
         }
         let set = &self.config_set;
@@ -2259,6 +2309,15 @@ fn apply<T: PartialEq + Display>(
     Ok(())
 }
 
+fn epp_error(epp: &str, err: io::Error) -> fdo::Error {
+    match err.kind() {
+        io::ErrorKind::NotFound => {
+            fdo::Error::NotSupported("epp: this CPU's cpufreq driver has none".into())
+        }
+        _ => fdo::Error::IOError(format!("epp: {epp}: {err}")),
+    }
+}
+
 fn error(name: &str, err: io::Error) -> fdo::Error {
     match err.kind() {
         io::ErrorKind::NotFound => {
@@ -2704,6 +2763,7 @@ mod tests {
             shift_mode: Some("turbo".into()),
             fan_mode: None,
             super_battery: None,
+            epp: None,
         };
         let ec = MsiEc::new(sysfs.path());
         let mut service = Service::new(ec, None, AutoBoost::default(), vec![games]);
@@ -2712,6 +2772,97 @@ mod tests {
         assert_eq!(service.status().scenario.as_deref(), Some("games"));
         // A lone one stays put.
         assert_eq!(service.next_scenario().unwrap(), "games");
+    }
+
+    /// cpufreq with two policies at `epp`.
+    fn cpufreq(sysfs: &Path, epp: &str) {
+        for policy in ["policy0", "policy1"] {
+            let policy = sysfs.join("devices/system/cpu/cpufreq").join(policy);
+            fs::create_dir_all(&policy).unwrap();
+            fs::write(
+                policy.join("energy_performance_preference"),
+                format!("{epp}\n"),
+            )
+            .unwrap();
+            fs::write(
+                policy.join("energy_performance_available_preferences"),
+                "default performance balance_performance balance_power power \n",
+            )
+            .unwrap();
+        }
+    }
+
+    fn epp_now(sysfs: &Path) -> Option<String> {
+        epp::get(sysfs).unwrap()
+    }
+
+    const WITH_EPP: &str = "[[scenarios]]\nname = \"quiet\"\nshift_mode = \"eco\"\n\n[[scenarios]]\nname = \"games\"\nshift_mode = \"turbo\"\nepp = 132\n";
+
+    #[test]
+    fn a_scenario_sets_the_cpu_preference_and_puts_it_back() {
+        let sysfs = alpha17("17KKIMS1.115");
+        cpufreq(sysfs.path(), "balance_performance");
+        let mut service = service(sysfs.path());
+        service.set_scenarios(WITH_EPP).unwrap();
+
+        // One without it leaves the preference alone.
+        service.set_scenario("quiet").unwrap();
+        assert_eq!(
+            epp_now(sysfs.path()).as_deref(),
+            Some("balance_performance")
+        );
+        service.put_epp().unwrap();
+        assert_eq!(
+            epp_now(sysfs.path()).as_deref(),
+            Some("balance_performance")
+        );
+
+        service.set_scenario("games").unwrap();
+        assert_eq!(epp_now(sysfs.path()).as_deref(), Some("132"));
+
+        // power-profiles-daemon writes its own with the profile.
+        cpufreq(sysfs.path(), "performance");
+        service.put_epp().unwrap();
+        assert_eq!(epp_now(sysfs.path()).as_deref(), Some("132"));
+
+        // Back in one without it, what's written elsewhere stays.
+        service.set_scenario("quiet").unwrap();
+        cpufreq(sysfs.path(), "power");
+        service.put_epp().unwrap();
+        assert_eq!(epp_now(sysfs.path()).as_deref(), Some("power"));
+    }
+
+    #[test]
+    fn a_profile_takes_its_scenarios_cpu_preference_or_its_own() {
+        let sysfs = alpha17("17KKIMS1.115");
+        cpufreq(sysfs.path(), "performance");
+        let mut service = service(sysfs.path());
+        service.set_scenarios(WITH_EPP).unwrap();
+        let profile = |epp| Profile {
+            scenario: Some("games".into()),
+            epp,
+            ..Profile::default()
+        };
+        service.apply_profile(&profile(None)).unwrap();
+        assert_eq!(epp_now(sysfs.path()).as_deref(), Some("132"));
+        let own = Some(Epp::Named("balance_power".into()));
+        service.apply_profile(&profile(own)).unwrap();
+        assert_eq!(epp_now(sysfs.path()).as_deref(), Some("balance_power"));
+    }
+
+    #[test]
+    fn scenarios_name_cpu_preferences_there_are() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut bare = service(sysfs.path());
+        let err = bare.set_scenarios(WITH_EPP).unwrap_err();
+        assert!(err.to_string().contains("has no epp"), "{err}");
+
+        cpufreq(sysfs.path(), "performance");
+        let mut service = service(sysfs.path());
+        let named = WITH_EPP.replace("132", "\"fast\"");
+        let err = service.set_scenarios(&named).unwrap_err();
+        assert!(err.to_string().contains("fast is not one of"), "{err}");
+        service.set_scenarios(WITH_EPP).unwrap();
     }
 
     #[test]
@@ -2801,6 +2952,7 @@ mod tests {
             shift_mode: Some("turbo".into()),
             fan_mode: None,
             super_battery: None,
+            epp: None,
         };
         let ec = MsiEc::new(sysfs.path());
         let mut service = Service::new(ec, None, AutoBoost::default(), vec![games]);
@@ -3356,6 +3508,7 @@ mod tests {
             shift_mode: Some("turbo".into()),
             fan_mode: None,
             super_battery: None,
+            epp: None,
         };
         assert_eq!(
             titan.fit(performance.modes()).shift_mode.as_deref(),
