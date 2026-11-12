@@ -46,6 +46,12 @@ fn read(file: &Path) -> io::Result<String> {
     Ok(fs::read_to_string(file)?.trim_end().to_owned())
 }
 
+/// The first policy's preference: what one read tells of them all, as
+/// whatever writes one writes every policy.
+pub fn first(sysfs: &Path) -> io::Result<String> {
+    read(&files(sysfs)?.swap_remove(0))
+}
+
 /// The preference every policy is at; `None` while they differ.
 pub fn get(sysfs: &Path) -> io::Result<Option<String>> {
     let mut common = None;

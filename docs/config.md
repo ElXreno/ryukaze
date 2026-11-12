@@ -51,7 +51,8 @@ super_battery = true
 # preference: a name from cpufreq's
 # energy_performance_available_preferences, or with intel_pstate a number,
 # 0 for all performance to 255 for all saving. power-profiles-daemon sets
-# one with each of its profiles; this one is written again after it.
+# one with each of its profiles and power sources; this one is written
+# again within a couple of seconds.
 # Without it the preference is left to whoever else sets it.
 [[scenarios]]
 name = "quiet"

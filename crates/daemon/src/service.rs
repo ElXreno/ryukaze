@@ -437,20 +437,30 @@ impl Service {
     }
 
     /// The CPU's preference the profile applied last asked for, if any:
-    /// at its application, and again whenever power-profiles-daemon has
-    /// written the one of its own profile.
+    /// at its application, and again wherever power-profiles-daemon has
+    /// written its own since, as it does with a profile, a power source
+    /// and its own start.
     pub fn put_epp(&self) -> fdo::Result<()> {
         let Some(want) = &self.epp else {
             return Ok(());
         };
         let sysfs = self.ec.sysfs();
-        let before = epp::get(sysfs).map_err(|e| epp_error(want, e))?;
-        if before.as_ref() == Some(want) {
+        let before = epp::first(sysfs).map_err(|e| epp_error(want, e))?;
+        if before == *want {
             return Ok(());
         }
         epp::set(sysfs, want).map_err(|e| epp_error(want, e))?;
-        info!("epp: {} -> {want}", before.as_deref().unwrap_or("several"));
+        info!("epp: {before} -> {want}");
         Ok(())
+    }
+
+    /// Every couple of seconds: the preference back where it was written
+    /// over. One that can't be put back is let go, not tried forever.
+    fn keep_epp(&mut self) {
+        if let Err(err) = self.put_epp() {
+            warn!("{err}; leaving it");
+            self.epp = None;
+        }
     }
 
     /// Follows power-profiles-daemon to `profile`, unless the shift mode
@@ -1333,6 +1343,7 @@ impl Service {
         self.auto_boost();
         self.watch_dgpu();
         self.name_bios_turbo();
+        self.keep_epp();
         adapted
     }
 
@@ -2831,6 +2842,22 @@ mod tests {
         // power-profiles-daemon writes its own with the profile.
         cpufreq(sysfs.path(), "performance");
         service.put_epp().unwrap();
+        assert_eq!(epp_now(sysfs.path()).as_deref(), Some("132"));
+
+        // And with no word of it, at a power source or its start: the
+        // tick sees.
+        cpufreq(sysfs.path(), "balance_performance");
+        service.tick().unwrap();
+        assert_eq!(epp_now(sysfs.path()).as_deref(), Some("132"));
+
+        // One that can't be written is let go.
+        let policies = sysfs.path().join("devices/system/cpu/cpufreq");
+        fs::remove_dir_all(&policies).unwrap();
+        service.tick().unwrap();
+        cpufreq(sysfs.path(), "performance");
+        service.tick().unwrap();
+        assert_eq!(epp_now(sysfs.path()).as_deref(), Some("performance"));
+        service.set_scenario("games").unwrap();
         assert_eq!(epp_now(sysfs.path()).as_deref(), Some("132"));
 
         // Back in one without it, what's written elsewhere stays.
