@@ -3668,6 +3668,42 @@ mod tests {
         assert_eq!(titan.status().shift_mode.as_deref(), Some("turbo"));
     }
 
+    /// A scenario written as Apex is turbo off AC: applied, known for the
+    /// one the EC is in and stepped from.
+    #[test]
+    fn a_scenario_in_apex_is_turbo_off_ac() {
+        let scenarios = "[[scenarios]]\nname = \"silent\"\nshift_mode = \"eco\"\n\n[[scenarios]]\nname = \"performance\"\nshift_mode = \"apex\"\n";
+        let sysfs = titan18hx("eco", 0xc2, false);
+        let mut titan = service(sysfs.path());
+        titan.put_apex_on_ac(true);
+        titan.set_scenarios(scenarios).unwrap();
+
+        titan.set_scenario("performance").unwrap();
+        assert_eq!(titan.status().shift_mode.as_deref(), Some("turbo"));
+        assert_eq!(titan.status().scenario.as_deref(), Some("performance"));
+        assert_eq!(titan.next_scenario().unwrap(), "silent");
+        assert_eq!(
+            titan
+                .follow_power_profile("performance")
+                .unwrap()
+                .as_deref(),
+            Some("scenario performance")
+        );
+        assert_eq!(titan.status().shift_mode.as_deref(), Some("turbo"));
+
+        // In Apex on AC, it's the same scenario, there and unplugged.
+        let sysfs = titan18hx("unknown (197)", 0xc5, true);
+        let mut titan = service(sysfs.path());
+        titan.put_apex_on_ac(true);
+        titan.set_scenarios(scenarios).unwrap();
+        assert_eq!(titan.status().scenario.as_deref(), Some("performance"));
+        assert_eq!(titan.follow_power_profile("performance").unwrap(), None);
+        plug(sysfs.path(), false);
+        titan.follow_source().unwrap();
+        assert_eq!(titan.status().shift_mode.as_deref(), Some("turbo"));
+        assert_eq!(titan.status().scenario.as_deref(), Some("performance"));
+    }
+
     #[test]
     fn performance_off_ac_is_turbo() {
         let sysfs = titan18hx("unknown (197)", 0xc5, false);
