@@ -25,6 +25,7 @@ pub fn status() -> Status {
             "balance_power",
             "power",
         ]),
+        epp_numbers: Some(true),
         cooler_boost: Some(false),
         scenario: Some("performance".into()),
         scenarios: names(&["silent", "balanced", "performance"]),

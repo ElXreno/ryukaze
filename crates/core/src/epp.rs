@@ -26,20 +26,6 @@ impl fmt::Display for Epp {
     }
 }
 
-impl Epp {
-    /// As typed: a number where it is one, nothing where it's blank.
-    pub fn typed(text: &str) -> Option<Self> {
-        let text = text.trim();
-        if text.is_empty() {
-            return None;
-        }
-        Some(
-            text.parse()
-                .map_or_else(|_| Self::Named(text.into()), Self::Raw),
-        )
-    }
-}
-
 /// Each policy's file; `NotFound` where the driver has no preference.
 fn files(sysfs: &Path) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
@@ -90,6 +76,14 @@ pub fn names(sysfs: &Path) -> io::Result<Vec<String>> {
     let names =
         fs::read_to_string(file.with_file_name("energy_performance_available_preferences"))?;
     Ok(names.split_whitespace().map(str::to_owned).collect())
+}
+
+/// Whether the driver takes a number as well: intel_pstate does, amd-pstate
+/// only its names.
+pub fn numbers(sysfs: &Path) -> io::Result<bool> {
+    let file = files(sysfs)?.swap_remove(0);
+    let driver = fs::read_to_string(file.with_file_name("scaling_driver"))?;
+    Ok(driver.trim_end() == "intel_pstate")
 }
 
 #[cfg(test)]
@@ -148,9 +142,16 @@ mod tests {
     }
 
     #[test]
-    fn lists_the_names() {
+    fn lists_the_names_and_says_whether_numbers_go() {
         let sysfs = cpufreq(&["performance"]);
         assert_eq!(names(sysfs.path()).unwrap().len(), 5);
+        let driver = sysfs
+            .path()
+            .join("devices/system/cpu/cpufreq/policy0/scaling_driver");
+        fs::write(&driver, "intel_pstate\n").unwrap();
+        assert!(numbers(sysfs.path()).unwrap());
+        fs::write(&driver, "amd-pstate-epp\n").unwrap();
+        assert!(!numbers(sysfs.path()).unwrap());
     }
 
     #[test]
@@ -164,8 +165,5 @@ mod tests {
         assert_eq!(toml::to_string(&raw).unwrap(), "epp = 132\n");
         let named: File = toml::from_str("epp = \"balance_power\"\n").unwrap();
         assert_eq!(named.epp.to_string(), "balance_power");
-        assert_eq!(Epp::typed(" 132 "), Some(Epp::Raw(132)));
-        assert_eq!(Epp::typed("power"), Some(Epp::Named("power".into())));
-        assert_eq!(Epp::typed(" "), None);
     }
 }

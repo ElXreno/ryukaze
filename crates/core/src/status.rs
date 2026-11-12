@@ -43,6 +43,10 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub epp_names: Option<Vec<String>>,
 
+    /// Whether its driver takes a number, 0 to 255, for one as well.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub epp_numbers: Option<bool>,
+
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub cooler_boost: Option<bool>,
 

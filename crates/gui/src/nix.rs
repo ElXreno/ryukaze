@@ -16,9 +16,15 @@ pub enum Value {
     Attrs(Vec<(String, Value)>),
 }
 
-/// The settings `status` reports, as attributes to go inside
+/// The settings `status` reports, with the scenarios and the keyboard's
+/// saved profiles read beside it, as attributes to go inside
 /// `settings = { … };`.
-pub fn settings(status: &Status, curves: &[(Fan, Curve)], profiles: Vec<Value>) -> String {
+pub fn settings(
+    status: &Status,
+    curves: &[(Fan, Curve)],
+    scenarios: Vec<Value>,
+    profiles: Vec<Value>,
+) -> String {
     let int = |n: u8| Value::Int(n.into());
     let mut top = Vec::new();
     put(&mut top, "charge_limit", status.charge_limit.map(int));
@@ -60,6 +66,9 @@ pub fn settings(status: &Status, curves: &[(Fan, Curve)], profiles: Vec<Value>) 
     }
     if !fans.is_empty() {
         top.push(("fans".into(), Value::Attrs(fans)));
+    }
+    if !scenarios.is_empty() {
+        top.push(("scenarios".into(), Value::List(scenarios)));
     }
     let keyboard = keyboard(status, profiles);
     if !keyboard.is_empty() {
@@ -273,7 +282,7 @@ mod tests {
             ),
             ..Status::default()
         };
-        let nix = settings(&status, &[], Vec::new());
+        let nix = settings(&status, &[], Vec::new(), Vec::new());
         for line in [
             "profile = \"wave\";",
             "turbo = \"static 2\";",
@@ -289,7 +298,7 @@ mod tests {
             scenario: Some("turbo".into()),
             ..status
         };
-        assert!(!settings(&own, &[], Vec::new()).contains("profile = "));
+        assert!(!settings(&own, &[], Vec::new(), Vec::new()).contains("profile = "));
     }
 
     #[test]
@@ -306,7 +315,7 @@ mod tests {
             ..Status::default()
         };
         let cpu = Curve::new(&[50, 57, 64, 71, 78, 85], &[0, 40, 45, 50, 57, 65, 80]).unwrap();
-        let nix = settings(&status, &[(Fan::Cpu, cpu)], Vec::new());
+        let nix = settings(&status, &[(Fan::Cpu, cpu)], Vec::new(), Vec::new());
         assert_eq!(
             nix,
             r#"charge_limit = 80;
@@ -389,13 +398,16 @@ fans = {
             charge_limit: Some(100),
             ..Status::default()
         };
-        assert_eq!(settings(&status, &[], Vec::new()), "charge_limit = 100;\n");
+        assert_eq!(
+            settings(&status, &[], Vec::new(), Vec::new()),
+            "charge_limit = 100;\n"
+        );
         let profile = Value::Attrs(vec![
             ("name".into(), Value::Str("mine".into())),
             ("color".into(), Value::Str("#ff6000".into())),
         ]);
         assert_eq!(
-            settings(&status, &[], vec![profile]),
+            settings(&status, &[], Vec::new(), vec![profile]),
             "charge_limit = 100;\nkeyboard = {\n  profiles = [\n    {\n      name = \"mine\";\n      color = \"#ff6000\";\n    }\n  ];\n};\n"
         );
     }

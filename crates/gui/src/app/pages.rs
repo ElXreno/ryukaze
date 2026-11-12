@@ -284,6 +284,7 @@ impl App {
                 fan: status.fan_modes.as_deref().unwrap_or_default(),
                 super_battery: status.super_battery.is_some(),
                 epp: status.epp_names.as_deref().unwrap_or_default(),
+                epp_numbers: status.epp_numbers == Some(true),
             };
             let editor = editor.view(width, &modes).map(Message::Scenarios);
             return match &self.error {

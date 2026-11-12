@@ -702,6 +702,7 @@ impl Service {
         let fan_modes = self.ec.fan_modes().ok();
         let super_battery = self.ec.super_battery().is_ok();
         let epp_names = epp::names(self.ec.sysfs());
+        let epp_numbers = epp::numbers(self.ec.sysfs()).unwrap_or(false);
         for (i, scenario) in scenarios.iter().enumerate() {
             let name = &scenario.name;
             if name.trim().is_empty() {
@@ -723,7 +724,11 @@ impl Service {
                 return Err(format!("{name}: this EC has no super battery"));
             }
             match (&scenario.epp, &epp_names) {
-                (None, _) | (Some(Epp::Raw(_)), Ok(_)) => {}
+                (None, _) => {}
+                (Some(Epp::Raw(_)), Ok(_)) if epp_numbers => {}
+                (Some(Epp::Raw(_)), Ok(_)) => {
+                    return Err(format!("{name}: an epp number only with intel_pstate"));
+                }
                 (Some(Epp::Named(epp)), Ok(names)) if names.contains(epp) => {}
                 (Some(Epp::Named(epp)), Ok(names)) => {
                     return Err(format!("{name}: {epp} is not one of: {}", names.join(", ")));
@@ -1627,6 +1632,7 @@ impl Service {
             fan_modes: field("available_fan_modes", ec.fan_modes()),
             super_battery: now.super_battery,
             epp_names: field("epp", epp::names(ec.sysfs())),
+            epp_numbers: field("epp", epp::numbers(ec.sysfs())),
             cooler_boost: now.cooler_boost,
             scenario,
             scenarios,
@@ -2775,11 +2781,12 @@ mod tests {
         assert_eq!(service.next_scenario().unwrap(), "games");
     }
 
-    /// cpufreq with two policies at `epp`.
+    /// intel_pstate's cpufreq with two policies at `epp`.
     fn cpufreq(sysfs: &Path, epp: &str) {
         for policy in ["policy0", "policy1"] {
             let policy = sysfs.join("devices/system/cpu/cpufreq").join(policy);
             fs::create_dir_all(&policy).unwrap();
+            fs::write(policy.join("scaling_driver"), "intel_pstate\n").unwrap();
             fs::write(
                 policy.join("energy_performance_preference"),
                 format!("{epp}\n"),
@@ -2864,6 +2871,13 @@ mod tests {
         let err = service.set_scenarios(&named).unwrap_err();
         assert!(err.to_string().contains("fast is not one of"), "{err}");
         service.set_scenarios(WITH_EPP).unwrap();
+        assert_eq!(service.status().epp_numbers, Some(true));
+
+        let driver = "devices/system/cpu/cpufreq/policy0/scaling_driver";
+        fs::write(sysfs.path().join(driver), "amd-pstate-epp\n").unwrap();
+        let err = service.set_scenarios(WITH_EPP).unwrap_err();
+        assert!(err.to_string().contains("only with intel_pstate"), "{err}");
+        assert_eq!(service.status().epp_numbers, Some(false));
     }
 
     #[test]

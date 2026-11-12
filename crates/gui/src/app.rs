@@ -143,7 +143,9 @@ pub enum Message {
     /// "Copied" said long enough.
     CopiedGone,
     /// The saved keyboard profiles, in TOML, for the settings copied.
-    ProfilesRead(Vec<String>),
+    /// The saved keyboard profiles and the scenarios, as the daemon has
+    /// them, for the copy.
+    SettingsRead(Vec<String>, Option<String>),
     AdaptiveFans(bool),
     GpuFollowsCpu(bool),
     AutoCoolerBoost(bool),
@@ -693,14 +695,16 @@ impl App {
             Message::GpuFollowsCpu(on) => {
                 self.call(move |client| async move { client.set_gpu_fan_follows_cpu(on).await })
             }
-            // With the saved keyboard profiles, read from the daemon first.
+            // With the scenarios and the saved keyboard profiles, read from
+            // the daemon first.
             Message::CopyAsNix => {
                 let Some(Ok(status)) = &self.status else {
                     return Task::none();
                 };
                 let saved = status.keyboard_saved_profiles.clone().unwrap_or_default();
+                let has_scenarios = status.scenarios.is_some();
                 match self.client.clone() {
-                    Some(client) if !saved.is_empty() => Task::perform(
+                    Some(client) if has_scenarios || !saved.is_empty() => Task::perform(
                         async move {
                             let mut read = Vec::new();
                             for name in saved {
@@ -708,29 +712,42 @@ impl App {
                                     read.push(profile);
                                 }
                             }
-                            read
+                            let scenarios = if has_scenarios {
+                                client.read_scenarios().await.ok()
+                            } else {
+                                None
+                            };
+                            (read, scenarios)
                         },
-                        Message::ProfilesRead,
+                        |(profiles, scenarios)| Message::SettingsRead(profiles, scenarios),
                     ),
-                    _ => self.update(Message::ProfilesRead(Vec::new())),
+                    _ => self.update(Message::SettingsRead(Vec::new(), None)),
                 }
             }
             Message::CopiedGone => {
                 self.copied = false;
                 Task::none()
             }
-            Message::ProfilesRead(profiles) => {
+            Message::SettingsRead(profiles, scenarios) => {
                 let Some(Ok(status)) = &self.status else {
                     return Task::none();
                 };
+                let scenarios = scenarios
+                    .and_then(|text| scenarios::Editor::from_toml(&text).ok())
+                    .map(|editor| editor.nix_values())
+                    .unwrap_or_default();
                 let profiles = profiles
                     .iter()
                     .filter_map(|profile| lights::Editor::from_toml(profile).ok())
                     .map(|editor| editor.nix_value())
                     .collect();
                 self.copied = true;
-                let copy =
-                    iced::clipboard::write(crate::nix::settings(status, &curves(status), profiles));
+                let copy = iced::clipboard::write(crate::nix::settings(
+                    status,
+                    &curves(status),
+                    scenarios,
+                    profiles,
+                ));
                 // The note says so for a moment, then what it said before.
                 let gone = Task::perform(async { tokio::time::sleep(COPIED_FOR).await }, |()| {
                     Message::CopiedGone
@@ -2006,12 +2023,7 @@ mod tests {
         let mut status = alpha17();
         status.epp_names = Some(["default", "balance_power"].map(Into::into).into());
         let app = editing(status);
-        assert!(tall(&app).find("Default").is_err());
-        let picked = clicks(&app, &["Balance power"]);
-        assert!(matches!(
-            &picked[..],
-            [Message::Scenarios(scenarios::Msg::Epp(0, Some(_)))]
-        ));
+        assert!(tall(&app).find("CPU preference").is_ok());
     }
 
     /// On `page`, as its row in the sidebar opens it.

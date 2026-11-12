@@ -3,15 +3,15 @@
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, row, space, text, text_input},
+    widget::{button, column, container, pick_list, row, slider, space, text, text_input},
 };
 use ryukaze_core::epp::Epp;
 use serde::{Deserialize, Serialize};
 
-use crate::anim::Hover;
+use crate::anim::{self, Hover};
 use crate::{
     app::{FAN_ORDER, SHIFT_ORDER, capitalize},
-    theme,
+    nix, theme,
 };
 
 /// One as the config writes it; a mode unset is left as it is.
@@ -47,6 +47,41 @@ pub struct Modes<'a> {
     pub super_battery: bool,
     /// The CPU's preferences cpufreq names; none where it has no such.
     pub epp: &'a [String],
+    /// Its driver takes a number for one too.
+    pub epp_numbers: bool,
+}
+
+/// What the CPU preference's list offers.
+#[derive(Debug, Clone, PartialEq)]
+enum EppPick {
+    Unset,
+    Named(String),
+    Number,
+}
+
+impl std::fmt::Display for EppPick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unset => f.write_str("\u{2014}"),
+            Self::Named(name) => f.write_str(&capitalize(&name.replace('_', " "))),
+            Self::Number => f.write_str("Number"),
+        }
+    }
+}
+
+/// Where the number's slider starts from `epp`: the number, or the one
+/// intel_pstate usually has behind the name.
+fn number_for(epp: Option<&Epp>) -> u8 {
+    match epp {
+        Some(Epp::Raw(raw)) => *raw,
+        Some(Epp::Named(name)) => match name.as_str() {
+            "performance" => 0,
+            "balance_power" => 192,
+            "power" => 255,
+            _ => 128,
+        },
+        None => 128,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,8 +91,6 @@ pub enum Msg {
     FanMode(usize, Option<String>),
     SuperBattery(usize, Option<bool>),
     Epp(usize, Option<Epp>),
-    /// Typed in the number's field.
-    EppNumber(usize, String),
     Up(usize),
     Down(usize),
     Remove(usize),
@@ -84,6 +117,30 @@ impl Editor {
         })
     }
 
+    /// For `services.ryukaze.settings.scenarios`.
+    pub fn nix_values(&self) -> Vec<nix::Value> {
+        let text = |mode: &Option<String>| mode.clone().map(nix::Value::Str);
+        self.scenarios
+            .iter()
+            .map(|scenario| {
+                let mut attrs = vec![("name".to_owned(), nix::Value::Str(scenario.name.clone()))];
+                nix::put(&mut attrs, "shift_mode", text(&scenario.shift_mode));
+                nix::put(&mut attrs, "fan_mode", text(&scenario.fan_mode));
+                nix::put(
+                    &mut attrs,
+                    "super_battery",
+                    scenario.super_battery.map(nix::Value::Bool),
+                );
+                let epp = scenario.epp.as_ref().map(|epp| match epp {
+                    Epp::Raw(raw) => nix::Value::Int((*raw).into()),
+                    Epp::Named(name) => nix::Value::Str(name.clone()),
+                });
+                nix::put(&mut attrs, "epp", epp);
+                nix::Value::Attrs(attrs)
+            })
+            .collect()
+    }
+
     fn toml(&self) -> String {
         toml::to_string(&File {
             scenarios: self.scenarios.clone(),
@@ -108,10 +165,6 @@ impl Editor {
             Msg::FanMode(i, mode) => self.scenarios[i].fan_mode = mode,
             Msg::SuperBattery(i, on) => self.scenarios[i].super_battery = on,
             Msg::Epp(i, epp) => self.scenarios[i].epp = epp,
-            Msg::EppNumber(i, typed) => match Epp::typed(&typed) {
-                Some(Epp::Named(_)) => return Outcome::Nothing,
-                number => self.scenarios[i].epp = number,
-            },
             Msg::Up(i) if i > 0 => self.scenarios.swap(i - 1, i),
             Msg::Down(i) if i + 1 < count => self.scenarios.swap(i, i + 1),
             Msg::Up(_) | Msg::Down(_) => return Outcome::Nothing,
@@ -141,7 +194,9 @@ impl Editor {
 
     /// In `width`.
     pub fn view<'a>(&'a self, width: f32, modes: &Modes) -> Element<'a, Msg> {
-        let wide = width >= 1300.0;
+        // A row takes the name, the tools and 300 for each pick.
+        let picks = if modes.epp.is_empty() { 3.0 } else { 4.0 };
+        let wide = width >= 400.0 + 300.0 * picks;
         let header = row![
             text("Scenarios").size(20),
             text(if self.unsaved {
@@ -172,8 +227,8 @@ impl Editor {
             text(
                 "Fn+F7 steps through them in this order. A scenario puts the EC in its modes; \
                  \u{2014} leaves one as it is. The window shows the one whose modes the EC is in. \
-                 CPU preference is how eagerly the cores clock up: a name, or with intel_pstate \
-                 a number, 0 for all performance to 255 for all saving.",
+                 CPU preference is how eagerly the cores clock up; its number runs from 0, all \
+                 performance, to 255, all saving.",
             )
             .size(12)
             .style(theme::muted),
@@ -239,32 +294,47 @@ impl Editor {
             picks.push(pick("Super battery", battery.into()));
         }
         if !modes.epp.is_empty() {
-            let mut epp = row![choice(
-                "\u{2014}".into(),
-                scenario.epp.is_none(),
-                Msg::Epp(i, None)
-            )]
-            .spacing(4)
-            .align_y(Alignment::Center);
-            for name in modes.epp.iter().filter(|name| *name != "default") {
-                let named = Epp::Named(name.clone());
-                epp = epp.push(choice(
-                    capitalize(&name.replace('_', " ")),
-                    scenario.epp.as_ref() == Some(&named),
-                    Msg::Epp(i, Some(named)),
-                ));
+            let mut options = vec![EppPick::Unset];
+            let named = modes.epp.iter().filter(|name| *name != "default");
+            options.extend(named.cloned().map(EppPick::Named));
+            if modes.epp_numbers {
+                options.push(EppPick::Number);
             }
-            let number = match &scenario.epp {
-                Some(Epp::Raw(raw)) => raw.to_string(),
-                _ => String::new(),
+            let shown = match &scenario.epp {
+                None => EppPick::Unset,
+                Some(Epp::Named(name)) => EppPick::Named(name.clone()),
+                Some(Epp::Raw(_)) => EppPick::Number,
             };
-            epp = epp.push(
-                text_input("0\u{2013}255", &number)
-                    .style(theme::field)
-                    .on_input(move |typed| Msg::EppNumber(i, typed))
-                    .size(13)
-                    .width(72),
+            let number = number_for(scenario.epp.as_ref());
+            let list = anim::dropdown(
+                pick_list(options, Some(shown), move |pick| {
+                    Msg::Epp(
+                        i,
+                        match pick {
+                            EppPick::Unset => None,
+                            EppPick::Named(name) => Some(Epp::Named(name)),
+                            EppPick::Number => Some(Epp::Raw(number)),
+                        },
+                    )
+                })
+                .text_size(13)
+                .padding([4, 10])
+                .width(Length::Fill),
+                theme::pick,
+                theme::menu,
             );
+            let mut epp = row![list].spacing(12).align_y(Alignment::Center);
+            if let Some(Epp::Raw(raw)) = scenario.epp {
+                epp = epp
+                    .push(
+                        slider(0..=u8::MAX, raw, move |raw| {
+                            Msg::Epp(i, Some(Epp::Raw(raw)))
+                        })
+                        .style(theme::level)
+                        .width(Length::Fill),
+                    )
+                    .push(text(raw).size(13).width(28).align_x(Alignment::End));
+            }
             picks.push(pick("CPU preference", epp.into()));
         }
         let last = self.scenarios.len() - 1;
@@ -349,6 +419,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn writes_them_as_nix() {
+        let read = "[[scenarios]]\nname = \"silent\"\nshift_mode = \"eco\"\nsuper_battery = false\n\n[[scenarios]]\nname = \"performance\"\nshift_mode = \"turbo\"\nfan_mode = \"advanced\"\nepp = 132\n\n[[scenarios]]\nname = \"saving\"\nepp = \"power\"\n";
+        let editor = Editor::from_toml(read).unwrap();
+        let status = ryukaze_core::Status::default();
+        assert_eq!(
+            nix::settings(&status, &[], editor.nix_values(), Vec::new()),
+            "scenarios = [\n  {\n    name = \"silent\";\n    shift_mode = \"eco\";\n    super_battery = false;\n  }\n  {\n    name = \"performance\";\n    shift_mode = \"turbo\";\n    fan_mode = \"advanced\";\n    epp = 132;\n  }\n  {\n    name = \"saving\";\n    epp = \"power\";\n  }\n];\n"
+        );
+    }
+
+    #[test]
     fn picks_the_cpu_preference_by_name_or_number() {
         let read = "[[scenarios]]\nname = \"performance\"\nshift_mode = \"turbo\"\nepp = 132\n";
         let mut editor = Editor::from_toml(read).unwrap();
@@ -361,23 +442,13 @@ mod tests {
         let _ = editor.update(Msg::Epp(0, Some(Epp::Named("balance_power".into()))));
         assert!(saved(&mut editor).ends_with("epp = \"balance_power\"\n"));
 
-        for typed in ["1", "13", "136"] {
-            let _ = editor.update(Msg::EppNumber(0, typed.into()));
-        }
-        assert_eq!(editor.scenarios[0].epp, Some(Epp::Raw(136)));
-        // Not a number, or past 255: as it was.
-        assert_eq!(
-            editor.update(Msg::EppNumber(0, "1366".into())),
-            Outcome::Nothing
-        );
-        assert_eq!(
-            editor.update(Msg::EppNumber(0, "x".into())),
-            Outcome::Nothing
-        );
-        assert_eq!(editor.scenarios[0].epp, Some(Epp::Raw(136)));
+        // The number starts from where the name was.
+        assert_eq!(number_for(editor.scenarios[0].epp.as_ref()), 192);
+        let _ = editor.update(Msg::Epp(0, Some(Epp::Raw(136))));
+        assert!(saved(&mut editor).ends_with("epp = 136\n"));
+        assert_eq!(number_for(None), 128);
 
-        let _ = editor.update(Msg::EppNumber(0, String::new()));
-        assert_eq!(editor.scenarios[0].epp, None);
+        let _ = editor.update(Msg::Epp(0, None));
         assert!(!saved(&mut editor).contains("epp"));
     }
 
