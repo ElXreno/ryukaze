@@ -24,7 +24,6 @@ pub struct Scenario {
     pub fan_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub super_battery: Option<bool>,
-    /// Kept as the config has it: the editor has no pick for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epp: Option<Epp>,
 }
@@ -46,6 +45,8 @@ pub struct Modes<'a> {
     pub shift: &'a [String],
     pub fan: &'a [String],
     pub super_battery: bool,
+    /// The CPU's preferences cpufreq names; none where it has no such.
+    pub epp: &'a [String],
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +55,9 @@ pub enum Msg {
     ShiftMode(usize, Option<String>),
     FanMode(usize, Option<String>),
     SuperBattery(usize, Option<bool>),
+    Epp(usize, Option<Epp>),
+    /// Typed in the number's field.
+    EppNumber(usize, String),
     Up(usize),
     Down(usize),
     Remove(usize),
@@ -103,6 +107,11 @@ impl Editor {
             Msg::ShiftMode(i, mode) => self.scenarios[i].shift_mode = mode,
             Msg::FanMode(i, mode) => self.scenarios[i].fan_mode = mode,
             Msg::SuperBattery(i, on) => self.scenarios[i].super_battery = on,
+            Msg::Epp(i, epp) => self.scenarios[i].epp = epp,
+            Msg::EppNumber(i, typed) => match Epp::typed(&typed) {
+                Some(Epp::Named(_)) => return Outcome::Nothing,
+                number => self.scenarios[i].epp = number,
+            },
             Msg::Up(i) if i > 0 => self.scenarios.swap(i - 1, i),
             Msg::Down(i) if i + 1 < count => self.scenarios.swap(i, i + 1),
             Msg::Up(_) | Msg::Down(_) => return Outcome::Nothing,
@@ -162,7 +171,9 @@ impl Editor {
             row![small("New scenario", Msg::Add)],
             text(
                 "Fn+F7 steps through them in this order. A scenario puts the EC in its modes; \
-                 \u{2014} leaves one as it is. The window shows the one whose modes the EC is in.",
+                 \u{2014} leaves one as it is. The window shows the one whose modes the EC is in. \
+                 CPU preference is how eagerly the cores clock up: a name, or with intel_pstate \
+                 a number, 0 for all performance to 255 for all saving.",
             )
             .size(12)
             .style(theme::muted),
@@ -226,6 +237,35 @@ impl Editor {
             ]
             .spacing(4);
             picks.push(pick("Super battery", battery.into()));
+        }
+        if !modes.epp.is_empty() {
+            let mut epp = row![choice(
+                "\u{2014}".into(),
+                scenario.epp.is_none(),
+                Msg::Epp(i, None)
+            )]
+            .spacing(4)
+            .align_y(Alignment::Center);
+            for name in modes.epp.iter().filter(|name| *name != "default") {
+                let named = Epp::Named(name.clone());
+                epp = epp.push(choice(
+                    capitalize(&name.replace('_', " ")),
+                    scenario.epp.as_ref() == Some(&named),
+                    Msg::Epp(i, Some(named)),
+                ));
+            }
+            let number = match &scenario.epp {
+                Some(Epp::Raw(raw)) => raw.to_string(),
+                _ => String::new(),
+            };
+            epp = epp.push(
+                text_input("0\u{2013}255", &number)
+                    .style(theme::field)
+                    .on_input(move |typed| Msg::EppNumber(i, typed))
+                    .size(13)
+                    .width(72),
+            );
+            picks.push(pick("CPU preference", epp.into()));
         }
         let last = self.scenarios.len() - 1;
         let tools = row![
@@ -309,17 +349,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keeps_a_preference_it_has_no_pick_for() {
+    fn picks_the_cpu_preference_by_name_or_number() {
         let read = "[[scenarios]]\nname = \"performance\"\nshift_mode = \"turbo\"\nepp = 132\n";
         let mut editor = Editor::from_toml(read).unwrap();
-        let _ = editor.update(Msg::FanMode(0, Some("advanced".into())));
-        let Outcome::Save(sent) = editor.update(Msg::Save) else {
-            panic!("no save");
+        let saved = |editor: &mut Editor| match editor.update(Msg::Save) {
+            Outcome::Save(sent) => sent,
+            _ => panic!("no save"),
         };
+        assert_eq!(saved(&mut editor), read);
+
+        let _ = editor.update(Msg::Epp(0, Some(Epp::Named("balance_power".into()))));
+        assert!(saved(&mut editor).ends_with("epp = \"balance_power\"\n"));
+
+        for typed in ["1", "13", "136"] {
+            let _ = editor.update(Msg::EppNumber(0, typed.into()));
+        }
+        assert_eq!(editor.scenarios[0].epp, Some(Epp::Raw(136)));
+        // Not a number, or past 255: as it was.
         assert_eq!(
-            sent,
-            "[[scenarios]]\nname = \"performance\"\nshift_mode = \"turbo\"\nfan_mode = \"advanced\"\nepp = 132\n"
+            editor.update(Msg::EppNumber(0, "1366".into())),
+            Outcome::Nothing
         );
+        assert_eq!(
+            editor.update(Msg::EppNumber(0, "x".into())),
+            Outcome::Nothing
+        );
+        assert_eq!(editor.scenarios[0].epp, Some(Epp::Raw(136)));
+
+        let _ = editor.update(Msg::EppNumber(0, String::new()));
+        assert_eq!(editor.scenarios[0].epp, None);
+        assert!(!saved(&mut editor).contains("epp"));
     }
 
     #[test]

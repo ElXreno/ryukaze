@@ -18,6 +18,13 @@ pub fn status() -> Status {
         fan_mode: Some("advanced".into()),
         fan_modes: names(&["auto", "silent", "advanced"]),
         super_battery: Some(false),
+        epp_names: names(&[
+            "default",
+            "performance",
+            "balance_performance",
+            "balance_power",
+            "power",
+        ]),
         cooler_boost: Some(false),
         scenario: Some("performance".into()),
         scenarios: names(&["silent", "balanced", "performance"]),

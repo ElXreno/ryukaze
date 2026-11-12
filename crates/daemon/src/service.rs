@@ -1626,6 +1626,7 @@ impl Service {
             fan_mode: now.fan_mode,
             fan_modes: field("available_fan_modes", ec.fan_modes()),
             super_battery: now.super_battery,
+            epp_names: field("epp", epp::names(ec.sysfs())),
             cooler_boost: now.cooler_boost,
             scenario,
             scenarios,

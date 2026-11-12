@@ -1990,6 +1990,30 @@ mod tests {
         assert!(ui.find("no such mode").is_ok());
     }
 
+    /// Where cpufreq names preferences, a scenario picks one of them.
+    #[test]
+    fn the_scenarios_editor_picks_the_cpu_preference() {
+        let read = "[[scenarios]]\nname = \"games\"\nshift_mode = \"turbo\"\n";
+        let editing = |status| {
+            let mut app = app(status);
+            app.scenarios = Some(scenarios::Editor::from_toml(read).unwrap());
+            app.editing_scenarios = true;
+            app
+        };
+        let bare = editing(alpha17());
+        assert!(tall(&bare).find("CPU preference").is_err());
+
+        let mut status = alpha17();
+        status.epp_names = Some(["default", "balance_power"].map(Into::into).into());
+        let app = editing(status);
+        assert!(tall(&app).find("Default").is_err());
+        let picked = clicks(&app, &["Balance power"]);
+        assert!(matches!(
+            &picked[..],
+            [Message::Scenarios(scenarios::Msg::Epp(0, Some(_)))]
+        ));
+    }
+
     /// On `page`, as its row in the sidebar opens it.
     fn on(page: Page, status: Status) -> App {
         App {

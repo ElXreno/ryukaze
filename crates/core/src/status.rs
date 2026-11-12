@@ -38,6 +38,11 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub super_battery: Option<bool>,
 
+    /// The CPU's energy-performance preferences cpufreq takes by name, for
+    /// a scenario's `epp`; missing where its driver has none.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
+    pub epp_names: Option<Vec<String>>,
+
     #[serde(skip_serializing_if = "Option::is_none", with = "opt")]
     pub cooler_boost: Option<bool>,
 
