@@ -143,9 +143,8 @@ pub enum Message {
     /// "Copied" said long enough.
     CopiedGone,
     /// The saved keyboard profiles, in TOML, for the settings copied.
-    /// The saved keyboard profiles and the scenarios, as the daemon has
-    /// them, for the copy.
-    SettingsRead(Vec<String>, Option<String>),
+    /// The daemon's config, TOML, for the copy.
+    ConfigRead(Result<String, String>),
     AdaptiveFans(bool),
     GpuFollowsCpu(bool),
     AutoCoolerBoost(bool),
@@ -695,59 +694,31 @@ impl App {
             Message::GpuFollowsCpu(on) => {
                 self.call(move |client| async move { client.set_gpu_fan_follows_cpu(on).await })
             }
-            // With the scenarios and the saved keyboard profiles, read from
-            // the daemon first.
-            Message::CopyAsNix => {
-                let Some(Ok(status)) = &self.status else {
-                    return Task::none();
-                };
-                let saved = status.keyboard_saved_profiles.clone().unwrap_or_default();
-                let has_scenarios = status.scenarios.is_some();
-                match self.client.clone() {
-                    Some(client) if has_scenarios || !saved.is_empty() => Task::perform(
-                        async move {
-                            let mut read = Vec::new();
-                            for name in saved {
-                                if let Ok(profile) = client.read_keyboard_profile(&name).await {
-                                    read.push(profile);
-                                }
-                            }
-                            let scenarios = if has_scenarios {
-                                client.read_scenarios().await.ok()
-                            } else {
-                                None
-                            };
-                            (read, scenarios)
-                        },
-                        |(profiles, scenarios)| Message::SettingsRead(profiles, scenarios),
-                    ),
-                    _ => self.update(Message::SettingsRead(Vec::new(), None)),
+            // The daemon's config, whole: read from it first.
+            Message::CopyAsNix => match self.client.clone() {
+                Some(client) => Task::perform(
+                    async move { client.read_config().await.map_err(client::describe) },
+                    Message::ConfigRead,
+                ),
+                None if self.demo => {
+                    self.update(Message::ConfigRead(Ok(crate::demo::CONFIG.into())))
                 }
-            }
+                None => Task::none(),
+            },
             Message::CopiedGone => {
                 self.copied = false;
                 Task::none()
             }
-            Message::SettingsRead(profiles, scenarios) => {
-                let Some(Ok(status)) = &self.status else {
-                    return Task::none();
+            Message::ConfigRead(config) => {
+                let nix = match config.and_then(|config| crate::nix::settings(&config)) {
+                    Ok(nix) => nix,
+                    Err(err) => {
+                        self.error = Some(err);
+                        return Task::none();
+                    }
                 };
-                let scenarios = scenarios
-                    .and_then(|text| scenarios::Editor::from_toml(&text).ok())
-                    .map(|editor| editor.nix_values())
-                    .unwrap_or_default();
-                let profiles = profiles
-                    .iter()
-                    .filter_map(|profile| lights::Editor::from_toml(profile).ok())
-                    .map(|editor| editor.nix_value())
-                    .collect();
                 self.copied = true;
-                let copy = iced::clipboard::write(crate::nix::settings(
-                    status,
-                    &curves(status),
-                    scenarios,
-                    profiles,
-                ));
+                let copy = iced::clipboard::write(nix);
                 // The note says so for a moment, then what it said before.
                 let gone = Task::perform(async { tokio::time::sleep(COPIED_FOR).await }, |()| {
                     Message::CopiedGone
@@ -2614,7 +2585,10 @@ mod tests {
         }
 
         let shown = |app: &App, text: &str| narrow(app).find(text).is_ok();
+        // Without the daemon there's nothing to copy.
         let _ = app.update(Message::CopyAsNix);
+        assert!(!shown(&app, "Copied, for services.ryukaze.settings"));
+        let _ = app.update(Message::ConfigRead(Ok("charge_limit = 70\n".into())));
         assert!(shown(&app, "Copied, for services.ryukaze.settings"));
         // A change after the copy isn't in it.
         let _ = app.update(Message::Applied(Ok(())));

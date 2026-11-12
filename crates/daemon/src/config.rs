@@ -61,6 +61,23 @@ pub struct Config {
     /// it decides at every start.
     #[serde(skip)]
     pub set: Changes,
+
+    /// The file as it was read, every key of it: what `ReadConfig` gives
+    /// back.
+    #[serde(skip)]
+    pub file: toml::Table,
+}
+
+/// `over` laid on `under`: a table key by key, anything else whole.
+pub fn lay(under: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match (under.get_mut(&key), value) {
+            (Some(toml::Value::Table(under)), toml::Value::Table(over)) => lay(under, over),
+            (_, value) => {
+                under.insert(key, value);
+            }
+        }
+    }
 }
 
 /// The keyboard's backlight, set at start, after sleep and whenever the
@@ -923,6 +940,47 @@ impl Changes {
         .collect()
     }
 
+    /// These as the config writes them, to lay over its file: the same
+    /// keys, but the power button's light, flat here and under
+    /// `keyboard.power` there.
+    pub fn as_config(&self) -> toml::Table {
+        let mut table = toml::Table::try_from(self).unwrap_or_default();
+        let Some(toml::Value::Table(keyboard)) = table.get_mut("keyboard") else {
+            return table;
+        };
+        let mut power = toml::Table::new();
+        if let Some(follows) = keyboard.remove("power") {
+            power.insert("follows".into(), follows);
+        }
+        if let Some(waking) = keyboard.remove("power_dgpu_waking") {
+            power.insert("dgpu_waking".into(), waking);
+        }
+        if let Some(toml::Value::Table(colors)) = keyboard.remove("power_colors") {
+            let mut modes = toml::Table::new();
+            for (name, color) in colors {
+                if name == "dgpu" {
+                    power.insert("dgpu_awake".into(), color);
+                } else {
+                    modes.insert(name, color);
+                }
+            }
+            if !modes.is_empty() {
+                power.insert("shift_modes".into(), modes.into());
+            }
+        }
+        if !power.is_empty() {
+            keyboard.insert("power".into(), power.into());
+        }
+        // `""` is a scenario with no profile of its own: no key at all.
+        if let Some(toml::Value::Table(scenarios)) = keyboard.get_mut("scenarios") {
+            scenarios.retain(|_, profile| profile.as_str() != Some(""));
+            if scenarios.is_empty() {
+                keyboard.remove("scenarios");
+            }
+        }
+        table
+    }
+
     /// These but for the keys `set` has: the config's to decide.
     pub fn without(self, set: &Changes) -> Self {
         fn unless<T, U>(value: Option<T>, set: &Option<U>) -> Option<T> {
@@ -1096,6 +1154,7 @@ impl Config {
         let table: toml::Table =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         config.set = Changes::set_in(&config, &table);
+        config.file = table;
         if let Some(percent) = config.charge_limit
             && !(10..=100).contains(&percent)
         {

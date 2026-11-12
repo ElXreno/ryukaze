@@ -29,7 +29,7 @@ use crate::{
     bootlogo::Logo,
     laptop::Laptop,
     layouts::{self, Key, Layout},
-    nix, picker, theme,
+    picker, theme,
 };
 
 /// The lights beside the keys a laptop has, from the names Status gives.
@@ -1018,24 +1018,6 @@ impl Editor {
         toml::to_string(&table).unwrap_or_default()
     }
 
-    /// For `services.ryukaze.settings.keyboard.profiles`.
-    pub fn nix_value(&self) -> nix::Value {
-        nix::Value::Attrs(
-            self.fields()
-                .into_iter()
-                .map(|(key, field)| (key.to_owned(), field.nix()))
-                .collect(),
-        )
-    }
-
-    #[cfg(test)]
-    fn nix(&self) -> String {
-        let nix::Value::Attrs(entries) = self.nix_value() else {
-            unreachable!("a profile is an attribute set")
-        };
-        nix::attrset(&entries)
-    }
-
     /// The colour the picture gives a key: its own, or its zone's or the
     /// effect's at about where it sits.
     fn shown(&self, key: &Key) -> Color {
@@ -1657,34 +1639,6 @@ impl Field {
                             fields
                                 .into_iter()
                                 .map(|(key, field)| (key.to_owned(), field.toml()))
-                                .collect(),
-                        )
-                    })
-                    .collect(),
-            ),
-        }
-    }
-
-    fn nix(self) -> nix::Value {
-        match self {
-            Field::Str(text) => nix::Value::Str(text),
-            Field::Int(n) => nix::Value::Int(n),
-            Field::Strs(texts) => {
-                nix::Value::List(texts.into_iter().map(nix::Value::Str).collect())
-            }
-            Field::Keys(keys) => nix::Value::Attrs(
-                keys.into_iter()
-                    .map(|(name, color)| (name, nix::Value::Str(color)))
-                    .collect(),
-            ),
-            Field::Zones(zones) => nix::Value::List(
-                zones
-                    .into_iter()
-                    .map(|fields| {
-                        nix::Value::Attrs(
-                            fields
-                                .into_iter()
-                                .map(|(key, field)| (key.to_owned(), field.nix()))
                                 .collect(),
                         )
                     })
@@ -2356,12 +2310,6 @@ mod tests {
         let _ = editor.update(Msg::Origin(Origin::Left));
         let _ = editor.update(Msg::Inward(true));
         let _ = editor.update(Msg::Name("two tone".into()));
-        let nix = editor.nix();
-        assert_eq!(
-            nix,
-            "{\n  name = \"two tone\";\n  effect = \"wave\";\n  colors = [\n    \"#0000ff\"\n    \"#ff0000\"\n  ];\n  period_ms = 4000;\n  origin = \"left\";\n  direction = \"in\";\n  keys = {\n    wasd = \"#ff0000\";\n    \"102nd\" = \"#ff0000\";\n  };\n}"
-        );
-
         // A key let go of the group: by itself.
         let _ = editor.update(Msg::Pick(0x04, true));
         let _ = editor.update(Msg::Unpaint);

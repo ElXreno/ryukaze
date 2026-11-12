@@ -90,6 +90,8 @@ pub struct Service {
     /// those the config sets, `config_set`, which it decides; and where.
     changes: config::Changes,
     config_set: config::Changes,
+    /// The config's file, every key of it as read.
+    config_file: toml::Table,
     changes_file: Option<state::File>,
     /// What to apply when the laptop goes on AC or on battery.
     source_profiles: config::Profiles,
@@ -308,6 +310,7 @@ impl Service {
             bar_sent: std::sync::Mutex::default(),
             changes: config::Changes::default(),
             config_set: config::Changes::default(),
+            config_file: toml::Table::new(),
             changes_file: None,
             source_profiles: config::Profiles::default(),
             power_light: config::PowerLight::default(),
@@ -498,6 +501,11 @@ impl Service {
         };
         self.set_shift_mode(mode)?;
         Ok(Some(format!("shift mode {mode}")))
+    }
+
+    /// From the config: its file as read, for `ReadConfig`.
+    pub fn put_config_file(&mut self, file: toml::Table) {
+        self.config_file = file;
     }
 
     /// From the config: whether turbo is Apex on AC.
@@ -2059,6 +2067,41 @@ impl Service {
         )
     }
 
+    /// The config as it stands, in TOML: its file, every key of it, under
+    /// what was changed over D-Bus and is kept, with the keyboard profiles
+    /// saved here and the one picked last. What neither sets isn't in it.
+    pub fn read_config(&self) -> fdo::Result<String> {
+        let failed = |err: toml::ser::Error| fdo::Error::Failed(format!("config: {err}"));
+        let mut config = self.config_file.clone();
+        config::lay(&mut config, self.changes.as_config());
+        let mut keyboard = toml::Table::new();
+        let mut profiles = match config.get("keyboard").and_then(|k| k.get("profiles")) {
+            Some(toml::Value::Array(profiles)) => profiles.clone(),
+            _ => Vec::new(),
+        };
+        let configured = profiles.len();
+        for name in self.keyboard_saved_names() {
+            let saved = self.keyboard_kept.profiles.iter().find(|p| p.name == name);
+            if let Some(saved) = saved {
+                profiles.push(toml::Value::try_from(saved).map_err(failed)?);
+            }
+        }
+        if profiles.len() > configured {
+            keyboard.insert("profiles".into(), profiles.into());
+        }
+        if let Some(picked) = &self.keyboard_kept.picked {
+            keyboard.insert("profile".into(), picked.clone().into());
+        }
+        if !keyboard.is_empty() {
+            let mut kept = toml::Table::new();
+            kept.insert("keyboard".into(), keyboard.into());
+            // Under the config's own: what it names, it decides.
+            config::lay(&mut kept, std::mem::take(&mut config));
+            config = kept;
+        }
+        toml::to_string(&config).map_err(failed)
+    }
+
     /// The scenarios, `[[scenarios]]` in TOML as the config writes them:
     /// for an editor to start from.
     pub fn read_scenarios(&self) -> fdo::Result<String> {
@@ -2883,6 +2926,49 @@ mod tests {
         let own = Some(Epp::Named("balance_power".into()));
         service.apply_profile(&profile(own)).unwrap();
         assert_eq!(epp_now(sysfs.path()).as_deref(), Some("balance_power"));
+    }
+
+    /// The file whole, a key the daemon doesn't know of too, under what
+    /// the window changed, the power button's light where the config has
+    /// it.
+    #[test]
+    fn reads_the_config_whole() {
+        let sysfs = alpha17("17KKIMS1.115");
+        let mut service = service(sysfs.path());
+        assert_eq!(service.read_config().unwrap(), "");
+
+        let file = "apex_on_ac = true\nlater = \"a key of some later day\"\n\n[profiles.ac]\nscenario = \"games\"\n\n[[scenarios]]\nname = \"games\"\nshift_mode = \"turbo\"\nepp = 132\n\n[keyboard.power]\ndgpu_waking = true\n";
+        service.put_config_file(toml::from_str(file).unwrap());
+        let read: toml::Table = toml::from_str(&service.read_config().unwrap()).unwrap();
+        assert_eq!(read, toml::from_str::<toml::Table>(file).unwrap());
+
+        let color = |hex: &str| config::KeyboardColor(hex.parse().unwrap());
+        service.changes = config::Changes {
+            charge_limit: Some(70),
+            fans: config::FanChanges {
+                gpu_follows_cpu: Some(true),
+                ..config::FanChanges::default()
+            },
+            keyboard: config::KeyboardChanges {
+                power: Some(config::PowerFollows::ShiftMode),
+                power_colors: [
+                    ("dgpu".to_owned(), color("#ff0000")),
+                    ("eco".to_owned(), color("#00ff00")),
+                ]
+                .into(),
+                scenarios: [
+                    ("games".to_owned(), "wave".to_owned()),
+                    ("quiet".to_owned(), String::new()),
+                ]
+                .into(),
+                ..config::KeyboardChanges::default()
+            },
+            ..config::Changes::default()
+        };
+        service.keyboard_kept.picked = Some("wave".into());
+        let read: toml::Table = toml::from_str(&service.read_config().unwrap()).unwrap();
+        let want = "apex_on_ac = true\ncharge_limit = 70\nlater = \"a key of some later day\"\n\n[fans]\ngpu_follows_cpu = true\n\n[profiles.ac]\nscenario = \"games\"\n\n[[scenarios]]\nname = \"games\"\nshift_mode = \"turbo\"\nepp = 132\n\n[keyboard]\nprofile = \"wave\"\n\n[keyboard.scenarios]\ngames = \"wave\"\n\n[keyboard.power]\nfollows = \"shift_mode\"\ndgpu_waking = true\ndgpu_awake = \"#ff0000\"\n\n[keyboard.power.shift_modes]\neco = \"#00ff00\"\n";
+        assert_eq!(read, toml::from_str::<toml::Table>(want).unwrap());
     }
 
     #[test]

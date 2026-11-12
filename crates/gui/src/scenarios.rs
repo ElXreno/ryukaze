@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::anim::{self, Hover};
 use crate::{
     app::{FAN_ORDER, SHIFT_ORDER, capitalize},
-    nix, theme,
+    theme,
 };
 
 /// One as the config writes it; a mode unset is left as it is.
@@ -115,30 +115,6 @@ impl Editor {
             scenarios,
             unsaved: false,
         })
-    }
-
-    /// For `services.ryukaze.settings.scenarios`.
-    pub fn nix_values(&self) -> Vec<nix::Value> {
-        let text = |mode: &Option<String>| mode.clone().map(nix::Value::Str);
-        self.scenarios
-            .iter()
-            .map(|scenario| {
-                let mut attrs = vec![("name".to_owned(), nix::Value::Str(scenario.name.clone()))];
-                nix::put(&mut attrs, "shift_mode", text(&scenario.shift_mode));
-                nix::put(&mut attrs, "fan_mode", text(&scenario.fan_mode));
-                nix::put(
-                    &mut attrs,
-                    "super_battery",
-                    scenario.super_battery.map(nix::Value::Bool),
-                );
-                let epp = scenario.epp.as_ref().map(|epp| match epp {
-                    Epp::Raw(raw) => nix::Value::Int((*raw).into()),
-                    Epp::Named(name) => nix::Value::Str(name.clone()),
-                });
-                nix::put(&mut attrs, "epp", epp);
-                nix::Value::Attrs(attrs)
-            })
-            .collect()
     }
 
     fn toml(&self) -> String {
@@ -417,17 +393,6 @@ fn small<'a>(label: &'a str, press: Msg) -> Element<'a, Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn writes_them_as_nix() {
-        let read = "[[scenarios]]\nname = \"silent\"\nshift_mode = \"eco\"\nsuper_battery = false\n\n[[scenarios]]\nname = \"performance\"\nshift_mode = \"turbo\"\nfan_mode = \"advanced\"\nepp = 132\n\n[[scenarios]]\nname = \"saving\"\nepp = \"power\"\n";
-        let editor = Editor::from_toml(read).unwrap();
-        let status = ryukaze_core::Status::default();
-        assert_eq!(
-            nix::settings(&status, &[], editor.nix_values(), Vec::new()),
-            "scenarios = [\n  {\n    name = \"silent\";\n    shift_mode = \"eco\";\n    super_battery = false;\n  }\n  {\n    name = \"performance\";\n    shift_mode = \"turbo\";\n    fan_mode = \"advanced\";\n    epp = 132;\n  }\n  {\n    name = \"saving\";\n    epp = \"power\";\n  }\n];\n"
-        );
-    }
 
     #[test]
     fn picks_the_cpu_preference_by_name_or_number() {

@@ -36,6 +36,7 @@ interface `io.github.kontonkara.ryukaze1` at `/io/github/kontonkara/ryukaze`:
 | `SetGpuMode` | `s` | one of `gpu_modes` (`hybrid`, `discrete`, `integrated`), from the next restart |
 | `SetScenario` | `s` | one of `scenarios` |
 | `ReadScenarios` | | the scenarios, `[[scenarios]]` in TOML as the config writes them (`s`): for an editor to start from |
+| `ReadConfig` | | the config as it stands, in TOML (`s`): its file, every key of it, under what was changed over D-Bus and is kept, with the keyboard profiles saved here; what neither sets isn't in it |
 | `SetScenarios` | `s` | all of them, in order, the same way, at least one; one the config names for AC, battery or a keyboard light has to stay |
 | `SetScenarioKeyboardProfile` | `s s` | one of `scenarios`, and one of `keyboard_profiles` it lights, or `""` for the one picked |
 | `SetSourceScenario` | `s s` | `ac` or `battery`, and one of `scenarios` to apply on it, or `""` for nothing; applied at once while on it |
@@ -62,5 +63,5 @@ whatever changed them: a call (at once), a power profile, the automatic
 boost or the EC itself on Fn+F8 (within two seconds). The window, the tray and the on-screen card take it as it comes.
 
 [data/io.github.kontonkara.ryukaze.conf](../data/io.github.kontonkara.ryukaze.conf)
-lets everyone call `Status`, `ReadScenarios` and `ReadKeyboardProfile`
+lets everyone call `Status`, `ReadScenarios`, `ReadConfig` and `ReadKeyboardProfile`
 and only root call the setters; the NixOS module adds the users in `services.ryukaze.users`.

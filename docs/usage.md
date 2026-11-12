@@ -49,8 +49,9 @@ config names for AC, battery or a keyboard light stays.
 What the [config](config.md) sets, though, it sets again at every start: a
 change to it in the window lasts until then. The modes themselves aren't
 kept; the power source's profile sets them at start. Copy as Nix, at the
-bottom, puts the settings on the clipboard in the shape of
-`services.ryukaze.settings`, for a config that's to have them.
+bottom, puts the config as it stands on the clipboard in the shape of
+`services.ryukaze.settings`: its file, every key of it, under what the
+window changed, for a config that's to have it all.
 
 Devices has the keyboard light's profiles, the standard ones and the
 config's, and under them those saved here. Edit, by them, opens its editor
